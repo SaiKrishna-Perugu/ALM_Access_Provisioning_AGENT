@@ -1,0 +1,9 @@
+﻿# Development-only dependencies: the offline test suite and the linter.
+# Not needed to run the pipeline. Install with:
+#   .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+#
+# If PyPI is blocked, download these alongside the runtime wheels (see README,
+# "Offline install") - they are pure-Python wheels and are not platform-specific.
+-r requirements.txt
+pytest==8.3.3
+ruff==0.6.9

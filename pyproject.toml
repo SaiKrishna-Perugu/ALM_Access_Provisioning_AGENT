@@ -1,0 +1,79 @@
+[project]
+name = "alm-access-provisioning"
+version = "1.1.0"
+description = "Retrieve ALM Access Requests from EWM and provision the requested users into JTS and the GPT AD group."
+requires-python = ">=3.10"
+dependencies = [
+    "requests==2.32.3",
+    "python-dotenv==1.2.2",
+    "playwright==1.61.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.6"]
+# The autonomous deployment. Pinned in requirements-cloud.txt, which is the
+# file the Dockerfile and CI install from.
+cloud = [
+    "langgraph>=0.2.60",
+    "langgraph-checkpoint-postgres>=2.0.9",
+    "langchain-openai>=0.2.14",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "pydantic>=2.10",
+    "pydantic-settings>=2.7",
+    "azure-identity>=1.19",
+    "azure-keyvault-secrets>=4.9",
+    "azure-servicebus>=7.13",
+    "psycopg[binary,pool]>=3.2",
+    "structlog>=24.4",
+]
+
+# The scripts are run as `python src/<script>.py` and import each other by bare
+# module name, so src/ is a source root rather than an installable package.
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q --strict-markers"
+filterwarnings = ["error::DeprecationWarning:src.*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = [".venv", "wheels", "out", "chrome-debug", "edge-debug"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # import order
+    "B",        # bugbear
+    "UP",       # pyupgrade
+    "C4",       # comprehensions
+    "SIM",      # simplify
+]
+ignore = [
+    "E501",     # long lines are handled by line-length above where it matters
+    "B008",
+    "SIM105",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests deliberately touch private helpers and re-import modules per test.
+"tests/*" = ["B011", "SIM117"]
+# The cloud packages import optional SDKs lazily inside functions, which is
+# the point: the repo must stay importable without them installed.
+"src/alm_core/*" = ["PLC0415"]
+"src/alm_agents/*" = ["PLC0415"]
+"src/alm_api/*" = ["PLC0415"]
+"src/alm_worker/*" = ["PLC0415"]
+
+[tool.ruff.lint.isort]
+known-first-party = [
+    # The original CLI (flat modules run as "python src/<script>.py").
+    "alm_access_requests", "alm_config", "alm_log", "audit", "elm_gpt", "evidence",
+    "ewm_comment_workitems", "ewm_workitems", "idempotency", "jazz_client",
+    "jts_import_users", "jts_permission", "jts_profile_attach", "jts_unarchive_user",
+    "plan_lock", "run_pipeline",
+    # The autonomous stack.
+    "alm_core", "alm_agents", "alm_api", "alm_worker",
+]

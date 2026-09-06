@@ -1,0 +1,136 @@
+variable "project_id" {
+  description = "GCP project that owns every resource here."
+  type        = string
+}
+
+variable "region" {
+  description = "Region for Cloud Run, Cloud SQL and Vertex AI. Keep them together - a cross-region database call on every ledger write is not worth the latency."
+  type        = string
+  default     = "europe-west1"
+}
+
+variable "environment" {
+  description = "Which ALM estate this deployment talks to."
+  type        = string
+  default     = "test"
+
+  validation {
+    condition     = contains(["test", "prod"], var.environment)
+    error_message = "environment must be test or prod."
+  }
+}
+
+variable "subnet_cidr" {
+  description = "Primary range for the Cloud Run subnet. Must not overlap the corporate estate - confirm with the network team before applying; a clashing range breaks routing for everyone on the interconnect, not just this app."
+  type        = string
+  default     = "10.60.0.0/23"
+}
+
+variable "psa_cidr" {
+  description = "Range reserved for Private Service Access, which is where Cloud SQL's private IP is allocated from."
+  type        = string
+  default     = "10.60.4.0/24"
+}
+
+variable "corporate_dns_servers" {
+  description = "On-premises DNS servers that resolve *.intra.chrysler.com. Without these the container cannot find EWM or JTS, whatever the interconnect says."
+  type        = list(string)
+  default     = []
+}
+
+variable "corporate_dns_suffix" {
+  description = "Domain forwarded to the corporate resolvers."
+  type        = string
+  default     = "intra.chrysler.com."
+}
+
+variable "interconnect_router_name" {
+  description = "Existing Cloud Router carrying the Interconnect or HA VPN to the corporate network. Left empty the spoke deploys unattached and the app cannot reach the intranet - deliberate, so an application deploy can never create or destroy a circuit."
+  type        = string
+  default     = ""
+}
+
+variable "container_image" {
+  description = "Fully qualified image. Pin a digest in production - a tag can move under a running revision, a digest cannot."
+  type        = string
+}
+
+variable "approver_group" {
+  description = "Google group whose members may open the approval UI through IAP, e.g. group:alm-approvers@example.com."
+  type        = string
+  default     = ""
+}
+
+variable "shadow_mode" {
+  description = "Read and plan, write nothing. Both tfvars files ship with this true; turning it off is the decision that lets an agent write, and belongs in a change record."
+  type        = bool
+  default     = true
+}
+
+variable "orchestration" {
+  description = "agentic or deterministic."
+  type        = string
+  default     = "agentic"
+}
+
+variable "agent_model" {
+  description = "Vertex AI model the agents reason with. A claude-* id from Model Garden switches the client automatically."
+  type        = string
+  default     = "gemini-2.0-flash"
+}
+
+variable "supervisor_model" {
+  description = "Optional cheaper model for routing. Empty uses agent_model."
+  type        = string
+  default     = ""
+}
+
+variable "ewm_server" {
+  description = "EWM base URL, e.g. https://prssetst.intra.chrysler.com/ccm"
+  type        = string
+  default     = ""
+}
+
+variable "jts_server" {
+  description = "JTS base URL."
+  type        = string
+  default     = ""
+}
+
+variable "service_account_cid" {
+  description = "Non-interactive ALM service account (CID) the toolkit authenticates as."
+  type        = string
+  default     = ""
+}
+
+variable "onprem_wif_issuer" {
+  description = "OIDC issuer URI for the on-premises Windows worker's existing identity provider. Workload Identity Federation exchanges that for a Google token, so no service account key is downloaded to a host outside the perimeter."
+  type        = string
+  default     = ""
+}
+
+variable "onprem_wif_subject" {
+  description = "Subject claim of the Windows worker host, mapped to the worker service account."
+  type        = string
+  default     = ""
+}
+
+variable "github_repository" {
+  description = "owner/repo permitted to deploy via Workload Identity Federation. No service account key in CI."
+  type        = string
+  default     = ""
+}
+
+variable "db_tier" {
+  description = "Cloud SQL machine type."
+  type        = string
+  default     = "db-custom-2-7680"
+}
+
+variable "labels" {
+  type = map(string)
+  default = {
+    application = "alm-access-provisioning"
+    managed-by  = "terraform"
+  }
+}

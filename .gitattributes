@@ -1,0 +1,11 @@
+# Normalize line endings in the repo; check out native on each platform.
+* text=auto
+
+*.py   text diff=python
+*.md   text
+*.json text
+*.txt  text
+# PowerShell scripts need CRLF on Windows.
+*.ps1  text eol=crlf
+
+*.whl binary

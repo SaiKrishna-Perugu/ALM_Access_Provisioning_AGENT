@@ -1,0 +1,8 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "/^python(?:\\.exe)? src\\\\alm_access_requests\\.py$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}

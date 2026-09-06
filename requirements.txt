@@ -1,0 +1,6 @@
+﻿# Direct dependencies for the ALM Access Retrieval + GPT Provisioning agent.
+# Transitive deps (greenlet, pyee, typing_extensions, certifi, charset-normalizer,
+# idna, urllib3) are resolved automatically.
+requests==2.32.3
+python-dotenv==1.2.2
+playwright==1.61.0

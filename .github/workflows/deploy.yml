@@ -1,0 +1,204 @@
+name: Deploy
+
+# Build, push and deploy the orchestrator to Google Cloud.
+#
+# Authentication is Workload Identity Federation - GitHub's OIDC token is
+# exchanged for a short-lived Google token. There is no service account key in
+# this repository, and `google_service_account_key` does not appear anywhere in
+# the Terraform either.
+#
+# The environment gates matter: `test` deploys on a push to main, `prod` needs a
+# GitHub environment approval. Turning shadow mode off is not done here at all -
+# it is a deliberate configuration change, made once, with a change record.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/alm_core/**'
+      - 'src/alm_agents/**'
+      - 'src/alm_api/**'
+      - 'src/alm_worker/**'
+      - 'infra/**'
+      - 'Dockerfile'
+      - 'requirements*.txt'
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Environment to deploy
+        type: choice
+        options: [test, prod]
+        default: test
+
+permissions:
+  id-token: write      # OIDC to Google
+  contents: read
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE_NAME: alm-provisioning
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest ruff
+      - name: Lint
+        run: ruff check src tests .github/hooks/scripts
+      - name: Test
+        run: pytest
+
+      - name: Assert the agent guardrails are intact
+        # Agents call write tools directly, so the guarantees live in the tool
+        # boundary. Two things must stay true, and both are cheap to check.
+        run: |
+          # 1. The tool layer never reasons. If alm_core imports the LLM layer,
+          #    a model has been given a way to act without passing the policy.
+          if grep -rn "alm_agents.llm\|from .. import llm\|^import llm" src/alm_core/ ; then
+            echo "::error::alm_core must not import the LLM layer"
+            exit 1
+          fi
+          # 2. Every tool marked is_write must be known to the policy engine as a
+          #    write. A write tool the policy does not recognise is one an agent
+          #    could call without an approval check.
+          python - <<'PY'
+          import pathlib, re, sys
+          toolkit = pathlib.Path("src/alm_agents/toolkit.py").read_text(encoding="utf-8")
+          policy = pathlib.Path("src/alm_agents/policy.py").read_text(encoding="utf-8")
+          declared = set(re.findall(r'ToolSpec\(\s*"([a-z_]+)"[^)]*?is_write=True',
+                                    toolkit, re.S))
+          guarded = set(re.findall(r'^\s+"([a-z_]+)",\s*$',
+                                   policy.split("WRITE_TOOLS = {")[1].split("}")[0], re.M))
+          missing = declared - guarded
+          if missing:
+              print("::error::write tools unknown to the policy engine: "
+                    + ", ".join(sorted(missing)))
+              sys.exit(1)
+          print(f"{len(declared)} write tool(s), all policy-guarded")
+          PY
+
+      - name: Assert no service account key is ever created
+        # A downloaded key is the credential most likely to end up committed.
+        # Every principal in this system federates instead.
+        run: |
+          if grep -rn "google_service_account_key" infra/ ; then
+            echo "::error::use Workload Identity Federation, not a downloaded key"
+            exit 1
+          fi
+          echo "no service account keys in the Terraform"
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+      - name: Validate Terraform
+        run: |
+          terraform -chdir=infra init -backend=false
+          terraform -chdir=infra fmt -check -recursive
+          terraform -chdir=infra validate
+
+  build:
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.target || 'test' }}
+    outputs:
+      image: ${{ steps.push.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Write the corporate CA bundle
+        # Held as a repository secret rather than committed: it is not secret in
+        # the cryptographic sense, but publishing an organisation's internal PKI
+        # layout is free reconnaissance.
+        run: |
+          mkdir -p certs
+          printf '%s' "${{ secrets.CORPORATE_CA_BUNDLE }}" > certs/corporate-ca.pem
+          test -s certs/corporate-ca.pem
+
+      - name: Build and push
+        id: push
+        run: |
+          TARGET="${{ github.event.inputs.target || 'test' }}"
+          REGISTRY="${{ secrets.GCP_REGION }}-docker.pkg.dev"
+          REPO="$REGISTRY/${{ secrets.GCP_PROJECT_ID }}/alm-$TARGET-images"
+          TAG="${GITHUB_SHA::12}"
+          gcloud auth configure-docker "$REGISTRY" --quiet
+          docker build --build-arg CA_BUNDLE=certs/corporate-ca.pem \
+            -t "$REPO/$IMAGE_NAME:$TAG" .
+          docker push "$REPO/$IMAGE_NAME:$TAG"
+          # Deploy by digest, never by tag: a tag can move under a running
+          # revision, a digest cannot.
+          DIGEST=$(gcloud artifacts docker images describe \
+            "$REPO/$IMAGE_NAME:$TAG" --format='value(image_summary.digest)')
+          echo "image=$REPO/$IMAGE_NAME@$DIGEST" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.target || 'test' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+
+      - name: Terraform apply
+        run: |
+          TARGET="${{ github.event.inputs.target || 'test' }}"
+          terraform -chdir=infra init \
+            -backend-config="bucket=${{ secrets.GCP_TF_STATE_BUCKET }}" \
+            -backend-config="prefix=alm/$TARGET"
+          terraform -chdir=infra apply -auto-approve \
+            -var-file="envs/$TARGET.tfvars" \
+            -var="project_id=${{ secrets.GCP_PROJECT_ID }}" \
+            -var="container_image=${{ needs.build.outputs.image }}"
+
+      - name: Connectivity smoke test
+        # A green apply proves the resources exist. It proves nothing about
+        # whether the container can reach EWM and JTS over the interconnect -
+        # which is the thing most likely to be wrong after an infra change.
+        run: |
+          TARGET="${{ github.event.inputs.target || 'test' }}"
+          RUN_SA=$(terraform -chdir=infra output -raw run_service_account)
+          gcloud run jobs deploy "alm-$TARGET-smoke" \
+            --region "${{ secrets.GCP_REGION }}" \
+            --image "${{ needs.build.outputs.image }}" \
+            --service-account "$RUN_SA" \
+            --network "alm-$TARGET-vpc" \
+            --subnet "alm-$TARGET-run" \
+            --vpc-egress all-traffic \
+            --set-env-vars "ALM_ENVIRONMENT=$(echo "$TARGET" | tr a-z A-Z)" \
+            --command python \
+            --args=-m,alm_core.smoke \
+            --quiet
+          gcloud run jobs execute "alm-$TARGET-smoke" \
+            --region "${{ secrets.GCP_REGION }}" --wait || {
+              echo "::error::connectivity smoke test failed - check Cloud DNS forwarding and the interconnect"
+              exit 1
+            }

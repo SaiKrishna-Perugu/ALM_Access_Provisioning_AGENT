@@ -1,0 +1,45 @@
+﻿# --- Secrets / local configuration -------------------------------------------
+# .env holds the CID and server URLs; never commit it. .env.example is the template.
+.env
+.env.*
+!.env.example
+
+# --- Generated output (contains real user names, emails and IDs) --------------
+out/
+*.csv
+comment_capture.json
+
+# --- Python -------------------------------------------------------------------
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Browser debug profile (holds live session cookies / Kerberos state) ------
+chrome-debug/
+edge-debug/
+
+# --- Offline wheels: platform-specific binaries, kept local, not in Git -------
+# Regenerate on a machine with PyPI access (see README, "wheels/").
+wheels/
+
+# --- Editor / OS noise --------------------------------------------------------
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# --- Logs ---------------------------------------------------------------------
+*.log
+
+# --- Corporate PKI: supplied at build time, never committed -------------------
+# Not secret cryptographically, but publishing an internal PKI layout is free
+# reconnaissance for anyone who finds the repository.
+certs/
+*.pem
+!.secrets.baseline

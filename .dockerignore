@@ -1,0 +1,37 @@
+# Keep the build context small and, more importantly, free of anything that
+# should never end up in a layer.
+
+# --- secrets and live state ---------------------------------------------------
+.env
+.env.*
+!.env.example
+out/
+chrome-debug/
+edge-debug/
+
+# The CA bundle is copied explicitly via --build-arg, not swept in.
+certs/*
+!certs/.gitkeep
+
+# --- local environments -------------------------------------------------------
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# --- repository furniture -----------------------------------------------------
+.git/
+.github/
+.vscode/
+.idea/
+docs/
+tests/
+infra/
+*.md
+!README.md
+
+# wheels/ is intentionally NOT ignored: the Dockerfile uses it as the offline
+# install fallback for an air-gapped build.

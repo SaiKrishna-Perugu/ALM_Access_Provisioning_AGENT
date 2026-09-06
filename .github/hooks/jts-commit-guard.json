@@ -1,0 +1,13 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "type": "command",
+        "command": "python .github/hooks/scripts/guard-jts-commit.py",
+        "linux": "python3 .github/hooks/scripts/guard-jts-commit.py",
+        "osx": "python3 .github/hooks/scripts/guard-jts-commit.py",
+        "timeout": 15
+      }
+    ]
+  }
+}

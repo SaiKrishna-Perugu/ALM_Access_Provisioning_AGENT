@@ -1,0 +1,42 @@
+﻿# Dependencies for the autonomous (Google Cloud) deployment described in
+# docs/Autonoums Agent Plan.md. NOT needed to run the local CLI pipeline -
+# src/*.py continues to work with requirements.txt alone.
+#
+#   .\.venv\Scripts\python.exe -m pip install -r requirements-cloud.txt
+-r requirements.txt
+
+# --- Orchestration ---------------------------------------------------------
+langgraph==0.2.62
+langgraph-checkpoint-postgres==2.0.9
+langchain-core==0.3.29
+# Vertex AI chat models. Also exposes ChatAnthropicVertex, so Claude on Vertex
+# Model Garden is a one-line change from Gemini - see alm_agents/llm.py.
+langchain-google-vertexai==2.0.7
+
+# --- Contracts and configuration -------------------------------------------
+pydantic==2.10.4
+pydantic-settings==2.7.1
+
+# --- API / approval surface -------------------------------------------------
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+
+# --- Google Cloud -----------------------------------------------------------
+google-auth==2.37.0
+google-cloud-secret-manager==2.21.1
+google-cloud-pubsub==2.27.1
+google-cloud-logging==3.11.3
+google-cloud-aiplatform==1.75.0
+
+# --- Persistence ------------------------------------------------------------
+# Cloud SQL is reached on its private IP over Direct VPC egress, with an IAM
+# access token as the password. psycopg keeps LangGraph's AsyncPostgresSaver
+# working unchanged - it only wants a DSN.
+psycopg[binary,pool]==3.2.3
+
+# --- Observability ----------------------------------------------------------
+structlog==24.4.0
+opentelemetry-sdk==1.29.0
+opentelemetry-instrumentation-fastapi==0.50b0
+opentelemetry-exporter-gcp-trace==1.7.0
