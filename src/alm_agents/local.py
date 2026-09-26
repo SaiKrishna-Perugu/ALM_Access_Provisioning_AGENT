@@ -481,6 +481,94 @@ def last_thread(settings) -> str:
         return ""
 
 
+async def purge(settings, console, days: int, *, out_dir: Path = OUT_DIR,
+                now=None) -> dict:
+    """Delete the personal data local runs leave behind, older than ``days``.
+
+    Removed: run checkpoints (the whole state of a run, names included), approval
+    cards, agent memory, run reports and evidence screenshots. Kept: the
+    idempotency ledger and the append-only audit trail - the record of what was
+    written, which holds user IDs, not names or e-mail addresses, and without
+    which a re-run could not tell what was already done.
+    """
+    import shutil
+    from datetime import datetime, timedelta, timezone
+
+    import aiosqlite
+
+    from alm_core.store.sqlite import SqliteStore
+
+    from .graph import checkpoint_db_path, checkpointer_for
+    from .memory import MemoryStore as AgentMemory
+
+    cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=days)
+    counts = {"runs": 0, "approvals": 0, "memories": 0, "reports": 0, "evidence": 0}
+
+    checkpoints = checkpoint_db_path(settings.ledger_path)
+    if os.path.exists(checkpoints):
+        async with checkpointer_for(settings) as saver:
+            newest: dict[str, str] = {}
+            async for item in saver.alist(None):
+                thread = item.config["configurable"]["thread_id"]
+                newest[thread] = max(newest.get(thread, ""), item.checkpoint["ts"])
+            for thread, ts in newest.items():
+                if datetime.fromisoformat(ts) < cutoff:
+                    await saver.adelete_thread(thread)
+                    counts["runs"] += 1
+        async with aiosqlite.connect(checkpoints) as conn:
+            await conn.execute("VACUUM")  # deleted rows otherwise stay in the file
+
+    if os.path.exists(settings.ledger_path):
+        store = SqliteStore(settings.ledger_path)
+        await store.start()
+        try:
+            await store.migrate()
+            await AgentMemory(store).migrate()
+            since = cutoff.isoformat()
+            async with store._lock:
+                db = store._conn()
+                for table, key in (("alm_approval", "approvals"),
+                                   ("alm_agent_memory", "memories")):
+                    cursor = await db.execute(
+                        f"DELETE FROM {table} WHERE created_at < ?", (since,))
+                    counts[key] = cursor.rowcount or 0
+                await db.execute("VACUUM")
+        finally:
+            await store.close()
+
+    stamp = cutoff.timestamp()
+    for report in out_dir.glob("run-*.json"):
+        if report.stat().st_mtime < stamp:
+            report.unlink()
+            counts["reports"] += 1
+    evidence = out_dir / "evidence"
+    if evidence.is_dir():
+        for folder in (p for p in evidence.iterdir() if p.is_dir()):
+            touched = [f.stat().st_mtime for f in folder.rglob("*")] or [
+                folder.stat().st_mtime]
+            if max(touched) < stamp:
+                shutil.rmtree(folder)
+                counts["evidence"] += 1
+
+    console.line(f"purged local data older than {days} day(s): "
+                 f"{counts['runs']} run checkpoint(s), {counts['approvals']} approval "
+                 f"card(s), {counts['memories']} agent memor(y/ies), {counts['reports']} "
+                 f"report(s), {counts['evidence']} evidence folder(s)")
+    console.line("kept: the ledger and audit trail (user IDs only) - they record what "
+                 "was written and stop a re-run from repeating it")
+    return counts
+
+
+def _days(value: str) -> int:
+    try:
+        days = int(value)
+    except ValueError:
+        days = 0
+    if days < 1:
+        raise argparse.ArgumentTypeError(f"{value!r} is not a whole number of days (1 or more)")
+    return days
+
+
 def check_commit_scope(args) -> None:
     """A run that writes names the work items it may touch, and only a few."""
     if not args.commit or args.resume:
@@ -519,6 +607,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="override ALM_LLM_REQUESTS_PER_MINUTE")
     parser.add_argument("--verbose", action="store_true",
                         help="full tool observations and the service logs")
+    parser.add_argument("--purge-older-than", type=_days, metavar="DAYS", default=0,
+                        help="delete local run data (checkpoints, approval cards, agent "
+                             "memory, reports, evidence) older than DAYS, then exit; the "
+                             "ledger and audit trail are kept")
     return parser.parse_args(argv)
 
 
@@ -567,6 +659,9 @@ def _main(args, console) -> int:
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         if args.check:
             return asyncio.run(check(settings, console, list(args.work_item or [])))
+        if args.purge_older_than:
+            asyncio.run(purge(settings, console, args.purge_older_than))
+            return 0
 
         check_commit_scope(args)
         if args.auto_approve and settings.is_prod:

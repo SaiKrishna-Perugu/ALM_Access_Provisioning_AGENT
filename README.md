@@ -410,6 +410,7 @@ python src/agent_local.py --check                       # Gemini, EWM/JTS login,
 python src/agent_local.py --work-item 123456            # dry run: the agents plan, nothing is written
 python src/agent_local.py --work-item 123456 --commit   # writes, after your y/N at the approval prompt
 python src/agent_local.py --resume last --commit       # continue the last run (same mode it started in)
+python src/agent_local.py --purge-older-than 30        # delete run data older than 30 days (ledger kept)
 ```
 
 It keeps the CLI's safety model - dry run unless `--commit`, TEST/PROD detected
@@ -418,7 +419,10 @@ adds the agents' guards on top: every tool call checked by the policy engine,
 a human approval before any write, the run limited to the work items named, and
 an idempotency ledger so a re-run reports earlier writes instead of repeating
 them. E-mail addresses and the requesters' names are stripped before Gemini sees
-anything; user IDs are kept.
+anything; user IDs are kept. What a run keeps on disk - checkpoints, approval
+cards, agent memory, reports, evidence screenshots - does hold names; remove it
+with `--purge-older-than DAYS` (the ledger and audit trail stay: they hold user
+IDs only, and a re-run needs them).
 
 The CLI is unchanged and remains the supported path. The autonomous stack is
 additive - it shares no state with the CLI and cannot interfere with it - and is

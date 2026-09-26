@@ -613,6 +613,64 @@ def test_agent_memory_outlives_the_process_in_the_local_ledger_file(tmp_path):
     assert retired == 1 and after == []
 
 
+def test_purge_removes_old_personal_data_and_keeps_the_ledger(tmp_path):
+    """Review S7: local runs kept requester names and e-mails indefinitely."""
+    import os
+    from datetime import datetime, timedelta, timezone
+
+    from alm_agents.local import parse_args, purge
+    from alm_agents.memory import MemoryStore as AgentMemory
+    from alm_core.store.sqlite import SqliteStore
+
+    settings = local_settings(tmp_path)
+    llm = ScriptedLLM(PLAN_TO_APPROVAL, SCRIPTS_TO_APPROVAL)
+    assert asyncio.run(one_process(settings, llm, decide=walk_away,
+                                   thread_id="old"))["paused"]
+
+    out = tmp_path / "out"
+    (out / "evidence" / "old").mkdir(parents=True)
+    (out / "evidence" / "old" / "AB12345.png").write_bytes(b"png")
+    (out / "run-old.json").write_text("{}", encoding="utf-8")
+
+    async def audit_rows_and_remember():
+        store = SqliteStore(settings.ledger_path)
+        await store.start()
+        memory = AgentMemory(store)
+        await memory.migrate()
+        await memory.remember(kind="episodic", content="Alice Smith was imported",
+                              subject="AB12345", author="agent")
+        rows = await store._fetchall("SELECT COUNT(*) FROM alm_audit")
+        await store.close()
+        return rows[0][0]
+
+    audit_before = asyncio.run(audit_rows_and_remember())
+    assert audit_before > 0
+
+    fresh = asyncio.run(purge(settings, Events(), 30, out_dir=out))
+    assert set(fresh.values()) == {0}  # nothing is old yet
+
+    later = datetime.now(timezone.utc) + timedelta(days=31)
+    old = (later - timedelta(days=40)).timestamp()
+    for path in [out / "run-old.json", out / "evidence" / "old" / "AB12345.png"]:
+        os.utime(path, (old, old))
+    purged = asyncio.run(purge(settings, Events(), 30, out_dir=out, now=later))
+    assert purged == {"runs": 1, "approvals": 1, "memories": 1,
+                      "reports": 1, "evidence": 1}
+    assert not (out / "run-old.json").exists()
+    assert not (out / "evidence" / "old").exists()
+
+    async def audit_rows():
+        store = SqliteStore(settings.ledger_path)
+        await store.start()
+        rows = await store._fetchall("SELECT COUNT(*) FROM alm_audit")
+        await store.close()
+        return rows[0][0]
+
+    assert asyncio.run(audit_rows()) == audit_before
+    with pytest.raises(SystemExit):
+        parse_args(["--purge-older-than", "0"])
+
+
 def test_a_cut_observation_says_how_much_was_cut():
     from alm_agents.agent import clip_observation
 
