@@ -181,7 +181,10 @@ def build_settings(*, commit: bool, model: str = "", rpm: float = 0.0,
 
     overrides: dict = {
         "environment": environment, "orchestration": orchestration, "llm_enabled": True,
-        "postgres_dsn": "", "ledger_path": ledger_path or str(DEFAULT_LEDGER),
+        "postgres_dsn": "",
+        # --ledger, else ALM_LEDGER_PATH from .env, else out/local/alm.db.
+        "ledger_path": (ledger_path or os.getenv("ALM_LEDGER_PATH", "").strip()
+                        or str(DEFAULT_LEDGER)),
         "shadow_mode": not commit,
         # TLS exactly as the CLI resolves it: a CA bundle path, the default
         # trust store, or - TEST only - unverified with the CLI's warning.

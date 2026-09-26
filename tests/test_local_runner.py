@@ -1129,3 +1129,17 @@ def test_a_locked_ledger_refuses_the_write_cleanly(tmp_path):
 
     with pytest.raises(IdempotencyViolation, match="locked by another process"):
         asyncio.run(scenario())
+
+
+
+# ------------------------------------------------ T21: ledger path from .env
+
+def test_the_ledger_path_comes_from_the_flag_then_env_then_default(env, monkeypatch,
+                                                                    tmp_path):
+    env(TEST_EWM, TEST_JTS)
+    monkeypatch.delenv("ALM_LEDGER_PATH", raising=False)
+    assert local.build_settings(commit=False).ledger_path == str(local.DEFAULT_LEDGER)
+    monkeypatch.setenv("ALM_LEDGER_PATH", str(tmp_path / "from-env.db"))
+    assert local.build_settings(commit=False).ledger_path == str(tmp_path / "from-env.db")
+    flag = str(tmp_path / "from-flag.db")
+    assert local.build_settings(commit=False, ledger_path=flag).ledger_path == flag
