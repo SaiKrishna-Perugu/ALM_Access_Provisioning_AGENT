@@ -374,7 +374,7 @@ machine. What changes is only where things live:
 |---|---|---|
 | EWM / JTS | OSLC from Cloud Run over the interconnect | OSLC from your laptop, your network |
 | Credentials | Secret Manager | `.env` + password prompt, as the CLI |
-| Ledger, audit, approvals | Cloud SQL | SQLite `out/local/alm.db` (`alm_core/store/sqlite.py`) |
+| Ledger, audit, approvals, agent memory | Cloud SQL | SQLite `out/local/alm.db` (`alm_core/store/sqlite.py`) |
 | Checkpoints (pause/resume) | Postgres checkpointer | SQLite, beside the ledger |
 | AD group | Pub/Sub job for a Windows worker | GPT in the debug Chrome from `start-gpt.ps1`, attached over CDP |
 | Approval | Google Chat card + IAP | `y/N` at the terminal |

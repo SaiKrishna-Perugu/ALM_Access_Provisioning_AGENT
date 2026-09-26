@@ -404,6 +404,9 @@ async def run(settings, args, console) -> dict:
             raise SetupError(f"{kind.upper()} sign-in failed: {err.message}") from err
 
     store = await get_store(settings)
+    # What earlier runs learned lives in the same local file as the ledger.
+    memory = AgentMemory(store)
+    await memory.migrate()
     backend = make_local_backend(**gpt_target())
     ctx = ToolContext(settings=settings, client=client, store=store, run_id="")
     thread_id = args.resume or f"local-{uuid.uuid4().hex[:8]}"
@@ -428,7 +431,7 @@ async def run(settings, args, console) -> dict:
         async with checkpointer_for(settings) as checkpointer:
             runtime = AgenticRuntime(
                 ctx, llm=agent_llm, supervisor_llm=llm_module.get_supervisor_llm(settings),
-                memory=AgentMemory(None), max_hops=settings.max_hops, backend=backend,
+                memory=memory, max_hops=settings.max_hops, backend=backend,
                 on_event=console, shots_dir=str(OUT_DIR / "evidence" / thread_id))
             graph = build_agentic_graph(runtime, checkpointer=checkpointer)
             report = await drive(graph, ctx, thread_id=thread_id, decide=decide,

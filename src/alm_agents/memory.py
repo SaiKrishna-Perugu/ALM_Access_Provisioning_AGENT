@@ -44,8 +44,27 @@ CREATE INDEX IF NOT EXISTS alm_memory_subject ON alm_agent_memory (subject, crea
 CREATE INDEX IF NOT EXISTS alm_memory_tags    ON alm_agent_memory USING GIN (tags);
 """
 
+# The same table for a local run, in the ledger's own SQLite file. Tags are a
+# JSON array; tag matching happens in Python (a memory table stays small).
+SQLITE_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS alm_agent_memory (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind        TEXT NOT NULL CHECK (kind IN ('episodic', 'semantic')),
+    subject     TEXT NOT NULL DEFAULT '',
+    tags        TEXT NOT NULL DEFAULT '[]',
+    content     TEXT NOT NULL,
+    author      TEXT NOT NULL DEFAULT '',
+    run_id      TEXT NOT NULL DEFAULT '',
+    confidence  REAL NOT NULL DEFAULT 0.5,
+    created_at  TEXT NOT NULL,
+    superseded  INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS alm_memory_subject ON alm_agent_memory (subject, created_at);
+"""
+
 MAX_CONTENT = 1000
 RECALL_LIMIT = 8
+_COLUMNS = ["kind", "subject", "tags", "content", "author", "confidence", "created_at"]
 
 
 def _now() -> datetime:
@@ -53,23 +72,35 @@ def _now() -> datetime:
 
 
 class MemoryStore:
-    """Postgres-backed when a DSN is configured, in-process otherwise."""
+    """Postgres or SQLite when the run has a durable ledger, in-process otherwise."""
 
     def __init__(self, pool_owner=None):
-        # ``pool_owner`` is the alm_core PostgresStore; reusing its pool keeps
-        # connection accounting in one place.
+        # ``pool_owner`` is the run's alm_core store (PostgresStore or
+        # SqliteStore); reusing its connection keeps them in one place.
         self.owner = pool_owner
         self._local: list[dict] = []
 
     @property
+    def _sqlite(self) -> bool:
+        from alm_core.store.sqlite import SqliteStore
+
+        return isinstance(self.owner, SqliteStore) and self.owner._db is not None
+
+    @property
     def durable(self) -> bool:
-        return self.owner is not None and getattr(self.owner, "_pool", None) is not None
+        if self.owner is None:
+            return False
+        return getattr(self.owner, "_pool", None) is not None or self._sqlite
 
     async def migrate(self) -> None:
         if not self.durable:
             return
-        async with self.owner._conn() as conn, conn.cursor() as cur:
-            await cur.execute(SCHEMA_SQL)
+        if self._sqlite:
+            async with self.owner._lock:
+                await self.owner._conn().executescript(SQLITE_SCHEMA_SQL)
+        else:
+            async with self.owner._conn() as conn, conn.cursor() as cur:
+                await cur.execute(SCHEMA_SQL)
         log.info("memory_schema_ready")
 
     # ---------------------------------------------------------------- write
@@ -91,6 +122,16 @@ class MemoryStore:
                                 "confidence": confidence, "created_at": _now()})
             return "remembered (in-process only; not durable)"
 
+        if self._sqlite:
+            async with self.owner._lock:
+                await self.owner._conn().execute(
+                    "INSERT INTO alm_agent_memory (kind, subject, tags, content, author, "
+                    "run_id, confidence, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (kind, subject, json.dumps(tags), content, author, run_id,
+                     confidence, _now().isoformat()))
+            log.info("memory_written", kind=kind, subject=subject, author=author)
+            return "remembered"
+
         async with self.owner._conn() as conn, conn.cursor() as cur:
             await cur.execute(
                 "INSERT INTO alm_agent_memory (kind, subject, tags, content, author, "
@@ -109,6 +150,19 @@ class MemoryStore:
             before = len(self._local)
             self._local = [m for m in self._local if m["subject"] != subject]
             return before - len(self._local)
+        if self._sqlite:
+            wanted = {t.strip().lower() for t in (tags or []) if t.strip()}
+            async with self.owner._lock:
+                rows = await self.owner._fetchall(
+                    "SELECT id, tags FROM alm_agent_memory "
+                    "WHERE subject = ? AND superseded = 0", (subject,))
+                ids = [row[0] for row in rows
+                       if not wanted or wanted & set(json.loads(row[1]))]
+                for memory_id in ids:
+                    await self.owner._conn().execute(
+                        "UPDATE alm_agent_memory SET superseded = 1 WHERE id = ?",
+                        (memory_id,))
+            return len(ids)
         async with self.owner._conn() as conn, conn.cursor() as cur:
             if tags:
                 await cur.execute(
@@ -134,6 +188,28 @@ class MemoryStore:
                     and (not kind or m["kind"] == kind)
                     and (not tags or set(tags) & set(m["tags"]))]
             return sorted(rows, key=lambda m: m["created_at"], reverse=True)[:limit]
+
+        if self._sqlite:
+            clauses, params = ["superseded = 0"], []
+            if subject:
+                clauses.append("subject = ?")
+                params.append(subject)
+            if kind:
+                clauses.append("kind = ?")
+                params.append(kind)
+            async with self.owner._lock:
+                rows = await self.owner._fetchall(
+                    f"SELECT {', '.join(_COLUMNS)} FROM alm_agent_memory "
+                    f"WHERE {' AND '.join(clauses)} "
+                    "ORDER BY confidence DESC, created_at DESC", tuple(params))
+            found = []
+            for row in rows:
+                item = dict(zip(_COLUMNS, row, strict=True))
+                item["tags"] = json.loads(item["tags"])
+                item["created_at"] = datetime.fromisoformat(item["created_at"])
+                if not tags or set(tags) & set(item["tags"]):
+                    found.append(item)
+            return found[:limit]
 
         clauses = ["NOT superseded"]
         params: list = []

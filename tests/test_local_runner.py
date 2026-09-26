@@ -572,6 +572,47 @@ def test_a_user_is_classified_once_until_something_is_written_for_them(tmp_path)
     assert CountingBackend.lookups == 2 and "note" not in third
 
 
+def test_agent_memory_outlives_the_process_in_the_local_ledger_file(tmp_path):
+    """Review E1: a local run forgot everything the previous run learned."""
+    from alm_agents.memory import MemoryStore as AgentMemory
+    from alm_core.store.sqlite import SqliteStore
+
+    path = str(tmp_path / "alm.db")
+
+    async def first_run():
+        store = SqliteStore(path)
+        await store.start()
+        await store.migrate()
+        memory = AgentMemory(store)
+        await memory.migrate()
+        assert memory.durable
+        await memory.remember(kind="semantic", content="template X puts users in "
+                              "the Justification field", subject="template-x",
+                              tags=["Parsing"], author="agent", confidence=0.7)
+        await memory.remember(kind="episodic", content="GH22222 not in LDAP",
+                              subject="GH22222", author="agent")
+        await store.close()
+
+    async def second_run():
+        store = SqliteStore(path)
+        await store.start()
+        memory = AgentMemory(store)
+        await memory.migrate()
+        hints = await memory.recall(tags=["parsing"], kind="semantic")
+        brief = await memory.brief(["GH22222"], tags=["parsing"])
+        retired = await memory.supersede("GH22222")
+        after = await memory.recall(subject="GH22222")
+        await store.close()
+        return hints, brief, retired, after
+
+    asyncio.run(first_run())
+    hints, brief, retired, after = asyncio.run(second_run())
+    assert [h["subject"] for h in hints] == ["template-x"]
+    assert hints[0]["tags"] == ["parsing"]
+    assert "GH22222 not in LDAP" in brief and "Justification" in brief
+    assert retired == 1 and after == []
+
+
 def test_a_cut_observation_says_how_much_was_cut():
     from alm_agents.agent import clip_observation
 
