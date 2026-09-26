@@ -282,15 +282,20 @@ class AuditEvent(Strict):
 
 # ----------------------------------------------------------- idempotency keys
 
-def idempotency_key(work_item_id: str, userid: str, operation: Operation | str) -> str:
-    """sha256(work item + user + operation) - stable across runs and processes.
+def idempotency_key(work_item_id: str, userid: str, operation: Operation | str,
+                    variant: str = "") -> str:
+    """sha256(work item + user + operation [+ variant]) - stable across runs.
 
     Deliberately excludes the run id and the timestamp: the whole point is that
     a replayed webhook, a retried node and a manual re-run all derive the *same*
-    key and therefore collapse into one write.
+    key and therefore collapse into one write. ``variant`` distinguishes writes
+    that may legitimately happen more than once - a comment with different
+    content is new information, the same comment again is a replay.
     """
     op = operation.value if isinstance(operation, Operation) else str(operation)
     blob = f"{work_item_id}|{userid.upper()}|{op}"
+    if variant:
+        blob += f"|{variant}"
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 

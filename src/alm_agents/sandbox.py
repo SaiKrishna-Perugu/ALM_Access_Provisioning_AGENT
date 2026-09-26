@@ -274,9 +274,12 @@ class SandboxBackend:
             existing.append(text)
             return True, "comment posted", {"chars": len(text)}
 
+        from alm_core.tools.ewm import comment_fingerprint
+
         return await guarded_write(
             ctx, userid=userid, work_item_id=work_item_id,
-            operation=Operation.WORKITEM_COMMENT, step="workitem_comment", action=post)
+            operation=Operation.WORKITEM_COMMENT, step="workitem_comment",
+            variant=comment_fingerprint(text), action=post)
 
     async def attach_evidence(self, ctx, *, work_item_id, userid, path, filename):
         from alm_core.models import Operation

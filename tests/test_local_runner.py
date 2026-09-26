@@ -979,3 +979,31 @@ def test_the_report_says_what_the_run_cost(tmp_path):
         local_settings(tmp_path / "a"), ScriptedLLM(plan, GUIDED_SCRIPTS),
         decide=approve, thread_id="m-agentic"))
     assert agentic["metrics"]["supervisor_model_calls"] == agentic["hops"]
+
+
+# --------------------------------------------- T10: comment ledger key by content
+
+def test_new_comment_content_is_posted_and_repeated_content_is_a_replay(tmp_path):
+    from alm_core.store.memory import MemoryStore
+    from alm_core.tools.base import ToolContext
+
+    estate = SandboxEstate.default()
+    backend = SandboxBackend(estate)
+    ctx = ToolContext(settings=local_settings(tmp_path), client=None,
+                      store=MemoryStore(), run_id="r")
+    ctx.approval = ApprovalDecision(thread_id="t", approved=True, approver="test:me",
+                                    approved_userids=["AB12345"])
+
+    async def post(text):
+        return await backend.post_comment(ctx, work_item_id="1001", userid="AB12345",
+                                          text=text, marker="")
+
+    async def scenario():
+        first = await post("AB12345: ALICE SMITH: User added to JTS - (active)")
+        later = await post("AB12345: ALICE SMITH: evidence attached - (active)")
+        again = await post("AB12345: ALICE SMITH: evidence attached - (active)")
+        return first, later, again
+
+    first, later, again = asyncio.run(scenario())
+    assert (first.replayed, later.replayed, again.replayed) == (False, False, True)
+    assert len(estate.comments["1001"]) == 2

@@ -79,13 +79,14 @@ async def guarded_write(
     operation: Operation,
     action: Callable[[], Awaitable[tuple[bool, str, dict]]],
     step: str = "",
+    variant: str = "",
 ) -> ProvisionResult:
     """Run one write under shadow mode, approval, idempotency and audit.
 
     ``action`` returns ``(ok, message, detail)`` and is only awaited when all
     four guards pass. It must perform exactly one logical write.
     """
-    key = idempotency_key(work_item_id, userid, operation)
+    key = idempotency_key(work_item_id, userid, operation, variant)
     step = step or operation.value
     base = {"userid": userid, "operation": operation, "work_item_id": work_item_id,
             "idempotency_key": key}

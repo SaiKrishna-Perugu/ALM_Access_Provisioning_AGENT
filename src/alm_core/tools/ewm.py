@@ -253,7 +253,15 @@ async def post_comment(ctx: ToolContext, *, work_item_id: str, userid: str, text
     return await guarded_write(
         ctx, userid=userid, work_item_id=work_item_id,
         operation=Operation.WORKITEM_COMMENT, step="closure",
+        variant=comment_fingerprint(text),
         action=lambda: to_thread(_post_comment, ctx, work_item_id, text, marker))
+
+
+def comment_fingerprint(text: str) -> str:
+    """Stable identity of a comment's content, for the ledger key."""
+    import hashlib
+
+    return hashlib.sha256(normalize_comment(text).encode("utf-8")).hexdigest()[:16]
 
 
 # ----------------------------------------------------------------- attachments
