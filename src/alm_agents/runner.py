@@ -30,7 +30,8 @@ class Console:
 
     def __call__(self, kind: str, data: dict) -> None:
         if kind == "supervisor":
-            tag = " (fallback)" if data.get("fallback") else ""
+            tag = (" (fixed order)" if data.get("guided")
+                   else " (fallback)" if data.get("fallback") else "")
             self.line("")
             self.line(f"[hop {data.get('hop')}] supervisor -> {data.get('next')}{tag}")
             if data.get("why"):

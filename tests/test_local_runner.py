@@ -56,8 +56,8 @@ class Events(Console):
         self.events.append((kind, data))
 
 
-def local_settings(tmp_path, *, commit=True, **extra) -> Settings:
-    base = Settings(_env_file=None, environment="TEST", orchestration="agentic",
+def local_settings(tmp_path, *, commit=True, orchestration="agentic", **extra) -> Settings:
+    base = Settings(_env_file=None, environment="TEST", orchestration=orchestration,
                     llm_enabled=True, ledger_path=str(tmp_path / "local" / "alm.db"),
                     shadow_mode=not commit, **extra)
     return base
@@ -826,3 +826,76 @@ def test_the_prompted_password_is_kept_for_the_whole_run():
     for _ in range(3):
         assert resolver.get("pw", refresh=True) == "typed-once"  # a 403 re-auth
     assert CountingPrompt.calls == 1
+
+
+
+# ------------------------------------------------------ T1: guided orchestration
+
+GUIDED_SCRIPTS = {
+    "triage": [[("fetch_open_requests", {"limit": 10})]],
+    "validator": [[("classify_user", {"userid": "AB12345"})]],
+    "risk_officer": [[("request_human_approval",
+                       {"reason": "one import", "userids": ["AB12345"]})]],
+    "provisioner": [[("provision_jts_user", {"userid": "AB12345"}),
+                     ("request_ad_group_membership", {"userid": "AB12345"})]],
+    "verifier": [[("check_jazz_permission", {"userid": "AB12345"})]],
+    "evidence_officer": [
+        [("capture_evidence", {"userids": ["AB12345"]})],
+        [("attach_workitem_evidence", {"work_item_id": "1001", "userid": "AB12345"})]],
+    "closer": [[("post_workitem_comment", {"work_item_id": "1001"})]],
+}
+
+
+def test_guided_mode_runs_the_routine_path_without_asking_the_supervisor(tmp_path):
+    llm = ScriptedLLM([], GUIDED_SCRIPTS)   # a consulted supervisor would say DONE
+    estate = SandboxEstate.default()
+    report = asyncio.run(one_process(local_settings(tmp_path, orchestration="guided"),
+                                     llm, decide=approve, thread_id="guided",
+                                     estate=estate))
+    assert not report["halted"], report["halt_reason"]
+    assert llm.supervisor_calls == 0
+    assert "AB12345" in estate.ad_requests
+    assert estate.attachments["1001"] == ["AB12345.png"]
+    assert len(estate.comments["1001"]) == 1
+
+
+def test_guided_mode_asks_the_supervisor_when_an_agent_is_refused(tmp_path):
+    scripts = {**GUIDED_SCRIPTS,
+               # Tries to write before approval: a real (non-dry-run) refusal.
+               "validator": [[("classify_user", {"userid": "AB12345"}),
+                              ("provision_jts_user", {"userid": "AB12345"})]]}
+    llm = ScriptedLLM(["risk_officer", "DONE"], scripts)
+    asyncio.run(one_process(local_settings(tmp_path, orchestration="guided"), llm,
+                            decide=approve, thread_id="guided-exc"))
+    assert llm.supervisor_calls >= 1
+
+
+def test_guided_dry_run_denials_do_not_need_the_supervisor(tmp_path):
+    llm = ScriptedLLM([], GUIDED_SCRIPTS)
+    report = asyncio.run(one_process(
+        local_settings(tmp_path, commit=False, orchestration="guided"), llm,
+        decide=approve, thread_id="guided-dry"))
+    assert llm.supervisor_calls == 0
+    assert report["policy"]["writes"] == 0
+
+
+def test_a_refused_agent_is_not_counted_as_done():
+    from alm_agents.supervisor import guided_next
+
+    history = [
+        {"agent": "triage", "stopped": "finish", "denials": 0},
+        {"agent": "closer", "stopped": "finish", "denials": 1},
+        {"agent": "approval", "stopped": "approved", "denials": 0},
+        {"agent": "risk_officer", "stopped": "finish", "denials": 0},
+    ]
+    snapshot = {"verified": ["AB12345"], "approved": True}
+    names = []
+    for _ in range(8):
+        decision = guided_next(history, snapshot, shadow=False)
+        names.append(decision.next_agent)
+        if decision.done:
+            break
+        history.append({"agent": decision.next_agent, "stopped": "finish", "denials": 0})
+    assert "closer" in names and names[-1] == "DONE"
+    assert guided_next([{"agent": "validator", "stopped": "iteration limit"}],
+                       snapshot, shadow=False) is None

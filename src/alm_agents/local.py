@@ -131,13 +131,19 @@ def build_settings(*, commit: bool, model: str = "", rpm: float = 0.0,
     if environment == "UNKNOWN":
         raise SetupError("cannot tell TEST from PROD from EWM_SERVER / JTS_SERVER. "
                          "Set ALM_ENV=TEST or ALM_ENV=PROD in .env.")
+    # Guided by default: the fixed order runs the routine steps and the
+    # supervisor model is consulted only when something goes wrong.
+    orchestration = os.getenv("ALM_ORCHESTRATION", "").strip().lower() or "guided"
+    if orchestration not in ("guided", "agentic"):
+        raise SetupError(f"ALM_ORCHESTRATION={orchestration} is not supported by local "
+                         "runs. Use guided (default) or agentic.")
     try:
         verify = alm_config.tls_verify()
     except SystemExit as err:  # the CLI helper stops with a message; show it instead
         raise SetupError(str(err)) from err
 
     overrides: dict = {
-        "environment": environment, "orchestration": "agentic", "llm_enabled": True,
+        "environment": environment, "orchestration": orchestration, "llm_enabled": True,
         "postgres_dsn": "", "ledger_path": ledger_path or str(DEFAULT_LEDGER),
         "shadow_mode": not commit,
         # TLS exactly as the CLI resolves it: a CA bundle path, the default
@@ -485,7 +491,8 @@ def main(argv: list[str] | None = None) -> int:
         mode = "WRITES ENABLED" if args.commit else "DRY RUN (nothing is written)"
         scope = ", ".join(args.work_item or []) or "the whole active queue"
         console.line(f"ALM agents, local - {settings.environment} - {mode}")
-        console.line(f"model {settings.llm_provider}:{settings.agent_model}   scope {scope}")
+        console.line(f"model {settings.llm_provider}:{settings.agent_model}   "
+                     f"orchestration {settings.orchestration}   scope {scope}")
         if not args.work_item and not args.resume:
             console.line("tip: limit a first run with --work-item <id>")
 

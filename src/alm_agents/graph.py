@@ -253,7 +253,7 @@ async def build_runtime(settings=None, *, notifier=None, skip_ad: bool = False):
 
     try:
         async with checkpointer_for(settings) as checkpointer:
-            if settings.orchestration == "agentic":
+            if settings.orchestration in ("agentic", "guided"):
                 from . import llm as llm_module
                 from .agentic import AgenticRuntime, build_agentic_graph
                 from .memory import MemoryStore

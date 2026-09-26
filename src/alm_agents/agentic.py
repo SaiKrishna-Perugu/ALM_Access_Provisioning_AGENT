@@ -41,7 +41,7 @@ from .nodes.auditor import summarise
 from .policy import PolicyEngine
 from .roster import ROSTER
 from .state import PipelineState, halt
-from .supervisor import MAX_HOPS, decide, honour_handoff
+from .supervisor import MAX_HOPS, decide, guided_next, honour_handoff
 from .toolkit import Backend, Blackboard, build_registry, context_for
 
 log = get_logger("alm.agentic")
@@ -62,6 +62,9 @@ class AgenticRuntime:
         self.notifier = notifier
         # on_event(kind, data): live progress for a terminal or a UI. Optional.
         self.on_event = on_event
+        # Guided: the fixed order routes routine steps; the supervisor model is
+        # asked only when something did not go to plan.
+        self.guided = getattr(ctx.settings, "orchestration", "") == "guided"
         self.board = Blackboard()
         self.registry = build_registry(ctx, self.board, self.memory,
                                        shots_dir=shots_dir, backend=backend)
@@ -133,17 +136,23 @@ def make_supervisor_node(runtime: AgenticRuntime):
                     "next_agent": "DONE"}
 
         snapshot = runtime.snapshot(state)
-        decision = await decide(
-            runtime.supervisor_llm,
-            history=state.get("agent_history") or [],
-            board_snapshot=snapshot,
-            policy_summary=runtime.policy.summary(),
-            hint=state.get("handoff_hint", ""))
+        history = state.get("agent_history") or []
+        decision = (guided_next(history, snapshot, shadow=runtime.policy.shadow)
+                    if runtime.guided else None)
+        guided = decision is not None
+        if decision is None:
+            decision = await decide(
+                runtime.supervisor_llm,
+                history=history,
+                board_snapshot=snapshot,
+                policy_summary=runtime.policy.summary(),
+                hint=state.get("handoff_hint", ""))
 
         log.info("supervisor_decision", next=decision.next_agent,
                  why=decision.why[:160], fallback=decision.fallback, hop=hops + 1)
         runtime.emit("supervisor", next=decision.next_agent, why=decision.why,
-                     task=decision.task, fallback=decision.fallback, hop=hops + 1)
+                     task=decision.task, fallback=decision.fallback, hop=hops + 1,
+                     guided=guided)
 
         await runtime.ctx.store.record(AuditEvent(
             run_id=state.get("run_id", ""), thread_id=state.get("thread_id", ""),

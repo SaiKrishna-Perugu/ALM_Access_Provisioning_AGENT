@@ -92,6 +92,47 @@ def _history_digest(history: list[dict], limit: int = 8) -> str:
     return "\n".join(lines)
 
 
+# How an agent's turn ended when it did its job: it declared itself done, or
+# named who should continue. Anything else - a timeout, the iteration limit, a
+# model error, an answer without a tool call - is an exception.
+_CLEAN_STOPS = {"finish", "handoff"}
+
+
+def guided_next(history: list[dict], board_snapshot: dict, *,
+                shadow: bool) -> Decision | None:
+    """The next step in the fixed order, or None when judgement is needed.
+
+    Guided orchestration: the routine path costs no model call. The supervisor
+    model is consulted only when the last agent did not finish cleanly, or was
+    refused by the policy engine for a reason other than dry-run mode - the
+    situations where the fixed order cannot know what to do.
+    """
+    turns = [e for e in history if e.get("agent") != "approval"]
+    if turns:
+        last = turns[-1]
+        if last.get("stopped") not in _CLEAN_STOPS:
+            return None
+        if last.get("denials") and not shadow:
+            return None
+
+    # An agent counts as done only if its latest turn ended cleanly. One that
+    # was refused (the closer before approval, say) runs again once unblocked.
+    latest = {e.get("agent"): e for e in turns}
+    done = {name for name, e in latest.items()
+            if e.get("stopped") in _CLEAN_STOPS and (shadow or not e.get("denials"))}
+    for name in NOMINAL_SEQUENCE:
+        if name in done:
+            continue
+        if name in ("evidence_officer", "closer") and not board_snapshot.get("verified"):
+            continue
+        if name == "provisioner" and not board_snapshot.get("approved"):
+            continue
+        return Decision(next_agent=name,
+                        task=f"Perform your part for this run: {name}.",
+                        why="fixed order: the next routine step")
+    return Decision(next_agent="DONE", task="", why="fixed order complete")
+
+
 def deterministic_next(history: list[dict], board_snapshot: dict) -> Decision:
     """The fallback route: the nominal sequence, skipping what cannot apply.
 

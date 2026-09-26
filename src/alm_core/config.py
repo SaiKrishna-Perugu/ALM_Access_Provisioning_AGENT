@@ -178,7 +178,7 @@ class Settings(BaseSettings):
                      "recovered ID is HIGH risk and goes to a human regardless."))
 
     # ---------------------------------------------------- orchestration
-    orchestration: Literal["agentic", "deterministic"] = Field(
+    orchestration: Literal["guided", "agentic", "deterministic"] = Field(
         default="agentic",
         description=("agentic: an LLM supervisor routes autonomous tool-calling agents. "
                      "deterministic: the fixed graph, no routing model. The agentic "
@@ -237,7 +237,7 @@ class Settings(BaseSettings):
         # The Gemini API key is not checked here: it is a secret, resolved by
         # credentials.gemini_api_key() from the environment, a mounted file or
         # Secret Manager, and never held on this object.
-        if (self.orchestration == "agentic" and self.llm_enabled
+        if (self.orchestration in ("agentic", "guided") and self.llm_enabled
                 and self.llm_provider == "vertex" and not self.project_id):
             raise ValueError(
                 "ALM_LLM_PROVIDER=vertex needs GOOGLE_CLOUD_PROJECT: the Vertex AI "
@@ -249,9 +249,9 @@ class Settings(BaseSettings):
             raise ValueError(
                 "Claude models are served through Vertex AI Model Garden, not the "
                 "Gemini API. Set ALM_LLM_PROVIDER=vertex, or choose a gemini-* model.")
-        if self.orchestration == "agentic" and not self.llm_enabled:
+        if self.orchestration in ("agentic", "guided") and not self.llm_enabled:
             raise ValueError(
-                "ALM_ORCHESTRATION=agentic contradicts ALM_LLM_ENABLED=false. Choose "
+                f"ALM_ORCHESTRATION={self.orchestration} contradicts ALM_LLM_ENABLED=false. Choose "
                 "one: agentic routing with a model, or the deterministic graph.")
         if not self.shadow_mode and not (self.postgres_dsn or self.ledger_path):
             raise ValueError(
