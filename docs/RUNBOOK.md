@@ -264,7 +264,7 @@ change, reviewed like any other code.
 | `the server rejected the user ID or password` | Wrong CID or password. Nothing was written |
 | `the login was accepted but the session did not verify` | The account signs in but cannot open that server - check access in a browser |
 | `ALM_CA_BUNDLE points at ... which does not exist` | Point it at the corporate CA `.pem`, as for the CLI |
-| `ALM_TLS_INSECURE cannot be set when ... PROD` | Production requires verified TLS: set `ALM_CA_BUNDLE` |
+| `ALM_TLS_INSECURE cannot be set when ... PROD` / `Refusing to send credentials over unverified TLS (PROD)` (or `UNKNOWN`) | Only TEST may run unverified. Set `ALM_CA_BUNDLE` (or `ALM_TLS_VERIFY=true`); for UNKNOWN, also set `EWM_SERVER`/`JTS_SERVER` |
 | AD step failed: `no debug Chrome at ...` | Run `scripts\start-gpt.ps1`, sign in to GPT, then `--resume` the run |
 | `the agent model is unavailable` | Key or model problem: `python src/agent_local.py --check` |
 | Closed the terminal at the approval prompt | Nothing was written. `--resume last --commit` (or `--resume <thread-id> --commit`) brings the prompt back |

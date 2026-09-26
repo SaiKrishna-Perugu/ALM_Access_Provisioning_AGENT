@@ -115,11 +115,15 @@ def tls_verify():
             "[STOP] ALM_TLS_VERIFY=strict but no ALM_CA_BUNDLE is configured. "
             "Point ALM_CA_BUNDLE at the corporate CA bundle to run verified.")
 
+    # Unverified TLS is tolerated only where we know it is TEST. PROD refuses,
+    # and so does UNKNOWN: with no servers configured we cannot tell which
+    # estate the credentials are about to be sent to.
     env = alm_env()
-    if env == "PROD":
+    if env != "TEST":
         raise SystemExit(
-            "[STOP] Refusing to run over unverified TLS in PRODUCTION (ALM_TLS_INSECURE is not allowed). "
-            "Configure ALM_CA_BUNDLE or ALM_TLS_VERIFY.")
+            f"[STOP] Refusing to send credentials over unverified TLS ({env}). Set "
+            "ALM_CA_BUNDLE to the corporate CA bundle (.pem), or ALM_TLS_VERIFY=true "
+            "if the corporate CA is in the system trust store.")
 
     if not _warned:
         _warned = True

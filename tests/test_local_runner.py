@@ -238,7 +238,7 @@ def test_unknown_environment_is_refused(env):
 
 def test_production_refuses_unverified_tls(env):
     env(PROD_EWM, PROD_JTS)
-    with pytest.raises(local.SetupError, match="ALM_TLS_INSECURE"):
+    with pytest.raises(local.SetupError, match=r"unverified TLS \(PROD\)"):
         local.build_settings(commit=True)
 
 

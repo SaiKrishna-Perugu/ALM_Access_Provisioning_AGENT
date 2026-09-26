@@ -111,7 +111,15 @@ def test_unconfigured_tls_refuses_in_production(monkeypatch):
     monkeypatch.setenv("ALM_ENV", "PROD")
     with pytest.raises(SystemExit) as exc_info:
         alm_config.tls_verify()
-    assert "Refusing to run over unverified TLS in PRODUCTION" in str(exc_info.value)
+    assert "unverified TLS (PROD)" in str(exc_info.value)
+
+
+def test_unconfigured_tls_refuses_when_the_environment_is_unknown(monkeypatch):
+    """No servers configured: we cannot tell where the password would go."""
+    for name in ("ALM_TLS_VERIFY", "ALM_CA_BUNDLE", "ALM_ENV", "EWM_SERVER", "JTS_SERVER"):
+        monkeypatch.delenv(name, raising=False)
+    with pytest.raises(SystemExit, match=r"unverified TLS \(UNKNOWN\)"):
+        alm_config.tls_verify()
 
 
 # ------------------------------------------------------------- PROD gate
