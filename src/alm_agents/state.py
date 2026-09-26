@@ -45,6 +45,10 @@ class PipelineState(TypedDict, total=False):
     thread_id: str
     environment: str
     trigger: str                     # "webhook" | "reconcile" | "manual"
+    # "dry-run" or "commit", fixed when the run starts. A resume must match it:
+    # otherwise a dry run's preview approval could authorise real writes, or a
+    # paused real run could silently become a dry run.
+    run_mode: str
 
     # --- intake -------------------------------------------------------------
     work_item_ids: list[str]
@@ -87,12 +91,13 @@ class PipelineState(TypedDict, total=False):
 
 
 def new_state(run_id: str, thread_id: str, environment: str,
-              trigger: str = "manual", work_item_ids: list[str] | None = None
-              ) -> PipelineState:
+              trigger: str = "manual", work_item_ids: list[str] | None = None,
+              run_mode: str = "") -> PipelineState:
     return PipelineState(
         run_id=run_id,
         thread_id=thread_id,
         environment=environment,
+        run_mode=run_mode,
         trigger=trigger,
         work_item_ids=work_item_ids or [],
         work_items=[],

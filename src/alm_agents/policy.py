@@ -145,6 +145,11 @@ class PolicyEngine:
         if not getattr(self.approval, "approved", False):
             return self._deny(tool, "the human rejected this batch; no write is permitted")
 
+        if is_preview_approval(self.approval):
+            return self._deny(
+                tool, "the only approval is a dry-run preview, which cannot authorise a "
+                      "write. A human must approve this batch in a --commit run.")
+
         if userid and not self.approval.covers(userid):
             return self._deny(
                 tool, f"the approval does not cover {userid}. Only these users were "
@@ -164,11 +169,20 @@ class PolicyEngine:
         return {
             "tool_calls": self.tool_calls,
             "writes": self.writes_performed,
+            "prod_confirmed": self.prod_confirmed,
             "denials": len(self.denials),
             "denial_reasons": [d["reason"][:120] for d in self.denials[:10]],
             "shadow": self.shadow,
             "environment": self.environment,
         }
+
+
+def is_preview_approval(approval) -> bool:
+    """True for the automatic approval a dry run records to show its plan."""
+    return str(getattr(approval, "approver", "") or "").startswith(PREVIEW_APPROVER_PREFIX)
+
+
+PREVIEW_APPROVER_PREFIX = "dry-run:"
 
 
 def operation_for(tool: str) -> Operation | None:

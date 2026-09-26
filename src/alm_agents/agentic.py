@@ -81,6 +81,15 @@ class AgenticRuntime:
         if approval is not None:
             self.policy.approval = approval
             self.ctx.approval = approval
+        # Policy state that must survive a resume in a new process: the PROD
+        # confirmation and the run's budgets. Counters only ever move forward.
+        saved = state.get("policy") or {}
+        self.policy.prod_confirmed = self.policy.prod_confirmed or bool(
+            saved.get("prod_confirmed"))
+        self.policy.tool_calls = max(self.policy.tool_calls,
+                                     int(saved.get("tool_calls") or 0))
+        self.policy.writes_performed = max(self.policy.writes_performed,
+                                           int(saved.get("writes") or 0))
         self.ctx.run_id = state.get("run_id", "") or self.ctx.run_id
         self.ctx.thread_id = state.get("thread_id", "") or self.ctx.thread_id
 
@@ -303,6 +312,7 @@ def make_agentic_approval_node(runtime: AgenticRuntime):
         return PipelineState(approval=decision, approval_request=request,
                              plan_hash=request.plan_hash,
                              board=runtime.board.to_state(),
+                             policy=runtime.policy.summary(),
                              agent_history=[{
                                  "agent": "approval", "calls": 0, "denials": 0,
                                  "output": (f"approved by {decision.approver} for "
@@ -355,6 +365,22 @@ def make_agentic_auditor_node(runtime: AgenticRuntime):
 
 # ------------------------------------------------------------------- assembly
 
+def needs_approval(state: PipelineState) -> bool:
+    """Whether the gate must open before anything else happens.
+
+    Either an agent asked for a human and nobody has decided, or the run now
+    holds users the existing approval never showed to anyone.
+    """
+    board = state.get("board") or {}
+    approval = state.get("approval")
+    if approval is None:
+        return bool(board.get("approval_requested"))
+    approved = {u.upper() for u in (getattr(approval, "approved_userids", None) or [])}
+    if not approved or not getattr(approval, "approved", False):
+        return False  # a legacy decision, or a rejection that already halted the run
+    return bool({u.upper() for u in (board.get("users") or {})} - approved)
+
+
 def route_from_supervisor(state: PipelineState) -> str:
     """Where the supervisor's decision actually sends the run."""
     if state.get("halted"):
@@ -365,8 +391,7 @@ def route_from_supervisor(state: PipelineState) -> str:
     # An agent asked for a human, and none has decided yet: the gate takes
     # priority over whatever the supervisor picked, because no write may
     # proceed without it anyway.
-    board = state.get("board") or {}
-    if board.get("approval_requested") and state.get("approval") is None:
+    if needs_approval(state):
         return "approval"
     return "agent"
 
@@ -374,8 +399,7 @@ def route_from_supervisor(state: PipelineState) -> str:
 def route_from_agent(state: PipelineState) -> str:
     if state.get("halted"):
         return "auditor"
-    board = state.get("board") or {}
-    if board.get("approval_requested") and state.get("approval") is None:
+    if needs_approval(state):
         return "approval"
     return "supervisor"
 

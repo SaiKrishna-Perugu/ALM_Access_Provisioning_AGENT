@@ -89,7 +89,10 @@ class Blackboard:
             UserState.UNKNOWN: "unknown - not validated",
         }
         items: list[ApprovalItem] = []
-        for userid in (self.approval_userids or sorted(self.users)):
+        # Every user in the run goes on the card, not only the ones an agent
+        # selected: the approval then covers exactly what the human saw, and
+        # anyone added later has to come back for a new decision.
+        for userid in sorted(set(self.approval_userids) | set(self.users)):
             user = self.users.get(userid)
             if user is None:
                 continue

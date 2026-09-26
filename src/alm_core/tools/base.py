@@ -98,7 +98,8 @@ async def guarded_write(
         return result
 
     # 2. Approval. An unapproved write is a bug, not a decision to make here.
-    if ctx.approval is None or not ctx.approval.covers(userid):
+    preview = str(getattr(ctx.approval, "approver", "") or "").startswith("dry-run:")
+    if ctx.approval is None or preview or not ctx.approval.covers(userid):
         result = ProvisionResult(**base, outcome=Outcome.NOT_ATTEMPTED,
                                  message="no human approval covers this user")
         await record(ctx, result, step)

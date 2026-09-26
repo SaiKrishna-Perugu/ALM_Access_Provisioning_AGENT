@@ -592,3 +592,122 @@ def test_evidence_uses_edge_on_windows_unless_configured(monkeypatch):
     assert evidence.browser_channel() == ""
     monkeypatch.setenv("ALM_BROWSER_HEADED", "true")
     assert evidence.browser_headed()
+
+
+# ------------------------------------------------------------ T9: run integrity
+
+def test_a_paused_dry_run_cannot_be_resumed_as_a_commit(tmp_path):
+    """Review finding: a dry run's preview approval became real on --resume --commit."""
+    from alm_agents.runner import RunModeMismatch
+
+    asyncio.run(one_process(
+        local_settings(tmp_path, commit=False),
+        ScriptedLLM(PLAN_TO_APPROVAL, SCRIPTS_TO_APPROVAL),
+        decide=walk_away, thread_id="dry-1"))
+    with pytest.raises(RunModeMismatch, match="dry-run"):
+        asyncio.run(one_process(
+            local_settings(tmp_path, commit=True),
+            ScriptedLLM(["provisioner", "DONE"], PROVISION),
+            decide=approve, thread_id="dry-1", resume=True))
+
+
+def test_a_paused_commit_run_cannot_be_resumed_as_a_dry_run(tmp_path):
+    """Review finding: --resume without --commit silently spent a real run's pause."""
+    from alm_agents.runner import RunModeMismatch
+
+    asyncio.run(one_process(
+        local_settings(tmp_path, commit=True),
+        ScriptedLLM(PLAN_TO_APPROVAL, SCRIPTS_TO_APPROVAL),
+        decide=walk_away, thread_id="real-1"))
+    with pytest.raises(RunModeMismatch, match="--resume real-1 --commit"):
+        asyncio.run(one_process(
+            local_settings(tmp_path, commit=False),
+            ScriptedLLM(["provisioner", "DONE"], PROVISION),
+            decide=approve, thread_id="real-1", resume=True))
+
+
+def test_a_preview_approval_never_authorises_a_write():
+    from alm_agents.policy import PolicyEngine
+    from alm_core.errors import ApprovalRequired
+    from alm_core.models import Operation
+    from alm_core.store.memory import MemoryStore
+    from alm_core.tools.base import ToolContext, guarded_write
+
+    preview = ApprovalDecision(thread_id="t", approved=True,
+                               approver="dry-run:auto-approve",
+                               approved_userids=["AB12345"])
+    policy = PolicyEngine(shadow=False, environment="TEST", approval=preview)
+    verdict = policy.check("provision_jts_user", {"userid": "AB12345"})
+    assert not verdict and "dry-run preview" in verdict.reason
+
+    class Committing:
+        shadow_mode = False
+        environment = "TEST"
+        max_concurrent_writes = 1
+
+    ctx = ToolContext(settings=Committing(), client=None, store=MemoryStore(),
+                      run_id="r", approval=preview)
+
+    async def write():
+        return await guarded_write(ctx, userid="AB12345", work_item_id="1001",
+                                   operation=Operation.JTS_CREATE,
+                                   action=lambda: pytest.fail("the write ran"))
+
+    with pytest.raises(ApprovalRequired):
+        asyncio.run(write())
+
+
+def test_an_approval_covers_only_the_users_on_the_card(tmp_path):
+    """Review finding: one 'y' covered users added after the human approved."""
+    seen = []
+
+    def record(payload):
+        from alm_agents.runner import ask_for_decision
+
+        seen.append(sorted(i["userid"] for i in payload["items"]))
+        # The real decision path: what the operator gets after typing "y".
+        return ask_for_decision(payload, auto=True, console=Events(),
+                                approver_prefix="test")
+
+    llm = ScriptedLLM(
+        ["triage", "validator", "risk_officer", "validator", "provisioner", "DONE"], {
+            "triage": [[("fetch_open_requests", {"limit": 10})]],
+            "validator": [[("classify_user", {"userid": "AB12345"})],
+                          [("finish", {"summary": "ok"})],
+                          # After the approval: a user nobody has seen yet.
+                          [("classify_user", {"userid": "TB22322"})]],
+            "risk_officer": [[("request_human_approval",
+                               {"reason": "one import", "userids": ["AB12345"]})]],
+            "provisioner": [[("provision_jts_user", {"userid": "AB12345"})]],
+        })
+    report = asyncio.run(one_process(local_settings(tmp_path), llm, decide=record,
+                                     thread_id="cover"))
+    assert report["approval_rounds"] == 2
+    assert "TB22322" not in seen[0] and "TB22322" in seen[1]
+
+
+def test_the_decision_names_the_users_it_covers():
+    from alm_agents.runner import ask_for_decision
+
+    decision = ask_for_decision(
+        {"thread_id": "t", "plan_hash": "h",
+         "items": [{"userid": "AB12345", "risk": "low", "state": "ready"},
+                   {"userid": "CD67890", "risk": "low", "state": "archived"}]},
+        auto=True, console=Events(), approver_prefix="local")
+    assert decision.approved_userids == ["AB12345", "CD67890"]
+    assert not decision.covers("EF11111")
+
+
+def test_a_resumed_run_keeps_its_prod_confirmation_and_budgets(tmp_path):
+    from alm_agents.agentic import AgenticRuntime
+    from alm_agents.memory import MemoryStore as AgentMemory
+    from alm_core.store.memory import MemoryStore
+    from alm_core.tools.base import ToolContext
+
+    ctx = ToolContext(settings=local_settings(tmp_path), client=None,
+                      store=MemoryStore(), run_id="")
+    runtime = AgenticRuntime(ctx, llm=None, memory=AgentMemory(None),
+                             backend=SandboxBackend(SandboxEstate.default()))
+    runtime.sync_from({"policy": {"prod_confirmed": True, "writes": 7, "tool_calls": 40}})
+    assert runtime.policy.prod_confirmed
+    assert (runtime.policy.writes_performed, runtime.policy.tool_calls) == (7, 40)

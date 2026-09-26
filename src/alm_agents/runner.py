@@ -91,9 +91,13 @@ def ask_for_decision(payload: dict, *, auto: bool, console: Console,
         approved = answer in {"y", "yes"}
         approver = f"{approver_prefix}:{getpass.getuser()}"
         comment = "approved at the terminal" if approved else "rejected at the terminal"
+    # The decision covers exactly the users the human was shown - never
+    # "everyone", which would include users added to the run afterwards.
+    shown = [str(item.get("userid", "")) for item in payload.get("items", [])
+             if item.get("userid")]
     return ApprovalDecision(thread_id=payload.get("thread_id", ""), approved=approved,
                             approver=approver, plan_hash=payload.get("plan_hash", ""),
-                            comment=comment)
+                            comment=comment, approved_userids=shown)
 
 
 async def pending_interrupt(graph, thread_id: str) -> dict | None:
@@ -114,6 +118,19 @@ async def pending_interrupt(graph, thread_id: str) -> dict | None:
 MAX_APPROVAL_ROUNDS = 3
 
 
+class RunModeMismatch(Exception):
+    """A resume asked for a different mode than the run started in."""
+
+    def __init__(self, thread_id: str, recorded: str, requested: str):
+        self.thread_id, self.recorded, self.requested = thread_id, recorded, requested
+        flag = " --commit" if recorded == "commit" else ""
+        super().__init__(
+            f"run {thread_id} was started as a {recorded or 'run of unknown mode'}, "
+            f"but this resume is a {requested}. "
+            + (f"Resume it the same way: --resume {thread_id}{flag}"
+               if recorded else "Start a new run instead."))
+
+
 async def drive(graph, ctx, *, thread_id: str, decide, console: Console,
                 resume: bool = False, work_item_ids: list[str] | None = None,
                 trigger: str = "manual") -> dict:
@@ -132,6 +149,13 @@ async def drive(graph, ctx, *, thread_id: str, decide, console: Console,
         snapshot = await graph.aget_state(config)
         if not snapshot.values:
             raise LookupError(f"no saved run with thread id {thread_id!r}")
+        from .graph import run_mode_of
+
+        recorded, requested = snapshot.values.get("run_mode", ""), run_mode_of(ctx)
+        # Unknown mode (a run from before modes were recorded) may only be
+        # resumed as a dry run: it can never be promoted to writing.
+        if recorded != requested and (recorded or requested == "commit"):
+            raise RunModeMismatch(thread_id, recorded, requested)
         ctx.run_id = snapshot.values.get("run_id", "")
         ctx.thread_id = thread_id
         bind_run(run_id=ctx.run_id, thread_id=thread_id)

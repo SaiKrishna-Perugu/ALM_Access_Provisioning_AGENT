@@ -408,7 +408,7 @@ def main(argv: list[str] | None = None) -> int:
     except (AttributeError, ValueError):
         pass
 
-    from .runner import Console, print_report, save_report
+    from .runner import Console, RunModeMismatch, print_report, save_report
 
     console = Console(verbose=args.verbose)
     try:
@@ -441,6 +441,13 @@ def main(argv: list[str] | None = None) -> int:
         report = asyncio.run(run(settings, args, console))
     except SetupError as err:
         console.line(f"setup: {err}")
+        return 2
+    except RunModeMismatch as err:
+        console.line(f"resume refused: {err}")
+        return 2
+    except LookupError as err:
+        console.line(f"resume: {err}. The thread id is shown when a run starts and "
+                     "in its report under out/local/.")
         return 2
     except KeyboardInterrupt:
         console.line("\ninterrupted. Continue later with --resume <thread-id> "
