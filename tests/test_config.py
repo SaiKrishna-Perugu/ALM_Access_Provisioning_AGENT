@@ -93,6 +93,18 @@ def test_unconfigured_tls_is_unverified_and_warns(monkeypatch, capsys):
     assert "verification is DISABLED" in capsys.readouterr().err
 
 
+def test_a_blank_env_value_falls_back_to_the_default(monkeypatch):
+    """.env.example ships NAME= for every key; blank must not become the setting."""
+    monkeypatch.setenv("GROUP_NAME", "")
+    assert alm_config.env_or("GROUP_NAME", "GR_D-JazzUser-NA") == "GR_D-JazzUser-NA"
+    monkeypatch.setenv("GROUP_NAME", "   ")
+    assert alm_config.env_or("GROUP_NAME", "GR_D-JazzUser-NA") == "GR_D-JazzUser-NA"
+    monkeypatch.delenv("GROUP_NAME")
+    assert alm_config.env_or("GROUP_NAME", "GR_D-JazzUser-NA") == "GR_D-JazzUser-NA"
+    monkeypatch.setenv("GROUP_NAME", "GR_TEAM")
+    assert alm_config.env_or("GROUP_NAME", "GR_D-JazzUser-NA") == "GR_TEAM"
+
+
 def test_unconfigured_tls_refuses_in_production(monkeypatch):
     monkeypatch.delenv("ALM_TLS_VERIFY", raising=False)
     monkeypatch.delenv("ALM_CA_BUNDLE", raising=False)

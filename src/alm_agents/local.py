@@ -34,7 +34,7 @@ from urllib.parse import urlparse
 ROOT = Path(__file__).resolve().parents[2]
 OUT_DIR = ROOT / "out" / "local"
 DEFAULT_LEDGER = OUT_DIR / "alm.db"
-DEFAULT_GPT_URL = os.getenv("GPT_URL", "https://gpt.example.intra/GlobalProvisioningTool/home.jsf")
+DEFAULT_GPT_URL = "https://gpt.example.intra/GlobalProvisioningTool/home.jsf"
 
 
 class SetupError(Exception):
@@ -204,9 +204,11 @@ def build_settings(*, commit: bool, model: str = "", rpm: float = 0.0,
 
 def gpt_target() -> dict:
     """GPT settings, read from the names the CLI's .env already uses."""
-    return {"cdp_url": os.getenv("CDP_URL", "http://127.0.0.1:9222"),
-            "gpt_url": os.getenv("GPT_URL", DEFAULT_GPT_URL),
-            "ad_label": os.getenv("AD_LABEL", "inetpsa.com")}
+    import alm_config
+
+    return {"cdp_url": alm_config.env_or("CDP_URL", "http://127.0.0.1:9222"),
+            "gpt_url": alm_config.env_or("GPT_URL", DEFAULT_GPT_URL),
+            "ad_label": alm_config.env_or("AD_LABEL", "inetpsa.com")}
 
 
 # --------------------------------------------------------------------- check

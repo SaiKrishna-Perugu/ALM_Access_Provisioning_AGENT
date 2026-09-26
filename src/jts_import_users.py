@@ -31,7 +31,7 @@ import jazz_client
 
 load_dotenv()
 
-JTS_SERVER = os.getenv("JTS_SERVER", "https://jts.example.intra/jts").rstrip("/")
+JTS_SERVER = alm_config.env_or("JTS_SERVER", "https://jts.example.intra/jts").rstrip("/")
 USERS_IN_DEFAULT = os.getenv("ALM_USERS_OUT", "out/alm_users.json")
 CID = os.getenv("CID", "")
 COMMIT_ENV = os.getenv("COMMIT", "false").strip().lower() == "true"

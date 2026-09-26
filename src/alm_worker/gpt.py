@@ -24,7 +24,10 @@ from alm_core.logging import get_logger
 
 log = get_logger("alm.worker.gpt")
 
-DEFAULT_URL = os.getenv("GPT_URL", "https://gpt.example.intra/GlobalProvisioningTool/home.jsf")
+# `or`, not a getenv default: a blank GPT_URL= (the .env.example shape) must
+# fall back rather than become an empty URL.
+DEFAULT_URL = ((os.getenv("GPT_URL") or "").strip()
+               or "https://gpt.example.intra/GlobalProvisioningTool/home.jsf")
 
 
 def submit_outcome(body: str) -> tuple[str, str]:

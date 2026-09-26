@@ -92,7 +92,7 @@ def parse_xml(content):
             raise RuntimeError(f"Unparseable OSLC XML: {err2}") from err2
 
 
-SERVER = os.getenv("EWM_SERVER", "https://ewm.example.intra/ccm")
+SERVER = alm_config.env_or("EWM_SERVER", "https://ewm.example.intra/ccm")
 PROJECT_NAME = "Unified Tracking System (Change Management)"
 TYPE_ID = "com.fca.alm.rtc.workitem.workItemType.almAccessRequest"
 WORKFLOW = "com.ibm.team.workitem.almAccessRequestWorkflow"

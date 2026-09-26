@@ -499,6 +499,18 @@ def test_check_warns_but_passes_without_the_gpt_chrome(tmp_path, monkeypatch):
     assert any("1 warning(s)" in line for line in lines)
 
 
+def test_the_gpt_target_ignores_blank_template_values(monkeypatch):
+    """.env.example ships CDP_URL= / GPT_URL= / AD_LABEL=; blank means default."""
+    from alm_agents.local import DEFAULT_GPT_URL, gpt_target
+
+    for key in ("CDP_URL", "GPT_URL", "AD_LABEL"):
+        monkeypatch.setenv(key, "")
+    target = gpt_target()
+    assert target["gpt_url"] == DEFAULT_GPT_URL
+    assert target["cdp_url"] == "http://127.0.0.1:9222"
+    assert target["ad_label"]
+
+
 def test_the_clis_workitem_spelling_works_too():
     from alm_agents.local import parse_args
 

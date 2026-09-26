@@ -38,6 +38,16 @@ _TRUE = {"1", "true", "yes", "on"}
 _warned = False
 
 
+def env_or(name: str, default: str) -> str:
+    """The environment value, or ``default`` when it is unset OR blank.
+
+    ``os.getenv(name, default)`` returns "" for ``NAME=`` - the shape every key
+    in .env.example has - so a copied template would silently set, say, the AD
+    group to an empty string instead of falling back to the default.
+    """
+    return os.getenv(name, "").strip() or default
+
+
 def _server_hosts() -> list[str]:
     return [
         os.getenv("EWM_SERVER", ""),

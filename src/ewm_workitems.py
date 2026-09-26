@@ -34,7 +34,7 @@ try:
 except Exception:  # noqa: S110 - dotenv optional
     pass
 
-DEFAULT_SERVER = os.getenv("EWM_SERVER", "https://ewm.example.intra/ccm")
+DEFAULT_SERVER = alm_config.env_or("EWM_SERVER", "https://ewm.example.intra/ccm")
 
 
 def get_authenticated_session(server: str, username: str, password: str) -> requests.Session:
