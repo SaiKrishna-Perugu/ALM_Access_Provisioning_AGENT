@@ -10,7 +10,7 @@ A two-step internal toolkit that:
 
 ## How the agent pipeline works
 
-`
+```
 ALM Access Request (EWM work item)
         |
         v
@@ -26,7 +26,7 @@ ALM Access Request (EWM work item)
         |
         v
   Users created in JTS registry
-`
+```
 
 ---
 
@@ -300,7 +300,7 @@ These files teach VS Code's Copilot Chat how to behave as specialised agents for
 **Agent role:** The single shared artifact that connects alm-access-retrieval -> jts-user-import. The commit guard verifies it is non-empty before allowing --commit.
 
 Example structure:
-`json
+```json
 {
   "source": "alm_access_requests.py",
   "count": 2,
@@ -308,7 +308,7 @@ Example structure:
     { "userId": "MWPABC01", "name": "Smith, John", "email": "john.smith@stellantis.com", "workItems": ["WI-1234"] }
   ]
 }
-`
+```
 
 ---
 
@@ -382,7 +382,8 @@ with what, and when to stop). With a Gemini API key from
 on a laptop, against a simulated estate:
 
 ```powershell
-python -m pip install -r requirements-cloud.txt
+.\scripts\setup.ps1 -Agents          # the .venv plus the agent packages (repairs a broken .venv)
+.\.venv\Scripts\Activate.ps1          # every "python" below is now the project's own
 # add GEMINI_API_KEY=... to .env - the file is gitignored; never commit the key
 python src/agent_sandbox.py --check
 python src/agent_sandbox.py
@@ -408,7 +409,7 @@ the same debug Chrome the CLI uses, and every record in one SQLite file under
 python src/agent_local.py --check                       # Gemini, EWM/JTS login, OSLC, GPT, ledger
 python src/agent_local.py --work-item 123456            # dry run: the agents plan, nothing is written
 python src/agent_local.py --work-item 123456 --commit   # writes, after your y/N at the approval prompt
-python src/agent_local.py --resume local-1a2b3c4d       # continue a paused or interrupted run
+python src/agent_local.py --resume last --commit       # continue the last run (same mode it started in)
 ```
 
 It keeps the CLI's safety model - dry run unless `--commit`, TEST/PROD detected
@@ -498,9 +499,15 @@ module hardcodes `verify=False` or if a new `--commit` entry point is not known 
 
 ## Quick start
 
-`powershell
-# 1. One-time setup
+Every `python` below means the project's own `.venv`: run
+`.\.venv\Scripts\Activate.ps1` once per terminal (or type
+`.\.venv\Scripts\python.exe` instead). The system Python does not have the
+packages, and installing into it mixes this project with everything else.
+
+```powershell
+# 1. One-time setup (add -Agents for the multi-agent system: agent_local.py)
 .\scripts\setup.ps1
+.\.venv\Scripts\Activate.ps1
 
 # 2. Configure credentials — copy the template and edit
 copy .env.example .env
@@ -514,16 +521,16 @@ python src\jts_import_users.py
 
 # 5. Import users into JTS — live commit (prompts for JTS password)
 python src\jts_import_users.py --commit
-`
+```
 
 Or run the whole pipeline. The dry run records the plan it showed you; the commit run refuses to
 proceed if the live queue has changed since:
 
-`powershell
+```powershell
 python src\run_pipeline.py                 # dry run — review the plan it prints
 python src\run_pipeline.py --commit        # executes exactly that plan, or aborts
 python src\run_pipeline.py --commit --skip-retrieve   # commit the reviewed file unchanged
-`
+```
 
 ---
 
