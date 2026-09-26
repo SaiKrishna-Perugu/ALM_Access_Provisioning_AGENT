@@ -326,18 +326,18 @@ is what makes the rest of the investigation possible.
 Local runs and CLI executions generate operational files in `out/` and `out/local/` that may contain transient personal data (usernames, screenshots, query responses).
 
 ### Retention Policy
-- **Maximum Retention:** 30 days for local session checkpoints, screenshots, and temporary user caches.
-- **Permanent Records:** The durability ledger (`alm_idempotency`) and audit logs (`alm_audit`) are preserved indefinitely because they record what was written and prevent duplicate provisioning upon re-runs. They contain user IDs and timestamps, never passwords or session cookies.
+- **Maximum Retention:** 30 days for the agents' checkpoints, approval cards, memory, reports and evidence, and for the CLI's screenshots (`out/screenshots`), user caches (`out/alm_users*.json`) and `comment_capture.json`.
+- **Permanent Records:** the agents' ledger and audit trail (`alm_idempotency`, `alm_audit` in `out/local/alm.db`) and the CLI's audit records (`out/audit/`) are kept. They record what was written and who approved it, and the agents' ledger stops a re-run from repeating a write. They hold user IDs and outcomes, never passwords or session cookies.
 
 ### Cleanup Procedures
-Run the local cleanup script periodically or schedule it via Windows Task Scheduler:
+One implementation (`agent_local.py --purge-older-than`) does all of it; the script is a wrapper. Run it periodically or schedule it with Windows Task Scheduler:
 ```powershell
-# Default 30-day purge for all CLI and agent artifacts
+# Delete data older than 30 days
 .\scripts\purge-local.ps1 -Days 30
 
-# Dry run to see what would be removed
+# Show what would be removed; delete nothing
 .\scripts\purge-local.ps1 -Days 30 -DryRun
 
-# Agent-specific purge
-python src/agent_local.py --purge-older-than 30
+# The same, directly
+.\.venv\Scripts\python.exe src\agent_local.py --purge-older-than 30 --dry-run
 ```

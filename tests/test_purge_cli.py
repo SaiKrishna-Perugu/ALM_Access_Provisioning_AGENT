@@ -1,4 +1,5 @@
-"""Tests for purge() covering CLI out/ artifacts: audit, screenshots, user lists, and comments."""
+"""purge() and the CLI's out/ files: screenshots, user caches and comment capture go;
+the CLI's out/audit records stay (they are the record of what was written)."""
 from __future__ import annotations
 
 import asyncio
@@ -71,17 +72,25 @@ def test_purge_cli_artifacts(tmp_path):
     settings = Settings(_env_file=None, environment="TEST",
                         ledger_path=str(local_dir / "alm.db"))
 
+    # A dry run reports the same counts and deletes nothing.
+    preview = asyncio.run(purge(settings, Events(), 30, out_dir=local_dir, now=now,
+                                dry_run=True))
+    assert all(p.exists() for p in (old_audit, old_shot, old_users, old_comments))
+
     # Purge older than 30 days
     purged = asyncio.run(purge(settings, Events(), 30, out_dir=local_dir, now=now))
+    assert purged == preview
 
     # Check counts
-    assert purged["cli_audit"] == 1
+    assert "cli_audit" not in purged
     assert purged["cli_screenshots"] == 1
     assert purged["cli_users"] == 2
     assert purged["cli_comments"] == 1
 
-    # Old files removed
-    assert not old_audit.exists()
+    # The CLI's audit records are kept, however old.
+    assert old_audit.exists()
+
+    # Old working files removed
     assert not old_shot.exists()
     assert not old_users.exists()
     assert not old_users_verified.exists()

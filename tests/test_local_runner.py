@@ -753,10 +753,13 @@ def test_purge_removes_old_personal_data_and_keeps_the_ledger(tmp_path):
     old = (later - timedelta(days=40)).timestamp()
     for path in [out / "run-old.json", out / "evidence" / "old" / "AB12345.png"]:
         os.utime(path, (old, old))
+    preview = asyncio.run(purge(settings, Events(), 30, out_dir=out, now=later,
+                                dry_run=True))
+    assert (out / "run-old.json").exists() and (out / "evidence" / "old").exists()
     purged = asyncio.run(purge(settings, Events(), 30, out_dir=out, now=later))
-    assert purged == {
+    assert purged == preview == {
         "runs": 1, "approvals": 1, "memories": 1, "reports": 1, "evidence": 1,
-        "cli_audit": 0, "cli_screenshots": 0, "cli_users": 0, "cli_comments": 0,
+        "cli_screenshots": 0, "cli_users": 0, "cli_comments": 0,
     }
     assert not (out / "run-old.json").exists()
     assert not (out / "evidence" / "old").exists()
@@ -771,6 +774,9 @@ def test_purge_removes_old_personal_data_and_keeps_the_ledger(tmp_path):
     assert asyncio.run(audit_rows()) == audit_before
     with pytest.raises(SystemExit):
         parse_args(["--purge-older-than", "0"])
+    with pytest.raises(SystemExit):
+        parse_args(["--dry-run"])  # only meaningful with --purge-older-than
+    assert parse_args(["--purge-older-than", "7", "--dry-run"]).dry_run
 
 
 def test_a_cut_observation_says_how_much_was_cut():
