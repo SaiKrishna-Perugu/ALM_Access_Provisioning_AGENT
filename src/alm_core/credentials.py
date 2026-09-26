@@ -136,13 +136,17 @@ class InteractiveProvider:
 
     name = "interactive"
 
-    def __init__(self, prompt: str = "Password"):
+    def __init__(self, prompt: str = "Password", labels: dict[str, str] | None = None):
         self.prompt = prompt
+        # What the person is asked, per secret: a question naming their account
+        # means something to an operator; the secret's id does not.
+        self.labels = labels or {}
 
     def get(self, key: str) -> str | None:
         if not _has_console():
             return None
-        return getpass.getpass(f"{self.prompt} ({key}): ") or None
+        question = self.labels.get(key) or f"{self.prompt} ({key})"
+        return getpass.getpass(f"{question}: ") or None
 
 
 def _has_console() -> bool:
@@ -217,8 +221,8 @@ class CredentialResolver:
                 self._cache.clear()
 
 
-def build_resolver(settings=None, *, prompt: str = "Password",
-                   interactive: bool = True) -> CredentialResolver:
+def build_resolver(settings=None, *, prompt: str = "Password", interactive: bool = True,
+                   labels: dict[str, str] | None = None) -> CredentialResolver:
     """The standard chain: environment -> mounted file -> Secret Manager -> interactive.
 
     Secret Manager is only added when a project is configured, so a laptop run
@@ -243,7 +247,7 @@ def build_resolver(settings=None, *, prompt: str = "Password",
     if settings.project_id:
         providers.append(SecretManagerProvider(settings))
     if interactive:
-        providers.append(InteractiveProvider(prompt))
+        providers.append(InteractiveProvider(prompt, labels))
     return CredentialResolver(providers)
 
 

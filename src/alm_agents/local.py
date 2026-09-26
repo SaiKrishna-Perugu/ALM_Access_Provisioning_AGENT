@@ -214,7 +214,6 @@ def gpt_target() -> dict:
 async def check(settings, console, work_item_ids: list[str]) -> int:
     """Everything a run needs, verified read-only. Writes nothing anywhere."""
     from alm_core.auth import JazzClient
-    from alm_core.credentials import build_resolver
     from alm_core.logging import scrub_secrets
     from alm_core.store.memory import MemoryStore
     from alm_core.tools import ewm
@@ -255,7 +254,7 @@ async def check(settings, console, work_item_ids: list[str]) -> int:
     if not (settings.ewm_server and settings.jts_server and settings.service_account):
         fail("config", "EWM_SERVER, JTS_SERVER and CID must all be set in .env")
         return 2
-    resolver = build_resolver(settings, prompt="Jazz password")
+    resolver = jazz_password_resolver(settings)
     client = JazzClient(settings, resolver)
     try:
         from alm_core.errors import AuthenticationError
@@ -381,7 +380,6 @@ def pin_password(resolver, key: str, value: str) -> None:
 async def run(settings, args, console) -> dict:
     """One real run, start to finish, including every approval pause."""
     from alm_core.auth import JazzClient
-    from alm_core.credentials import build_resolver
     from alm_core.store import get_store
     from alm_core.tools.base import ToolContext
 
@@ -395,7 +393,7 @@ async def run(settings, args, console) -> dict:
     if agent_llm is None:
         raise SetupError("no Gemini client - run with --check to see why")
 
-    resolver = build_resolver(settings, prompt="Jazz password")
+    resolver = jazz_password_resolver(settings)
     # Ask for the password now, not halfway through the first agent's output,
     # and keep it for the whole run: no re-prompt after the cache TTL or on a
     # 403, where a mistyped answer from a worker thread would count towards an
@@ -582,6 +580,15 @@ def _days(value: str) -> int:
     return days
 
 
+def jazz_password_resolver(settings):
+    """The CLI's credential chain, asking for the password by the account's name."""
+    from alm_core.credentials import build_resolver
+
+    return build_resolver(settings, prompt="Jazz password", labels={
+        settings.password_secret_name:
+            f"Jazz password for {settings.service_account or 'your CID'}"})
+
+
 def check_commit_scope(args) -> None:
     """A run that writes names the work items it may touch, and only a few."""
     if not args.commit or args.resume:
@@ -602,8 +609,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description="Run the ALM multi-agent system locally against EWM, JTS and GPT.")
     parser.add_argument("--check", action="store_true",
                         help="verify Gemini, EWM/JTS login, OSLC, GPT Chrome and the ledger")
-    parser.add_argument("--work-item", action="append", metavar="ID",
-                        type=_work_item_id,
+    parser.add_argument("--work-item", "--workitem", dest="work_item", action="append",
+                        metavar="ID", type=_work_item_id,
                         help="limit the run to this work item (repeatable; required "
                              f"with --commit, at most {MAX_COMMIT_WORK_ITEMS})")
     parser.add_argument("--commit", action="store_true",

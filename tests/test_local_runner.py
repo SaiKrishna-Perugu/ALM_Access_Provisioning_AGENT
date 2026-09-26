@@ -499,6 +499,27 @@ def test_check_warns_but_passes_without_the_gpt_chrome(tmp_path, monkeypatch):
     assert any("1 warning(s)" in line for line in lines)
 
 
+def test_the_clis_workitem_spelling_works_too():
+    from alm_agents.local import parse_args
+
+    assert parse_args(["--workitem", "123", "--work-item", "456"]).work_item == ["123", "456"]
+
+
+def test_the_password_prompt_names_the_account_not_the_secret(tmp_path, monkeypatch):
+    import alm_core.credentials as credentials
+    from alm_agents.local import jazz_password_resolver
+
+    asked: list[str] = []
+    monkeypatch.delenv("EWM_PASSWORD", raising=False)
+    monkeypatch.setattr(credentials, "_has_console", lambda: True)
+    monkeypatch.setattr(credentials.getpass, "getpass",
+                        lambda question: asked.append(question) or "pw")
+    settings = local_settings(tmp_path, CID="CID1")
+    resolver = jazz_password_resolver(settings)
+    assert resolver.get(settings.password_secret_name) == "pw"  # pragma: allowlist secret
+    assert asked == ["Jazz password for CID1: "]
+
+
 def test_rejected_credentials_say_so():
     from alm_core.errors import AuthenticationError
 
