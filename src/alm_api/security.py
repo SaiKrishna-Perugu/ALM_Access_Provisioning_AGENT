@@ -23,6 +23,7 @@ import base64
 import hashlib
 import hmac
 import json
+import os
 import time
 from collections import OrderedDict
 
@@ -145,25 +146,51 @@ def verify_approval_token(secret: str, token: str, *, thread_id: str = "",
     return True, "ok", claims
 
 
-def caller_identity(headers) -> str:
-    """Best-effort approver identity from the Identity-Aware Proxy headers.
+IAP_CERTS_URL = "https://www.gstatic.com/iap/verify/public_key"
 
-    IAP validates the Google sign-in and injects these before the request
-    reaches Cloud Run, so this service does not verify a JWT itself. The header
-    value is prefixed (``accounts.google.com:alice@example.com``); the prefix is
-    stripped for readability but the address is recorded verbatim.
 
-    When no header is present the approver is recorded as ``unknown`` rather
-    than being invented - an audit row naming the wrong person is worse than one
-    admitting it does not know.
+def _verify_iap_jwt(assertion: str, audience: str) -> dict:
+    """Check the IAP-signed JWT: signature (IAP's public keys), audience, expiry."""
+    from google.auth.transport import requests as google_requests
+    from google.oauth2 import id_token
 
-    Note the deployment assumption: Cloud Run ingress must be internal +
-    load-balancer only, with IAP in front. A service reachable directly would
-    let a caller present these headers themselves.
+    return dict(id_token.verify_token(assertion, google_requests.Request(),
+                                      audience=audience, certs_url=IAP_CERTS_URL))
+
+
+def caller_identity(headers, *, iap_audience: str | None = None,
+                    verifier=_verify_iap_jwt) -> str:
+    """The approver's identity, as established by the Identity-Aware Proxy.
+
+    With ``ALM_IAP_AUDIENCE`` set (``/projects/<number>/global/backendServices/
+    <id>``), only the signed ``x-goog-iap-jwt-assertion`` counts: its signature,
+    audience and expiry are verified and its ``email`` claim is the identity. A
+    request that reached the service without passing through IAP cannot forge
+    that, whereas it can set any plain header it likes.
+
+    Without an audience (a deployment that has not configured it yet) the
+    plain IAP headers are read, which is only as safe as the ingress rule that
+    keeps the service behind IAP. ``x-forwarded-user`` is never trusted: it is
+    not an IAP header, and a caller can always send it.
+
+    Anything unverifiable is ``unknown`` rather than a name - an audit row
+    naming the wrong person is worse than one admitting it does not know, and
+    the approval endpoint refuses an unknown caller without a signed token.
     """
-    for header in ("x-goog-authenticated-user-email",
-                   "x-goog-authenticated-user-id",
-                   "x-forwarded-user"):
+    audience = (os.getenv("ALM_IAP_AUDIENCE", "") if iap_audience is None
+                else iap_audience).strip()
+    if audience:
+        assertion = headers.get("x-goog-iap-jwt-assertion", "")
+        if not assertion:
+            return "unknown"
+        try:
+            claims = verifier(assertion, audience)
+        except Exception as err:  # noqa: BLE001 - any failure means "not verified"
+            log.warning("iap_jwt_rejected", error=type(err).__name__)
+            return "unknown"
+        return str(claims.get("email") or "unknown")
+
+    for header in ("x-goog-authenticated-user-email", "x-goog-authenticated-user-id"):
         value = headers.get(header)
         if value:
             return value.split(":", 1)[-1] if ":" in value else value

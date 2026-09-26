@@ -110,6 +110,12 @@ variable "ewm_server" {
   }
 }
 
+variable "iap_audience" {
+  description = "IAP JWT audience, /projects/<project number>/global/backendServices/<backend service id>. When set, the approval API trusts only a verified IAP JWT for the approver's identity. Set it once the load balancer exists."
+  type        = string
+  default     = ""
+}
+
 variable "jts_server" {
   description = "JTS base URL (https://<host>/jts). Supplied at deploy time (GitHub environment variable JTS_SERVER), never committed."
   type        = string

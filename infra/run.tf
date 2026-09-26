@@ -98,6 +98,10 @@ resource "google_cloud_run_v2_service" "api" {
         value = var.jts_server
       }
       env {
+        name  = "ALM_IAP_AUDIENCE"
+        value = var.iap_audience
+      }
+      env {
         name  = "CID"
         value = var.service_account_cid
       }
