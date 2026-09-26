@@ -19,7 +19,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
-from ..errors import AlmError, ApprovalRequired, IdempotencyViolation
+from ..errors import AlmError, ApprovalRequired, IdempotencyViolation, OutcomeUnknown
 from ..logging import get_logger
 from ..models import (
     ApprovalDecision,
@@ -134,8 +134,13 @@ async def guarded_write(
             **base, outcome=Outcome.OK if ok else Outcome.FAILED,
             message=message, detail=detail or {})
     except AlmError as err:
+        detail = {"error": err.as_dict()}
+        if isinstance(err, OutcomeUnknown):
+            # Completed in the ledger (never retried automatically) but reported
+            # as a failure: a human must check the target system first.
+            detail["outcome_unknown"] = True
         result = ProvisionResult(**base, outcome=Outcome.FAILED, message=err.message,
-                                 detail={"error": err.as_dict()})
+                                 detail=detail)
     except Exception as err:  # noqa: BLE001 - one user must not kill the batch
         log.exception("tool_write_crashed", userid=userid, operation=operation.value)
         result = ProvisionResult(**base, outcome=Outcome.FAILED,

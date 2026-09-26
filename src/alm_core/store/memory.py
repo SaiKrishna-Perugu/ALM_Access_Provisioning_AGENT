@@ -68,7 +68,9 @@ class MemoryStore:
     async def complete(self, key: str, result: ProvisionResult) -> None:
         async with self._lock:
             entry = self._claims.setdefault(key, {})
-            entry["status"] = "completed" if result.succeeded else "failed"
+            # An outcome nobody can confirm is closed, not retried: see OutcomeUnknown.
+            entry["status"] = ("completed" if result.succeeded
+                               or result.detail.get("outcome_unknown") else "failed")
             entry["result"] = result
             entry["completed_at"] = datetime.now(timezone.utc)
 

@@ -26,6 +26,22 @@ log = get_logger("alm.worker.gpt")
 DEFAULT_URL = "https://gpt.fiatspa.com/GlobalProvisioningTool/home.jsf"
 
 
+def submit_outcome(body: str) -> tuple[str, str]:
+    """"ok", "rejected" or "unknown" for GPT's page after Modify.
+
+    Unlike :func:`parse_submit_body`, a page with neither a failure count nor
+    the confirmation is "unknown", not "rejected": GPT may well have accepted
+    the request, and retrying it would add the user twice.
+    """
+    body = " ".join((body or "").split())
+    match = re.search(r"Failed Requests:\s*(\d+)", body)
+    if match:
+        return ("ok" if int(match.group(1)) == 0 else "rejected"), body[:200]
+    if "submitted correctly" in body.lower():
+        return "ok", body[:200]
+    return "unknown", body[:200]
+
+
 def parse_submit_body(body: str) -> tuple[bool, str]:
     """Interpret GPT's page text after Modify. Pure, so it can be reasoned about.
 
@@ -174,6 +190,15 @@ class GptSession:
                 return True
             time.sleep(0.5)
         return False
+
+    def click_modify(self) -> str:
+        """Click Modify and return GPT's page text. The request is sent here."""
+        page = self._page
+        page.once("dialog", lambda dialog: dialog.accept())
+        page.locator("input[value='Modify']").click()
+        page.wait_for_load_state("networkidle")
+        time.sleep(2)
+        return page.inner_text("body") or ""
 
     def submit(self) -> tuple[bool, str]:
         """Click Modify and read GPT's own confirmation."""

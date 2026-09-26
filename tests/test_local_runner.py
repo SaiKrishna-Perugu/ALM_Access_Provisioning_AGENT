@@ -273,12 +273,27 @@ class FakeGpt:
     def attach(self, cdp_url):
         self.attached = cdp_url
 
-    def add_member(self, *, userid, group, domain):
-        self.added.append((userid, group, domain))
-        return True, "GPT accepted the request; AD provisioning is queued"
+    # What GPT shows after Modify; a test may swap it, or make clicking raise.
+    reply = "Your request has been submitted correctly. Failed Requests: 0"
+    click_raises = False
+    closed = 0
+
+    def open_group(self, group):
+        self.group = group
+
+    def stage_user(self, userid, domain):
+        self.staged = (userid, domain)
+        return True
+
+    def click_modify(self):
+        userid, domain = self.staged
+        self.added.append((userid, self.group, domain))
+        if FakeGpt.click_raises:
+            raise RuntimeError("tab crashed")
+        return FakeGpt.reply
 
     def close(self):
-        pass
+        FakeGpt.closed += 1
 
 
 def _gpt_ctx(tmp_path):
@@ -1030,3 +1045,87 @@ def test_a_missing_package_prints_the_install_command(monkeypatch, capsys):
     assert local.main(["--check"]) == 2
     out = capsys.readouterr().out
     assert "pydantic_settings" in out and "-m pip install -r requirements-cloud.txt" in out
+
+
+
+# ------------------------------------------------ T12: GPT outcome ambiguity
+
+@pytest.fixture
+def gpt_backend(monkeypatch):
+    import alm_worker.gpt as gpt
+
+    FakeGpt.instances, FakeGpt.closed = [], 0
+    FakeGpt.reply = "Your request has been submitted correctly. Failed Requests: 0"
+    FakeGpt.click_raises = False
+    monkeypatch.setattr(gpt, "GptSession", FakeGpt)
+    monkeypatch.setattr(local, "cdp_reachable", lambda _url, timeout=3.0: True)
+    backend = local.make_local_backend(cdp_url="http://127.0.0.1:9222",
+                                       gpt_url="https://gpt.example/home.jsf",
+                                       ad_label="inetpsa.com")
+    yield backend
+    backend.close()
+
+
+def _twice(backend, ctx, user):
+    async def scenario():
+        first = await backend.request_group_membership(ctx, user, group="G", domain="D")
+        second = await backend.request_group_membership(ctx, user, group="G", domain="D")
+        return first, second
+    return asyncio.run(scenario())
+
+
+def test_a_crash_after_modify_is_never_retried_automatically(tmp_path, gpt_backend):
+    FakeGpt.click_raises = True
+    ctx, user = _gpt_ctx(tmp_path)
+    first, second = _twice(gpt_backend, ctx, user)
+    assert first.outcome.value == "failed" and first.detail.get("outcome_unknown")
+    assert "Pending Requests" in first.message
+    assert second.replayed                    # the ledger holds it; GPT is not asked again
+    assert sum(len(s.added) for s in FakeGpt.instances) == 1
+    assert FakeGpt.closed >= 1                # the broken session was dropped
+
+
+def test_an_unreadable_gpt_reply_is_unknown_not_rejected(tmp_path, gpt_backend):
+    FakeGpt.reply = "Session expired. Please reload."
+    ctx, user = _gpt_ctx(tmp_path)
+    first, second = _twice(gpt_backend, ctx, user)
+    assert first.detail.get("outcome_unknown") and second.replayed
+
+
+def test_an_explicit_gpt_rejection_may_be_retried(tmp_path, gpt_backend):
+    FakeGpt.reply = "Failed Requests: 1"
+    ctx, user = _gpt_ctx(tmp_path)
+    first, second = _twice(gpt_backend, ctx, user)
+    assert first.outcome.value == "failed" and not first.detail.get("outcome_unknown")
+    assert not second.replayed                # a real rejection is safe to try again
+    assert sum(len(s.added) for s in FakeGpt.instances) == 2
+
+
+def test_a_locked_ledger_refuses_the_write_cleanly(tmp_path):
+    import sqlite3
+
+    from alm_core.errors import IdempotencyViolation
+    from alm_core.models import Operation
+    from alm_core.store.sqlite import SqliteStore
+
+    async def scenario():
+        store = SqliteStore(str(tmp_path / "l.db"))
+        await store.start()
+        await store.migrate()
+        original = store._conn().execute
+
+        async def locked(sql, *args):
+            if sql.startswith("BEGIN"):
+                raise sqlite3.OperationalError("database is locked")
+            return await original(sql, *args)
+
+        store._conn().execute = locked
+        try:
+            await store.claim("k", run_id="r", work_item_id="1001", userid="AB12345",
+                              operation=Operation.JTS_CREATE)
+        finally:
+            store._conn().execute = original
+            await store.close()
+
+    with pytest.raises(IdempotencyViolation, match="locked by another process"):
+        asyncio.run(scenario())

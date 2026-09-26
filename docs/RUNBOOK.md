@@ -269,6 +269,8 @@ change, reviewed like any other code.
 | `the agent model is unavailable` | Key or model problem: `python src/agent_local.py --check` |
 | Closed the terminal at the approval prompt | Nothing was written. `--resume <thread-id>` brings the prompt back |
 | A second run reports `(replay)` | Correct: the ledger recorded the first write. Nothing was repeated |
+| AD step: `GPT may or may not have accepted` | The page failed after Modify, or GPT's reply was unreadable. It is **not** retried. Check GPT Pending Requests: if the request is there, do nothing; if it is not, clear the ledger entry and re-run: `UPDATE alm_idempotency SET status='failed' WHERE userid='<ID>' AND operation='ad_group_add' AND status='completed';` in `out/local/alm.db` |
+| `the local ledger is locked by another process` | Two local runs at once. Let the other finish; the write was not attempted |
 
 Everything a local run did is in `out/local/run-<run_id>.json` and in the
 `alm_audit` table of `out/local/alm.db` (the SQL in section 1 works unchanged in

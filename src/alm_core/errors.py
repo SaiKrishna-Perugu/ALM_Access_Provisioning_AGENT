@@ -33,6 +33,15 @@ class ConfigError(AlmError):
     """Missing or contradictory configuration. Never retryable."""
 
 
+class OutcomeUnknown(AlmError):
+    """A write may or may not have happened, and only a human can tell.
+
+    Recorded so the ledger will not retry it automatically: repeating an
+    external request that may already have been accepted is how duplicates
+    are made. The message says what to check.
+    """
+
+
 class CredentialError(AlmError):
     """No usable credential could be obtained from any provider."""
 

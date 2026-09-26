@@ -228,7 +228,9 @@ class PostgresStore:
 
     async def complete(self, key: str, result: ProvisionResult) -> None:
         """Record the final outcome of a claimed write."""
-        status = "completed" if result.succeeded else "failed"
+        # An outcome nobody can confirm is closed, not retried: see OutcomeUnknown.
+        status = ("completed" if result.succeeded
+                  or result.detail.get("outcome_unknown") else "failed")
         async with self._conn() as conn, conn.cursor() as cur:
             await cur.execute(
                 "UPDATE alm_idempotency SET status = %s, result = %s::jsonb, "

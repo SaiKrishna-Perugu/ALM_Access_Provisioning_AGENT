@@ -159,7 +159,12 @@ class SqliteStore:
         now = _now()
         async with self._lock:
             db = self._conn()
-            await db.execute("BEGIN IMMEDIATE")
+            try:
+                await db.execute("BEGIN IMMEDIATE")
+            except Exception as err:  # sqlite3.OperationalError: database is locked
+                raise IdempotencyViolation(
+                    "the local ledger is locked by another process; try again when it "
+                    "finishes", context={"key": key, "error": str(err)}) from err
             try:
                 row = await self._fetchone(
                     "SELECT status, result, claimed_at, run_id FROM alm_idempotency "
@@ -206,7 +211,9 @@ class SqliteStore:
                 raise
 
     async def complete(self, key: str, result: ProvisionResult) -> None:
-        status = "completed" if result.succeeded else "failed"
+        # An outcome nobody can confirm is closed, not retried: see OutcomeUnknown.
+        status = ("completed" if result.succeeded
+                  or result.detail.get("outcome_unknown") else "failed")
         async with self._lock:
             await self._conn().execute(
                 "UPDATE alm_idempotency SET status = ?, result = ?, completed_at = ? "
