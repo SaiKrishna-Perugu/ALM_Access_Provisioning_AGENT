@@ -42,6 +42,19 @@ DEFAULT_TIMEOUT_SECONDS = 300
 MAX_OBSERVATION_CHARS = 6000
 
 
+def clip_observation(text: str, limit: int = MAX_OBSERVATION_CHARS) -> str:
+    """Cut a tool result to fit the model's context, and say that it was cut.
+
+    A silent cut reads as the whole answer: the model would reason about a
+    queue or a comment list as if the missing part did not exist.
+    """
+    if len(text) <= limit:
+        return text
+    marker = "\n...[{} more characters omitted - narrow the request to see them]"
+    keep = limit - len(marker.format(len(text)))
+    return text[:keep] + marker.format(len(text) - keep)
+
+
 @dataclass
 class ToolSpec:
     """One capability an agent may invoke."""
@@ -293,7 +306,7 @@ class AgentRunner:
 
         if spec.is_write:
             self.policy.note_write()
-        return str(observation)[:MAX_OBSERVATION_CHARS], False
+        return clip_observation(str(observation)), False
 
     async def _record(self, agent: Agent, tool: str, args: dict, outcome: Outcome,
                       message: str, denied: bool = False) -> None:

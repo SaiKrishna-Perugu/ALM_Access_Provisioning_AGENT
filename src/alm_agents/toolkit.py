@@ -345,6 +345,10 @@ def build_registry(ctx: ToolContext, board: Blackboard, memory: MemoryStore,
     backend = backend or LiveBackend()
     shots_dir = shots_dir or os.path.join(tempfile.gettempdir(), "alm-evidence",
                                           ctx.run_id or "adhoc")
+    # Users whose board status was read from LDAP/JTS in this process and has
+    # not been touched since. Several agents classify the same user; only a
+    # write or a changed permission can make that answer stale.
+    fresh: set[str] = set()
 
     # ------------------------------------------------------------ read tools
 
@@ -360,11 +364,17 @@ def build_registry(ctx: ToolContext, board: Blackboard, memory: MemoryStore,
             board.work_items[item.work_item_id] = item
             for user in item.users:
                 board.users.setdefault(user.userid, user)
+        if not items:
+            if board.scope:
+                return (f"none of this run's work items ({', '.join(sorted(board.scope))}) "
+                        "exist in the configured project area - check the IDs; there is "
+                        "nothing to do")
+            return "no open requests in the queue - there is nothing to do"
         return json.dumps([{
             "work_item_id": i.work_item_id, "summary": i.summary, "state": i.state,
             "parsed_users": [u.userid for u in i.users],
             "new_users_field_present": bool(i.new_users_raw),
-        } for i in items], indent=2) or "no open requests"
+        } for i in items], indent=2)
 
     async def fetch_work_item(work_item_id: str) -> str:
         if board.out_of_scope([work_item_id]):
@@ -442,6 +452,8 @@ def build_registry(ctx: ToolContext, board: Blackboard, memory: MemoryStore,
         }, indent=2)
 
     async def classify_user(userid: str) -> str:
+        if userid in fresh and userid in board.statuses:
+            return _status_observation(board.statuses[userid], cached=True)
         user = board.users.get(userid)
         if user is None:
             # No fetched work item's structured field produced this ID, so it
@@ -452,16 +464,27 @@ def build_registry(ctx: ToolContext, board: Blackboard, memory: MemoryStore,
         board.users.setdefault(userid, user)
         status = await backend.classify_user(ctx, user)
         board.statuses[userid] = status
-        return json.dumps({
-            "userid": userid, "registry_state": status.state.value,
+        fresh.add(userid)
+        return _status_observation(status, cached=False)
+
+    def _status_observation(status: UserStatus, *, cached: bool) -> str:
+        observation = {
+            "userid": status.userid, "registry_state": status.state.value,
             "ldap_name": status.ldap_name, "ldap_email": status.ldap_email,
             "valid_in_ldap": status.valid_in_ldap,
             "already_has_role": status.has_role,
             "risk": status.risk.value, "risk_reasons": status.risk_reasons,
-        }, indent=2)
+        }
+        if cached:
+            observation["note"] = ("read earlier in this run; nothing has been written "
+                                   "for this user since, so this is still current")
+        return json.dumps(observation, indent=2)
 
     async def check_jazz_permission(userid: str) -> str:
         has = await backend.check_role(ctx, userid)
+        status = board.statuses.get(userid)
+        if status is not None and status.has_role != has:
+            fresh.discard(userid)
         if has:
             board.verified.add(userid)
         return (f"{userid} {'HAS' if has else 'does NOT have'} the "
@@ -515,6 +538,8 @@ def build_registry(ctx: ToolContext, board: Blackboard, memory: MemoryStore,
 
     def _record(result: ProvisionResult) -> str:
         board.results.append(result)
+        # Whatever the outcome, the user's registry state may have moved.
+        fresh.discard(result.userid)
         return json.dumps({"userid": result.userid,
                            "operation": result.operation.value,
                            "outcome": result.outcome.value,

@@ -536,6 +536,71 @@ def test_the_parser_reads_the_stored_field_not_the_models_redacted_copy(tmp_path
     assert [r["userid"] for r in result["parsed"]] == ["AB12345", "CD67890"]
 
 
+def test_a_user_is_classified_once_until_something_is_written_for_them(tmp_path):
+    """Review P2: the validator, risk officer and remediator each re-read LDAP/JTS."""
+    from alm_agents.memory import MemoryStore as AgentMemory
+    from alm_agents.toolkit import Blackboard, build_registry
+    from alm_core.store.memory import MemoryStore
+    from alm_core.tools.base import ToolContext
+
+    class CountingBackend(SandboxBackend):
+        lookups = 0
+
+        async def classify_user(self, ctx, user):
+            CountingBackend.lookups += 1
+            return await super().classify_user(ctx, user)
+
+    ctx = ToolContext(settings=local_settings(tmp_path, commit=False), client=None,
+                      store=MemoryStore(), run_id="t")
+    registry = build_registry(ctx, Blackboard(), AgentMemory(None),
+                              backend=CountingBackend(SandboxEstate.default()))
+    classify = registry.get("classify_user")
+
+    async def scenario():
+        await registry.get("fetch_work_item").run(work_item_id="1002")
+        first = json.loads(await classify.run(userid="EF11111"))
+        second = json.loads(await classify.run(userid="EF11111"))
+        after_first_two = CountingBackend.lookups
+        await registry.get("provision_jts_user").run(userid="EF11111")
+        third = json.loads(await classify.run(userid="EF11111"))
+        return first, second, third, after_first_two
+
+    first, second, third, after_first_two = asyncio.run(scenario())
+    assert after_first_two == 1
+    assert "note" not in first and "still current" in second["note"]
+    assert second["registry_state"] == first["registry_state"]
+    assert CountingBackend.lookups == 2 and "note" not in third
+
+
+def test_a_cut_observation_says_how_much_was_cut():
+    from alm_agents.agent import clip_observation
+
+    assert clip_observation("short", limit=100) == "short"
+    clipped = clip_observation("x" * 10_000, limit=6000)
+    assert 5990 <= len(clipped) <= 6000
+    omitted = int(clipped.rsplit("[", 1)[1].split()[0])
+    assert clipped.count("x") + omitted == 10_000
+
+
+def test_an_empty_queue_is_reported_as_empty(tmp_path):
+    """Review Q5: json.dumps([]) is truthy, so the fallback text never appeared."""
+    from alm_agents.memory import MemoryStore as AgentMemory
+    from alm_agents.toolkit import Blackboard, build_registry
+    from alm_core.store.memory import MemoryStore
+    from alm_core.tools.base import ToolContext
+
+    ctx = ToolContext(settings=local_settings(tmp_path, commit=False), client=None,
+                      store=MemoryStore(), run_id="t")
+
+    def fetch(board):
+        registry = build_registry(ctx, board, AgentMemory(None),
+                                  backend=SandboxBackend(SandboxEstate(people={})))
+        return asyncio.run(registry.get("fetch_open_requests").run(limit=10))
+
+    assert fetch(Blackboard()).startswith("no open requests")
+    assert "none of this run's work items (999)" in fetch(Blackboard(scope={"999"}))
+
+
 def test_agents_are_told_that_redacted_emails_are_deliberate(tmp_path):
     settings = local_settings(tmp_path, commit=False)
     llm = RecordingLLM(["triage", "DONE"], {"triage": [[("finish", {"summary": "ok"})]]})
