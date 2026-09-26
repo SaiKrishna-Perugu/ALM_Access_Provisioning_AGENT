@@ -222,7 +222,7 @@ async def check(settings, console, work_item_ids: list[str]) -> int:
 
     from .sandbox import check as model_check
 
-    failures = 0
+    failures = warnings = 0
 
     def ok(label: str, detail: str) -> None:
         console.line(f"OK    {label:14} {detail}")
@@ -231,6 +231,13 @@ async def check(settings, console, work_item_ids: list[str]) -> int:
         nonlocal failures
         failures += 1
         console.line(f"FAIL  {label:14} {scrub_secrets(detail)[:300]}")
+
+    def warn(label: str, detail: str) -> None:
+        # Only some runs need it: a dry run, or one whose users need no AD
+        # group, works without. Reported, but it does not block a run.
+        nonlocal warnings
+        warnings += 1
+        console.line(f"WARN  {label:14} {scrub_secrets(detail)[:300]}")
 
     tls = (settings.ca_bundle or "default trust store") if not settings.tls_insecure \
         else "UNVERIFIED (TEST only)"
@@ -290,13 +297,14 @@ async def check(settings, console, work_item_ids: list[str]) -> int:
     try:
         import playwright  # noqa: F401 - the GPT step drives Chrome through it
     except ModuleNotFoundError:
-        fail("GPT Chrome", "playwright is not installed, so the AD step cannot drive "
-                           "Chrome: python -m pip install -r requirements-cloud.txt")
+        warn("GPT Chrome", "playwright is not installed, so the AD step cannot drive "
+                           "Chrome (see 'browser' below)")
     if cdp_reachable(target["cdp_url"]):
         ok("GPT Chrome", f"listening on {target['cdp_url']} - make sure GPT is signed in")
     else:
-        fail("GPT Chrome", f"nothing on {target['cdp_url']}. Run scripts\\start-gpt.ps1 and "
-                           "sign in to GPT (only needed for runs that add AD groups)")
+        warn("GPT Chrome", f"nothing on {target['cdp_url']}. Needed only when a run adds "
+                           "AD groups with --commit: run scripts\\start-gpt.ps1 and sign "
+                           "in to GPT first")
 
     # 5. The browser that captures evidence screenshots.
     from alm_core.tools.evidence import browser_channel
@@ -330,7 +338,12 @@ async def check(settings, console, work_item_ids: list[str]) -> int:
     if failures:
         console.line(f"{failures} check(s) failed - fix those before a run.")
         return 2
-    console.line("Ready. Start with a dry run:  python src/agent_local.py --work-item <id>")
+    if warnings:
+        console.line(f"Ready, with {warnings} warning(s): a run that reaches that step "
+                     "will stop there.")
+    else:
+        console.line("Ready.")
+    console.line("Start with a dry run:  python src/agent_local.py --work-item <id>")
     return 0
 
 

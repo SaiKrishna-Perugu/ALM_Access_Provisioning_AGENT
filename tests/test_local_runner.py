@@ -459,6 +459,46 @@ def test_gemini_network_failures_get_the_fix_that_matches(monkeypatch, error, pr
         assert "HTTPS_PROXY" not in advice
 
 
+def test_check_warns_but_passes_without_the_gpt_chrome(tmp_path, monkeypatch):
+    """Review DX #9: an optional step failed --check outright."""
+    import alm_agents.local as local
+    import alm_agents.sandbox as sandbox
+    import alm_core.auth as auth
+    import alm_core.credentials as credentials
+    from alm_core.tools import ewm
+
+    class Client:
+        def __init__(self, *_a):
+            pass
+
+        def session(self, *_a, **_k):
+            return None
+
+        def close(self):
+            pass
+
+    async def no_requests(*_a):
+        return []
+
+    monkeypatch.setattr(sandbox, "check", lambda *_a: 0)
+    monkeypatch.setattr(credentials, "build_resolver", lambda *_a, **_k: None)
+    monkeypatch.setattr(auth, "JazzClient", Client)
+    monkeypatch.setattr(ewm, "fetch_open_requests", no_requests)
+    monkeypatch.setattr(local, "cdp_reachable", lambda _url: False)
+    monkeypatch.setattr(local, "_launch_browser", lambda _channel: None)
+
+    settings = local_settings(tmp_path, ewm_server="https://host/ccm",
+                              jts_server="https://host/jts", CID="CID1")
+    console = Events()
+    lines: list[str] = []
+    console.line = lines.append
+    code = asyncio.run(local.check(settings, console, []))
+    assert code == 0, lines
+    assert any(line.startswith("WARN  GPT Chrome") for line in lines)
+    assert not any(line.startswith("FAIL") for line in lines)
+    assert any("1 warning(s)" in line for line in lines)
+
+
 def test_rejected_credentials_say_so():
     from alm_core.errors import AuthenticationError
 
