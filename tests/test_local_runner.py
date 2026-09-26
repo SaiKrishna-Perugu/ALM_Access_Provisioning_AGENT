@@ -926,3 +926,35 @@ def test_name_redaction_keeps_ordinary_words_and_user_ids():
     assert redact_names(text, ["GHOST", "USER"]) == (
         "USER: AB12345 [name] USER - User already present in JTS")
     assert redact_names("nothing to hide", []) == "nothing to hide"
+
+
+
+# ------------------------------------------- T5: one report per user, either tool
+
+CLI_COMMENT = ("ALM access provisioning result :<br/>AB12345: ALICE SMITH: User added to "
+               "JTS - (active)<br/>[alm-cli:1001:abc123]")
+
+
+def test_a_user_reported_by_the_cli_is_not_reported_again_by_the_agents(tmp_path):
+    estate = SandboxEstate.default()
+    estate.comments["1001"].append(CLI_COMMENT)
+    llm = ScriptedLLM([], GUIDED_SCRIPTS)
+    asyncio.run(one_process(local_settings(tmp_path, orchestration="guided"), llm,
+                            decide=approve, thread_id="cli-first", estate=estate))
+    # The CLI's line already says AB12345 was added: the agents add nothing.
+    assert estate.comments["1001"] == [CLI_COMMENT]
+
+
+def test_the_cli_skips_a_work_item_the_agents_already_reported():
+    import ewm_comment_workitems as cli
+    from alm_agents.nodes.closure import render_comment
+
+    agent_comment = render_comment([("AB12345", "ALICE SMITH", "created")])
+    stored = agent_comment.replace("\n", "<br/>")        # how EWM keeps it
+    members = [{"userid": "AB12345", "name": "ALICE SMITH"}]
+    created = {"AB12345": {"action": "created", "state": "active"}}
+    assert cli.all_reported([stored], members, created)
+    # A different outcome for the same user is new information, not a duplicate.
+    already = {"AB12345": {"action": "already_active", "state": "active"}}
+    assert not cli.all_reported([stored], members, already)
+    assert not cli.all_reported([], members, created)

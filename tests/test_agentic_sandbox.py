@@ -183,10 +183,12 @@ def test_a_model_recovered_user_is_flagged_high_risk_for_the_approver(full_run):
     assert any("recovered by the LLM" in r for r in item["risk_reasons"])
 
 
-def test_a_repeated_comment_is_a_ledger_replay_not_a_second_post(full_run):
+def test_a_repeated_comment_is_not_posted_twice(full_run):
+    """The second attempt sees its own lines already on the work item and says
+    nothing, before it even reaches the ledger."""
     report, estate = full_run
     comments = _results(report, "workitem_comment", "AB12345")
-    assert [c["replayed"] for c in comments] == [False, True]
+    assert [c["replayed"] for c in comments] == [False]
     assert len(estate.comments["1001"]) == 1
 
 

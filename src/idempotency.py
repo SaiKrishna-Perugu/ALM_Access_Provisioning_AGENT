@@ -66,6 +66,37 @@ def previous_markers(existing_comments) -> list[str]:
     return found
 
 
+# A comment line about one user: "AB12345: NAME: User added to JTS - (active)".
+# Both the CLI and the agents write this shape, with or without a marker.
+_USER_LINE = re.compile(r"^\s*([A-Za-z]{1,3}[0-9][0-9A-Za-z]{3,8})\s*:(.*)$")
+
+
+def _comment_lines(comment) -> list[str]:
+    """A stored comment (EWM keeps HTML) as plain text lines."""
+    import html
+
+    text = re.sub(r"<br\s*/?>", "\n", str(comment or ""), flags=re.IGNORECASE)
+    text = html.unescape(re.sub(r"<[^>]+>", " ", text))
+    return text.splitlines()
+
+
+def already_reported(existing_comments, userid: str, action_text: str) -> bool:
+    """True when some comment already states this outcome for this user.
+
+    Recognises the other tool's comments too: the agents' comments carry no
+    marker, and a CLI comment's marker means nothing to the agents, so the
+    shared ground is the per-user line itself.
+    """
+    want_user, want_text = userid.upper(), " ".join(action_text.split()).lower()
+    for comment in existing_comments or []:
+        for line in _comment_lines(comment):
+            match = _USER_LINE.match(line)
+            if match and match.group(1).upper() == want_user and \
+                    want_text in " ".join(match.group(2).split()).lower():
+                return True
+    return False
+
+
 def attachment_name(userid: str) -> str:
     """The canonical evidence filename for a user."""
     return f"{userid}.png"

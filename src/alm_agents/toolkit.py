@@ -587,6 +587,22 @@ def build_registry(ctx: ToolContext, board: Blackboard, memory: MemoryStore,
         if not entries:
             return (f"ERROR: no verified user on work item {work_item_id}, so there is "
                     "nothing true to report yet. Verify first (check_jazz_permission).")
+        # Say only what nobody has said yet - an earlier run of the agents, or
+        # the CLI, may already have reported some of these users.
+        from idempotency import already_reported
+
+        from .nodes.closure import ACTION_TEXT
+
+        existing = await backend.existing_comments(ctx, work_item_id)
+        if existing is not None:
+            entries = [e for e in entries if not already_reported(
+                existing, e[0], ACTION_TEXT.get(e[2], ACTION_TEXT["unknown"]))]
+            if not entries:
+                return json.dumps({
+                    "work_item_id": work_item_id, "outcome": "skipped",
+                    "note": ("every verified user's outcome is already reported on "
+                             "this work item (by an earlier run or the CLI); nothing "
+                             "new to say, so nothing was posted")}, indent=2)
         text = render_comment(entries)
         result = await backend.post_comment(ctx, work_item_id=work_item_id,
                                             userid=entries[0][0], text=text, marker="")

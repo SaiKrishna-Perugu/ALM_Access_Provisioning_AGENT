@@ -164,6 +164,16 @@ def build_comment(members: list[dict], status_map: dict, workitem_id: str = "") 
     return "\n".join(lines)
 
 
+def all_reported(existing, members: list[dict], status_map: dict) -> bool:
+    """True when every member's outcome already appears in a comment."""
+    return bool(members) and all(
+        idempotency.already_reported(
+            existing, m["userid"],
+            ACTION_TEXT.get(_entry(status_map, m["userid"])["action"],
+                            ACTION_TEXT["unknown"]))
+        for m in members)
+
+
 def fetch_comments_url(session, ewm_server: str, uuid: str, wid: str) -> str:
     """Return the work item's OSLC discussion (comments) collection URL, by identifier."""
     query = f"{ewm_server}/oslc/contexts/{uuid}/workitems"
@@ -380,7 +390,7 @@ def main() -> int:
         uuid = aar.project_uuid(esession)
     except Exception as err:  # noqa: BLE001
         print(f"\n[ERROR] {err}")
-        if isinstance(err, (requests.exceptions.ConnectionError, requests.exceptions.Timeout)):
+        if isinstance(err, requests.exceptions.ConnectionError | requests.exceptions.Timeout):
             print("Ensure you are on the Chrysler intranet / VPN.")
         return 1
 
@@ -405,6 +415,11 @@ def main() -> int:
             if existing is not None and idempotency.already_commented(existing, marker):
                 skipped_as_duplicate = True
                 ok, msg = True, f"identical comment already present {marker}"
+            elif existing is not None and all_reported(existing, wi_users[wid], status_map):
+                # Already said by an earlier run or by the agents (whose
+                # comments carry no marker): do not say it twice.
+                skipped_as_duplicate = True
+                ok, msg = True, "every user's outcome is already reported on this work item"
             else:
                 if existing is None:
                     alm_log.warn(f"[warn] {wid}: could not read existing comments; "
@@ -414,7 +429,7 @@ def main() -> int:
         except Exception as err:  # noqa: BLE001
             ok, msg = False, str(err)
         if ok and skipped_as_duplicate:
-            print(f"[SKIP] {wid}: already commented by this run - not posting again.")
+            print(f"[SKIP] {wid}: {msg} - not posting again.")
             duplicate += 1
         elif ok:
             print(f"[OK]   {wid}: comment posted ({msg}).")
