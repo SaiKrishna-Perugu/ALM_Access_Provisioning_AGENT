@@ -1007,3 +1007,26 @@ def test_new_comment_content_is_posted_and_repeated_content_is_a_replay(tmp_path
     first, later, again = asyncio.run(scenario())
     assert (first.replayed, later.replayed, again.replayed) == (False, False, True)
     assert len(estate.comments["1001"]) == 2
+
+
+# ------------------------------------------- T16/T22: resume and install errors
+
+def test_resume_last_finds_the_most_recent_run(tmp_path):
+    settings = local_settings(tmp_path)
+    assert local.last_thread(settings) == ""
+    local.remember_last_thread(settings, "local-1234abcd")
+    assert local.last_thread(settings) == "local-1234abcd"
+
+
+def test_a_missing_package_prints_the_install_command(monkeypatch, capsys):
+    import alm_agents.sandbox as sandbox
+
+    def missing(**_kw):
+        raise ModuleNotFoundError("No module named 'pydantic_settings'",
+                                  name="pydantic_settings")
+
+    monkeypatch.setattr(sandbox, "load_env", lambda: None)   # never read the real .env
+    monkeypatch.setattr(local, "build_settings", missing)
+    assert local.main(["--check"]) == 2
+    out = capsys.readouterr().out
+    assert "pydantic_settings" in out and "-m pip install -r requirements-cloud.txt" in out

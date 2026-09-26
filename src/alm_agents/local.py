@@ -367,6 +367,12 @@ async def run(settings, args, console) -> dict:
     backend = make_local_backend(**gpt_target())
     ctx = ToolContext(settings=settings, client=client, store=store, run_id="")
     thread_id = args.resume or f"local-{uuid.uuid4().hex[:8]}"
+    # Shown - and remembered - before anything can fail, so an interrupted or
+    # crashed run can always be found again.
+    remember_last_thread(settings, thread_id)
+    commit_flag = "" if settings.shadow_mode else " --commit"
+    console.line(f"thread {thread_id}   (continue later with: --resume {thread_id}"
+                 f"{commit_flag}, or --resume last{commit_flag})")
 
     def decide(payload):
         if settings.shadow_mode:
@@ -412,6 +418,26 @@ def _work_item_id(value: str) -> str:
     return value
 
 
+def _last_thread_file(settings) -> Path:
+    return Path(settings.ledger_path).parent / "last-thread"
+
+
+def remember_last_thread(settings, thread_id: str) -> None:
+    try:
+        path = _last_thread_file(settings)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(thread_id, encoding="utf-8")
+    except OSError:
+        pass  # a convenience, never a reason to stop a run
+
+
+def last_thread(settings) -> str:
+    try:
+        return _last_thread_file(settings).read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
 def check_commit_scope(args) -> None:
     """A run that writes names the work items it may touch, and only a few."""
     if not args.commit or args.resume:
@@ -439,7 +465,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--commit", action="store_true",
                         help="perform the writes (default: dry run - plan and record only)")
     parser.add_argument("--resume", metavar="THREAD_ID", default="",
-                        help="continue a paused or interrupted run")
+                        help="continue a paused or interrupted run ('last' for the most "
+                             "recent); add --commit if the run was started with it")
     parser.add_argument("--auto-approve", action="store_true",
                         help="approve at the gate without asking (TEST only)")
     parser.add_argument("--ledger", default="",
@@ -464,12 +491,31 @@ def main(argv: list[str] | None = None) -> int:
     except (AttributeError, ValueError):
         pass
 
-    from .runner import Console, RunModeMismatch, print_report, save_report
+    from .runner import Console
 
     console = Console(verbose=args.verbose)
     try:
+        return _main(args, console)
+    except ModuleNotFoundError as err:
+        # The one failure a fresh install always hits: the agent packages live in
+        # requirements-cloud.txt, not the CLI's requirements.txt.
+        console.line(f"setup: Python package '{err.name}' is not installed in this Python "
+                     f"({sys.executable}). Install the agent requirements with:")
+        console.line(f'  "{sys.executable}" -m pip install -r requirements-cloud.txt')
+        return 2
+
+
+def _main(args, console) -> int:
+    from .runner import RunModeMismatch, print_report, save_report
+
+    try:
         settings = build_settings(commit=args.commit, model=args.model, rpm=args.rpm,
                                   ledger_path=args.ledger)
+        if args.resume == "last":
+            args.resume = last_thread(settings)
+            if not args.resume:
+                raise SetupError("no previous run recorded for --resume last. Use the "
+                                 "thread id a run prints when it starts.")
         if settings.tls_insecure:
             # alm_config has already printed its single [warn]; urllib3 would
             # otherwise repeat it for every request. The CLI does the same.
@@ -508,8 +554,9 @@ def main(argv: list[str] | None = None) -> int:
                      "in its report under out/local/.")
         return 2
     except KeyboardInterrupt:
-        console.line("\ninterrupted. Continue later with --resume <thread-id> "
-                     "(shown in out/local/ reports and the last run line).")
+        commit_flag = " --commit" if args.commit else ""
+        console.line(f"\ninterrupted. Continue later with: --resume last{commit_flag} "
+                     "(or the thread id printed when the run started).")
         return 130
 
     print_report(report, console)
