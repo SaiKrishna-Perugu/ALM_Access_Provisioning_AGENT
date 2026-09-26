@@ -299,6 +299,24 @@ def _launch_browser(channel: str) -> None:
         playwright.chromium.launch(**kwargs).close()
 
 
+class _PinnedSecret:
+    """Answers one secret from memory for the life of the process."""
+
+    name = "operator prompt (this run)"
+
+    def __init__(self, key: str, value: str):
+        self.key, self.value = key, value
+
+    def get(self, key: str) -> str | None:
+        return self.value if key == self.key else None
+
+
+def pin_password(resolver, key: str, value: str) -> None:
+    """Make ``value`` the answer for ``key`` until the process exits."""
+    resolver.providers.insert(0, _PinnedSecret(key, value))
+    resolver.ttl = float("inf")
+
+
 # ----------------------------------------------------------------------- run
 
 async def run(settings, args, console) -> dict:
@@ -319,8 +337,12 @@ async def run(settings, args, console) -> dict:
         raise SetupError("no Gemini client - run with --check to see why")
 
     resolver = build_resolver(settings, prompt="Jazz password")
-    # Ask for the password now, not halfway through the first agent's output.
-    resolver.get(settings.password_secret_name)
+    # Ask for the password now, not halfway through the first agent's output,
+    # and keep it for the whole run: no re-prompt after the cache TTL or on a
+    # 403, where a mistyped answer from a worker thread would count towards an
+    # account lockout.
+    pin_password(resolver, settings.password_secret_name,
+                 resolver.get(settings.password_secret_name))
 
     client = JazzClient(settings, resolver)
     # Sign in to both servers now. A wrong password must stop the run here,

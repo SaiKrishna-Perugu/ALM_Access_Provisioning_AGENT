@@ -805,3 +805,24 @@ def test_work_item_ids_must_be_numbers_everywhere(bad):
         AttachArgs.model_validate({"work_item_id": bad, "userid": "AB12345"})
     with pytest.raises(DataError):
         ewm._fetch_one(None, bad)        # refused before any request is built
+
+
+
+# ------------------------------------------------ T17: one password per run
+
+def test_the_prompted_password_is_kept_for_the_whole_run():
+    from alm_core.credentials import CredentialResolver
+
+    class CountingPrompt:
+        name = "interactive"
+        calls = 0
+
+        def get(self, key):
+            CountingPrompt.calls += 1
+            return "typed-once"
+
+    resolver = CredentialResolver([CountingPrompt()], ttl=0)  # expires at once
+    local.pin_password(resolver, "pw", resolver.get("pw"))
+    for _ in range(3):
+        assert resolver.get("pw", refresh=True) == "typed-once"  # a 403 re-auth
+    assert CountingPrompt.calls == 1
