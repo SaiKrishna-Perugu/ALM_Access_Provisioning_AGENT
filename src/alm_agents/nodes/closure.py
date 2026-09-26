@@ -17,6 +17,8 @@ itself is skipped when an identical comment is already on the work item.
 """
 from __future__ import annotations
 
+import os
+
 from alm_core.logging import get_logger
 from alm_core.models import Operation, Outcome, UserState
 from alm_core.tools import ewm
@@ -27,7 +29,8 @@ from ..state import PipelineState
 
 log = get_logger("alm.agents.closure")
 
-COMMENT_HEADER = "ALM access provisioning result :"
+# The CLI's header and its override, so both tools post the same thing.
+COMMENT_HEADER = os.getenv("ALM_COMMENT_HEADER", "ALM access provisioning result :")
 
 # recorded action -> the sentence that is true about that user
 ACTION_TEXT = {
@@ -41,7 +44,13 @@ ACTION_TEXT = {
 
 def _action_for(userid: str, state: PipelineState) -> str:
     """What this run recorded for a user, in ACTION_TEXT terms."""
-    for result in state.get("results") or []:
+    return action_from_records(userid, state.get("results") or [],
+                               state.get("statuses") or {})
+
+
+def action_from_records(userid: str, results, statuses) -> str:
+    """The ACTION_TEXT key the records support for a user - never more."""
+    for result in results:
         if result.userid != userid:
             continue
         if result.operation == Operation.JTS_CREATE and result.outcome == Outcome.OK:
@@ -50,10 +59,24 @@ def _action_for(userid: str, state: PipelineState) -> str:
             return "unarchived"
         if result.operation == Operation.JTS_CREATE and result.outcome == Outcome.SKIPPED:
             return "shadow" if "shadow" in result.message else "already_active"
-    status = (state.get("statuses") or {}).get(userid)
+    status = statuses.get(userid)
     if status is not None and status.state == UserState.EXISTS:
         return "already_active"
     return "unknown"
+
+
+def render_comment(entries: list[tuple[str, str, str]]) -> str:
+    """The comment from records alone, in the CLI's exact line format.
+
+    ``entries`` is [(userid, display_name, action)]. No model is involved, so
+    the same outcome always renders the same text: the duplicate check can
+    match it, and nothing in it can claim more than was recorded.
+    """
+    lines = [COMMENT_HEADER]
+    for userid, display_name, action in entries:
+        text = ACTION_TEXT.get(action, ACTION_TEXT["unknown"])
+        lines.append(f"{userid}: {display_name}: {text} - (active)")
+    return "\n".join(lines)
 
 
 def build_comment(ctx: ToolContext, work_item_id: str,

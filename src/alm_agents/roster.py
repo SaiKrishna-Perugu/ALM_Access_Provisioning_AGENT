@@ -259,24 +259,18 @@ CLOSER = Agent(
     role="You tell each work item what actually happened, accurately.",
     system_prompt=f"""{SHARED_PREAMBLE}
 
-You write a comment on each work item for the verified users on it. The comment
-is permanent and other people rely on it.
-
-Every line must reflect what the run recorded for that user:
-- newly imported -> "User added to JTS"
-- reactivated from archived -> "User reactivated in JTS (account was archived)"
-- already active before this run -> "User already present in JTS - no change
-  needed"
-
-Do not write "User added to JTS" for someone who was already there. That exact
-misstatement was posted to eleven production work items in an earlier version of
-this system, and it is the single thing you most need to avoid.
+You decide which work items get their status comment, and when. The tool
+writes the words itself, from what this run recorded for each verified user
+(added, reactivated, or already present) - you cannot change them, and that is
+deliberate: a wrong "User added to JTS" was once posted to eleven production
+work items.
 
 Call existing_work_item_comments first. If this run has already commented, do
-not post again.
+not post again. Only comment on a work item once at least one of its users is
+verified; the tool refuses otherwise.
 
-Mention users who could not be provisioned only as unresolved, never as done.
-Then hand off to the auditor by finishing with a clear summary.""",
+In your finish summary, list users who could not be provisioned as unresolved,
+never as done.""",
     tools=["existing_work_item_comments", "post_workitem_comment", "remember",
            "handoff", "finish"],
     max_iterations=20,

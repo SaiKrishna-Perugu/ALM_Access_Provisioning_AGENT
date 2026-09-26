@@ -560,8 +560,10 @@ def test_an_already_active_user_gets_evidence_and_an_unsigned_comment(tmp_path):
                                      estate=estate, console=events))
     assert not report["halted"], report["halt_reason"]
     assert estate.attachments["1002"] == ["EF11111.png"]
-    # Posted exactly as written: no marker, no signature.
-    assert estate.comments["1002"] == [EVIDENCE_COMMENT]
+    # Written from the records in the CLI's format; no marker, no signature.
+    assert estate.comments["1002"] == [
+        "ALM access provisioning result :\n"
+        "EF11111: BAO NGUYEN: User already present in JTS - no change needed - (active)"]
     captured = next(json.loads(d["observation"]) for k, d in events.events
                     if k == "tool_call" and d["tool"] == "capture_evidence")
     assert captured["captured"] == ["EF11111"] and captured["saved_in"]
@@ -711,3 +713,58 @@ def test_a_resumed_run_keeps_its_prod_confirmation_and_budgets(tmp_path):
     runtime.sync_from({"policy": {"prod_confirmed": True, "writes": 7, "tool_calls": 40}})
     assert runtime.policy.prod_confirmed
     assert (runtime.policy.writes_performed, runtime.policy.tool_calls) == (7, 40)
+
+
+
+# ----------------------------------------------------- T2: comments from records
+
+def test_the_closer_cannot_make_the_comment_claim_an_unrecorded_action(tmp_path):
+    """Review critical gap: the closer's free text went straight onto the work item."""
+    lie = "EF11111: BAO NGUYEN: User added to JTS"
+    llm = ScriptedLLM(
+        ["triage", "validator", "risk_officer", "verifier", "closer", "DONE"], {
+            "triage": [[("fetch_open_requests", {"limit": 10})]],
+            "validator": [[("classify_user", {"userid": "EF11111"})]],
+            "risk_officer": [[("request_human_approval",
+                               {"reason": "comment only", "userids": ["EF11111"]})]],
+            "verifier": [[("check_jazz_permission", {"userid": "EF11111"})]],
+            # A model (or text a requester planted) tries to dictate a false claim.
+            "closer": [[("post_workitem_comment",
+                         {"work_item_id": "1002", "text": lie, "userid": "EF11111"})]],
+        })
+    estate = SandboxEstate.default()
+    asyncio.run(one_process(local_settings(tmp_path), llm, decide=approve,
+                            thread_id="lie", scope=("1002",), estate=estate))
+    posted = estate.comments["1002"]
+    assert len(posted) == 1
+    assert "User added to JTS" not in posted[0]
+    assert "EF11111: BAO NGUYEN: User already present in JTS" in posted[0]
+
+
+def test_no_comment_is_posted_before_anyone_is_verified(tmp_path):
+    llm = ScriptedLLM(
+        ["triage", "validator", "risk_officer", "closer", "DONE"], {
+            "triage": [[("fetch_open_requests", {"limit": 10})]],
+            "validator": [[("classify_user", {"userid": "AB12345"})]],
+            "risk_officer": [[("request_human_approval",
+                               {"reason": "x", "userids": ["AB12345"]})]],
+            "closer": [[("post_workitem_comment", {"work_item_id": "1001"})]],
+        })
+    events = Events()
+    estate = SandboxEstate.default()
+    asyncio.run(one_process(local_settings(tmp_path), llm, decide=approve,
+                            thread_id="early", estate=estate, console=events))
+    observation = next(d["observation"] for k, d in events.events
+                       if k == "tool_call" and d["tool"] == "post_workitem_comment")
+    assert observation.startswith("ERROR: no verified user")
+    assert estate.comments["1001"] == []
+
+
+def test_agent_and_cli_comment_lines_have_the_same_format():
+    import ewm_comment_workitems as cli
+    from alm_agents.nodes.closure import render_comment
+
+    agent = render_comment([("AB12345", "ALICE SMITH", "created")])
+    cli_text = cli.build_comment([{"userid": "AB12345", "name": "ALICE SMITH"}],
+                                 {"AB12345": {"action": "created", "state": "active"}})
+    assert agent == cli_text

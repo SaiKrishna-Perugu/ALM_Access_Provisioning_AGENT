@@ -205,9 +205,9 @@ class UserArgs(BaseModel):
 
 
 class CommentArgs(BaseModel):
-    work_item_id: str = Field(description="Work item to comment on.")
-    text: str = Field(description="The full comment body, one line per user.")
-    userid: str = Field(default="", description="A user this comment concerns.")
+    work_item_id: str = Field(description="Work item to comment on. The comment text is "
+                                          "written by the tool from what this run "
+                                          "recorded; you do not supply it.")
 
 
 class AttachArgs(BaseModel):
@@ -556,15 +556,29 @@ def build_registry(ctx: ToolContext, board: Blackboard, memory: MemoryStore,
                                     "it as complete. check_jazz_permission is what "
                                     "confirms it landed.")}, indent=2)
 
-    async def post_workitem_comment(work_item_id: str, text: str,
-                                    userid: str = "") -> str:
+    async def post_workitem_comment(work_item_id: str) -> str:
+        from .nodes.closure import action_from_records, render_comment
+
         if denial := _scope_denial(work_item_id=work_item_id):
             return denial
-        # Posted exactly as written: no signature or marker is appended.
+        # The comment is the permanent record on someone else's work item, so
+        # its words come from the records, never from the model: an agent (or
+        # text a requester planted in the work item) can decide *whether* to
+        # comment, but cannot make the comment claim anything unrecorded.
+        entries = [
+            (userid, user.display_name,
+             action_from_records(userid, board.results, board.statuses))
+            for userid, user in sorted(board.users.items())
+            if userid in board.verified and work_item_id in user.work_item_ids]
+        if not entries:
+            return (f"ERROR: no verified user on work item {work_item_id}, so there is "
+                    "nothing true to report yet. Verify first (check_jazz_permission).")
+        text = render_comment(entries)
         result = await backend.post_comment(ctx, work_item_id=work_item_id,
-                                            userid=userid or next(iter(board.users), ""),
-                                            text=text, marker="")
-        return _record(result)
+                                            userid=entries[0][0], text=text, marker="")
+        observation = json.loads(_record(result))
+        observation["posted_text"] = text
+        return json.dumps(observation, indent=2)
 
     async def attach_workitem_evidence(work_item_id: str, userid: str) -> str:
         if denial := _scope_denial(work_item_id=work_item_id):
@@ -656,7 +670,8 @@ def build_registry(ctx: ToolContext, board: Blackboard, memory: MemoryStore,
                  "applied. WRITE.",
                  UserArgs, request_ad_group_membership, is_write=True),
         ToolSpec("post_workitem_comment",
-                 "Post a status comment on a work item. Idempotent by content. WRITE.",
+                 "Post the status comment on a work item, written from this run's "
+                 "records for its verified users. Idempotent. WRITE.",
                  CommentArgs, post_workitem_comment, is_write=True),
         ToolSpec("attach_workitem_evidence",
                  "Attach a captured, validated profile screenshot to a work item. WRITE.",
