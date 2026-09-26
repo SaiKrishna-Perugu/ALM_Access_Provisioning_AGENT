@@ -19,7 +19,7 @@ import re
 
 from ..errors import DataError, NotFoundError, TransportError
 from ..logging import get_logger
-from ..models import Operation, ProvisionResult, WorkItem
+from ..models import WORK_ITEM_ID_PATTERN, Operation, ProvisionResult, WorkItem
 from ..oslc import (
     F_ACCESS_TYPE,
     F_DOMAIN,
@@ -136,13 +136,17 @@ async def fetch_open_requests(ctx: ToolContext, limit: int | None = None) -> lis
 
 
 def _fetch_one(ctx: ToolContext, work_item_id: str) -> WorkItem | None:
+    if not re.match(WORK_ITEM_ID_PATTERN, str(work_item_id)):
+        raise DataError(f"not an EWM work item id: {str(work_item_id)[:40]!r}")
     server = _server(ctx)
     uuid = _project_uuid(ctx)
     session = ctx.client.session(server, kind="ewm")
     rows = collect_results(
         session, f"{server}/oslc/contexts/{uuid}/workitems",
         {"oslc.properties": OSLC_PROPERTIES,
-         "oslc.where": f"dcterms:identifier={work_item_id}"},
+         # Only ALM Access Requests: an id for another kind of work item
+         # (a defect, a task) must not be treated as an access request.
+         "oslc.where": f'dcterms:identifier={work_item_id} and rtc_cm:type="{TYPE_ID}"'},
         timeout=ctx.settings.timeout, verify=ctx.settings.verify, limit=1)
     if not rows:
         return None

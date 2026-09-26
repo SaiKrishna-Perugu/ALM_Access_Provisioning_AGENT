@@ -26,6 +26,7 @@ from typing import Any, Protocol
 from alm_core.errors import EvidenceInvalid
 from alm_core.logging import get_logger
 from alm_core.models import (
+    WORK_ITEM_ID_PATTERN,
     ApprovalItem,
     Operation,
     ProvisionResult,
@@ -187,17 +188,20 @@ class FetchQueueArgs(BaseModel):
 
 
 class WorkItemArgs(BaseModel):
-    work_item_id: str = Field(description="The numeric EWM work item identifier.")
+    work_item_id: str = Field(pattern=WORK_ITEM_ID_PATTERN,
+                              description="The numeric EWM work item identifier.")
 
 
 class ParseArgs(BaseModel):
     work_item_id: str = Field(
-        default="", description="A fetched work item: its stored New Users field is parsed.")
+        default="", pattern=r"^([0-9]{1,10})?$",
+        description="A fetched work item: its stored New Users field is parsed.")
     text: str = Field(default="", description="Other text to parse, when there is no work item.")
 
 
 class RecoverArgs(BaseModel):
-    work_item_id: str = Field(description="A work item already fetched in this run.")
+    work_item_id: str = Field(pattern=WORK_ITEM_ID_PATTERN,
+                              description="A work item already fetched in this run.")
 
 
 class UserArgs(BaseModel):
@@ -205,13 +209,14 @@ class UserArgs(BaseModel):
 
 
 class CommentArgs(BaseModel):
-    work_item_id: str = Field(description="Work item to comment on. The comment text is "
+    work_item_id: str = Field(pattern=WORK_ITEM_ID_PATTERN,
+                              description="Work item to comment on. The comment text is "
                                           "written by the tool from what this run "
                                           "recorded; you do not supply it.")
 
 
 class AttachArgs(BaseModel):
-    work_item_id: str
+    work_item_id: str = Field(pattern=WORK_ITEM_ID_PATTERN)
     userid: str
 
 

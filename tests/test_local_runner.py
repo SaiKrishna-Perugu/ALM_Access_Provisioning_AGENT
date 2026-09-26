@@ -768,3 +768,40 @@ def test_agent_and_cli_comment_lines_have_the_same_format():
     cli_text = cli.build_comment([{"userid": "AB12345", "name": "ALICE SMITH"}],
                                  {"AB12345": {"action": "created", "state": "active"}})
     assert agent == cli_text
+
+
+
+# --------------------------------------------------- T3: scope and id checks
+
+def test_a_commit_run_must_name_its_work_items():
+    with pytest.raises(local.SetupError, match="--commit needs --work-item"):
+        local.check_commit_scope(local.parse_args(["--commit"]))
+    local.check_commit_scope(local.parse_args(["--commit", "--work-item", "2781796"]))
+    local.check_commit_scope(local.parse_args([]))          # a dry run may scan
+    local.check_commit_scope(local.parse_args(["--commit", "--resume", "local-1"]))
+
+
+def test_a_commit_run_is_capped_at_a_few_work_items():
+    many = [a for n in range(local.MAX_COMMIT_WORK_ITEMS + 1)
+            for a in ("--work-item", str(1000 + n))]
+    with pytest.raises(local.SetupError, match="at most"):
+        local.check_commit_scope(local.parse_args(["--commit", *many]))
+
+
+@pytest.mark.parametrize("bad", ["12a", "1 or 1=1", "../1", "12345678901", ""])
+def test_work_item_ids_must_be_numbers_everywhere(bad):
+    from pydantic import ValidationError
+
+    from alm_agents.toolkit import AttachArgs, CommentArgs, RecoverArgs, WorkItemArgs
+    from alm_core.errors import DataError
+    from alm_core.tools import ewm
+
+    with pytest.raises(SystemExit):
+        local.parse_args(["--work-item", bad])
+    for schema in (WorkItemArgs, RecoverArgs, CommentArgs):
+        with pytest.raises(ValidationError):
+            schema.model_validate({"work_item_id": bad})
+    with pytest.raises(ValidationError):
+        AttachArgs.model_validate({"work_item_id": bad, "userid": "AB12345"})
+    with pytest.raises(DataError):
+        ewm._fetch_one(None, bad)        # refused before any request is built

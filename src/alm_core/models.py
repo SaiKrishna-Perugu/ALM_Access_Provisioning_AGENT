@@ -21,6 +21,9 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 # (SF58083, T0195G3, MWPDOO01). Anything else is not a user ID, whatever
 # produced it.
 USERID_PATTERN = r"^[A-Za-z]{1,3}[0-9][0-9A-Za-z]{3,8}$"
+# An EWM work item id is a plain number. Anything else never reaches a URL or
+# an OSLC query: the value can come from a model reading requester-written text.
+WORK_ITEM_ID_PATTERN = r"^[0-9]{1,10}$"
 
 
 def utcnow() -> datetime:

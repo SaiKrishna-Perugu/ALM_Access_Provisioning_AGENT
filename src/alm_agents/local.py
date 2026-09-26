@@ -372,6 +372,32 @@ async def run(settings, args, console) -> dict:
 
 # ---------------------------------------------------------------------- main
 
+# A committing run touches only work items the operator named, and few of
+# them: the run's write and hop budgets are sized for a handful of requests.
+MAX_COMMIT_WORK_ITEMS = 5
+
+
+def _work_item_id(value: str) -> str:
+    value = value.strip()
+    if not value.isdigit() or len(value) > 10:
+        raise argparse.ArgumentTypeError(f"{value!r} is not an EWM work item number")
+    return value
+
+
+def check_commit_scope(args) -> None:
+    """A run that writes names the work items it may touch, and only a few."""
+    if not args.commit or args.resume:
+        return  # a resumed run keeps the scope it started with
+    if not args.work_item:
+        raise SetupError(
+            "--commit needs --work-item <id>: a run that writes must name the work "
+            "items it may touch. Dry runs (no --commit) may scan the queue.")
+    if len(args.work_item) > MAX_COMMIT_WORK_ITEMS:
+        raise SetupError(
+            f"--commit takes at most {MAX_COMMIT_WORK_ITEMS} work items per run "
+            f"({len(args.work_item)} given). Split them into several runs.")
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="agent_local",
@@ -379,7 +405,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--check", action="store_true",
                         help="verify Gemini, EWM/JTS login, OSLC, GPT Chrome and the ledger")
     parser.add_argument("--work-item", action="append", metavar="ID",
-                        help="limit the run to this work item (repeatable)")
+                        type=_work_item_id,
+                        help="limit the run to this work item (repeatable; required "
+                             f"with --commit, at most {MAX_COMMIT_WORK_ITEMS})")
     parser.add_argument("--commit", action="store_true",
                         help="perform the writes (default: dry run - plan and record only)")
     parser.add_argument("--resume", metavar="THREAD_ID", default="",
@@ -423,6 +451,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.check:
             return asyncio.run(check(settings, console, list(args.work_item or [])))
 
+        check_commit_scope(args)
         if args.auto_approve and settings.is_prod:
             raise SetupError("--auto-approve is refused against PRODUCTION")
         if args.commit and settings.is_prod:
