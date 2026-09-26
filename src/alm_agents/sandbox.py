@@ -548,6 +548,31 @@ def _google_error(response) -> tuple[str, list[str]]:
     return scrub_secrets(error.get("message", ""))[:200], reasons
 
 
+def network_advice(err: Exception) -> str:
+    """The one thing to change when a request to Google got no answer.
+
+    "Set HTTPS_PROXY" is the wrong advice when a proxy is already in the path
+    and is re-signing HTTPS: then the fix is the company's CA bundle.
+    """
+    import requests
+
+    proxy = os.getenv("HTTPS_PROXY") or os.getenv("https_proxy")
+    if isinstance(err, requests.exceptions.SSLError):
+        return ("the certificate Google presented is not trusted here - usually a "
+                "corporate proxy inspecting HTTPS. Point REQUESTS_CA_BUNDLE and "
+                "SSL_CERT_FILE in .env at the company root CA bundle (.pem)")
+    if isinstance(err, requests.exceptions.ProxyError):
+        return (f"the proxy {'in HTTPS_PROXY ' if proxy else ''}refused the connection - "
+                "check its host:port, and whether it needs a user name and password")
+    if isinstance(err, requests.exceptions.Timeout):
+        return ("no answer in time - traffic to the internet is being dropped. "
+                + ("Check that HTTPS_PROXY is right." if proxy else
+                   "Behind a corporate proxy? Set HTTPS_PROXY in .env."))
+    if proxy:
+        return "cannot connect through HTTPS_PROXY - check that it is right"
+    return "cannot connect. Behind a corporate proxy? Set HTTPS_PROXY in .env"
+
+
 def _vertex_express_call(key: str, model: str):
     """One tiny generateContent on Vertex AI with an API key. Returns the response."""
     import requests
@@ -565,8 +590,8 @@ def _vertex_express_available(key: str, model: str, console: Console) -> bool:
     try:
         response = _vertex_express_call(key, model)
     except requests.RequestException as err:
-        console.line(f"FAIL  cannot reach Vertex AI: {type(err).__name__}. "
-                     "Behind a corporate proxy? Set HTTPS_PROXY.")
+        console.line(f"FAIL  cannot reach Vertex AI ({type(err).__name__}): "
+                     f"{network_advice(err)}")
         return False
     if response.status_code == 200:
         console.line(f"OK    {model} answers on Vertex AI with this key")
@@ -628,8 +653,8 @@ def _list_models(key: str, console: Console, probe_model: str = "") -> set[str] 
         response = requests.get(MODELS_URL, headers={"x-goog-api-key": key},
                                 params={"pageSize": 1000}, timeout=20)
     except requests.RequestException as err:
-        console.line(f"FAIL  cannot reach the Gemini API: {type(err).__name__}. "
-                     "Behind a corporate proxy? Set HTTPS_PROXY.")
+        console.line(f"FAIL  cannot reach the Gemini API ({type(err).__name__}): "
+                     f"{network_advice(err)}")
         return None
     if response.status_code != 200:
         detail, reasons = _google_error(response)

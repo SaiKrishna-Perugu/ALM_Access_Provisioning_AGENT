@@ -420,6 +420,45 @@ def test_an_unreachable_server_is_not_reported_as_bad_credentials():
         _login(FakeSession(reachable=False))
 
 
+def test_an_untrusted_certificate_points_at_the_ca_bundle_not_the_vpn():
+    import requests
+
+    from alm_core.errors import TransportError
+
+    class BadCertificate(FakeSession):
+        def post(self, url, **_kw):
+            raise requests.exceptions.SSLError("CERTIFICATE_VERIFY_FAILED")
+
+    with pytest.raises(TransportError, match="not trusted.*ALM_CA_BUNDLE") as caught:
+        _login(BadCertificate())
+    assert "NO_PROXY" not in caught.value.message
+
+
+@pytest.mark.parametrize(("error", "proxy", "expected"), [
+    ("SSLError", "", "REQUESTS_CA_BUNDLE and SSL_CERT_FILE"),
+    ("ProxyError", "http://proxy:8080", "proxy in HTTPS_PROXY refused"),
+    ("ConnectTimeout", "", "Set HTTPS_PROXY"),
+    ("ConnectionError", "", "Set HTTPS_PROXY"),
+    ("ConnectionError", "http://proxy:8080", "through HTTPS_PROXY"),
+])
+def test_gemini_network_failures_get_the_fix_that_matches(monkeypatch, error, proxy,
+                                                           expected):
+    """Review DX #8: behind TLS inspection 'set HTTPS_PROXY' was the wrong advice."""
+    import requests
+
+    from alm_agents.sandbox import network_advice
+
+    monkeypatch.delenv("https_proxy", raising=False)
+    if proxy:
+        monkeypatch.setenv("HTTPS_PROXY", proxy)
+    else:
+        monkeypatch.delenv("HTTPS_PROXY", raising=False)
+    advice = network_advice(getattr(requests.exceptions, error)("boom"))
+    assert expected in advice
+    if error == "SSLError":
+        assert "HTTPS_PROXY" not in advice
+
+
 def test_rejected_credentials_say_so():
     from alm_core.errors import AuthenticationError
 

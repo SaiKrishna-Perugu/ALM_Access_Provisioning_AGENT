@@ -165,6 +165,13 @@ def form_login(session: requests.Session, server: str, user: str, password: str,
     context = {"server": server, "user": user, "endpoints_tried": attempted}
     if not answered:
         cause = type(transport_error).__name__ if transport_error else "no login endpoint"
+        if isinstance(transport_error, requests.exceptions.SSLError):
+            # The host answered; its certificate did not verify. VPN and proxy
+            # advice would send the operator the wrong way.
+            raise TransportError(
+                f"{server} answered but its TLS certificate is not trusted ({cause}). Set "
+                "ALM_CA_BUNDLE in .env to the company CA bundle (.pem) - or, on TEST "
+                "only, leave ALM_TLS_VERIFY unset to run unverified.", context=context)
         raise TransportError(
             f"cannot reach {server} ({cause}). Check DNS, the VPN, and that the host "
             "is in NO_PROXY - the corporate proxy cannot reach intranet servers.",
