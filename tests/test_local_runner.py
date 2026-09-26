@@ -1022,6 +1022,38 @@ def test_the_closer_cannot_make_the_comment_claim_an_unrecorded_action(tmp_path)
     assert "EF11111: BAO NGUYEN: User already present in JTS" in posted[0]
 
 
+def test_evidence_goes_only_to_the_work_items_that_requested_the_user(tmp_path):
+    """Sandbox run: 1001 received the profile screenshots of 1002's users."""
+    from alm_agents.memory import MemoryStore as AgentMemory
+    from alm_agents.toolkit import Blackboard, build_registry
+    from alm_core.store.memory import MemoryStore
+    from alm_core.tools.base import ToolContext
+
+    estate = SandboxEstate.default()
+    ctx = ToolContext(settings=local_settings(tmp_path, commit=False), client=None,
+                      store=MemoryStore(), run_id="t")
+    registry = build_registry(ctx, Blackboard(), AgentMemory(None),
+                              backend=SandboxBackend(estate),
+                              shots_dir=str(tmp_path / "shots"))
+
+    async def scenario():
+        for work_item_id in ("1001", "1002"):
+            await registry.get("fetch_work_item").run(work_item_id=work_item_id)
+        captured = json.loads(await registry.get("capture_evidence").run(
+            userids=["EF11111"]))
+        wrong = await registry.get("attach_workitem_evidence").run(
+            work_item_id="1001", userid="EF11111")
+        unknown = await registry.get("attach_workitem_evidence").run(
+            work_item_id="1001", userid="ZZ99999")
+        return captured, wrong, unknown
+
+    captured, wrong, unknown = asyncio.run(scenario())
+    assert captured["attach_to"] == {"EF11111": ["1002"]}
+    assert wrong.startswith("DENIED") and "requested on: 1002" in wrong
+    assert unknown.startswith("DENIED")
+    assert "EF11111.png" not in estate.attachments.get("1001", [])
+
+
 def test_no_comment_is_posted_before_anyone_is_verified(tmp_path):
     llm = ScriptedLLM(
         ["triage", "validator", "risk_officer", "closer", "DONE"], {

@@ -233,8 +233,9 @@ already had access before this run: their profile screenshot is the record, on
 this request, that the access exists.
 
 Call capture_evidence once, with every verified user ID. Then call
-attach_workitem_evidence for each (work item, user) pair: a user requested on
-two work items gets the screenshot on both.
+attach_workitem_evidence for each (work item, user) pair listed in its
+attach_to: a user requested on two work items gets the screenshot on both, and
+never on a work item that did not request them.
 
 capture_evidence validates the batch before returning: every artifact must be a
 confirmed profile page, and no two users may produce the same file. If it

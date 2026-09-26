@@ -510,11 +510,15 @@ def build_registry(ctx: ToolContext, board: Blackboard, memory: MemoryStore,
                     + "; ".join(problems))
         board.evidence.update(artifacts)
         missing = [u for u in userids if u not in artifacts]
+        attach_to = {u: board.users[u].work_item_ids for u in sorted(artifacts)
+                     if u in board.users}
         return json.dumps({"captured": sorted(artifacts),
                            "not_confirmed": missing,
                            "saved_in": os.path.abspath(shots_dir),
-                           "note": ("Only captured users may be attached. Attach each to "
-                                    "every work item that requested that user.")}, indent=2)
+                           "attach_to": attach_to,
+                           "note": ("Only captured users may be attached, and only to the "
+                                    "work items listed for them in attach_to - never to "
+                                    "another work item.")}, indent=2)
 
     # ----------------------------------------------------------- write tools
 
@@ -638,6 +642,14 @@ def build_registry(ctx: ToolContext, board: Blackboard, memory: MemoryStore,
     async def attach_workitem_evidence(work_item_id: str, userid: str) -> str:
         if denial := _scope_denial(work_item_id=work_item_id):
             return denial
+        # A profile screenshot is personal data: it belongs only on the work
+        # items that asked for that person, never on another team's request.
+        user = board.users.get(userid)
+        if user is None or work_item_id not in user.work_item_ids:
+            requested_on = ", ".join(user.work_item_ids) if user else "no work item in this run"
+            return (f"DENIED: {userid} was not requested on work item {work_item_id} "
+                    f"(requested on: {requested_on}). Attach evidence only to the work "
+                    "items that requested that user.")
         path = board.evidence.get(userid)
         if not path:
             return (f"ERROR: no validated evidence for {userid}. Call capture_evidence "
