@@ -49,6 +49,9 @@ class PipelineState(TypedDict, total=False):
     # otherwise a dry run's preview approval could authorise real writes, or a
     # paused real run could silently become a dry run.
     run_mode: str
+    # How many routing decisions needed the supervisor model (guided mode asks
+    # it only on exceptions). Kept in state so metrics survive a resume.
+    supervisor_model_calls: int
 
     # --- intake -------------------------------------------------------------
     work_item_ids: list[str]

@@ -958,3 +958,24 @@ def test_the_cli_skips_a_work_item_the_agents_already_reported():
     already = {"AB12345": {"action": "already_active", "state": "active"}}
     assert not cli.all_reported([stored], members, already)
     assert not cli.all_reported([], members, created)
+
+
+# ----------------------------------------------------------- T6: run metrics
+
+def test_the_report_says_what_the_run_cost(tmp_path):
+    guided = asyncio.run(one_process(
+        local_settings(tmp_path / "g", orchestration="guided"),
+        ScriptedLLM([], GUIDED_SCRIPTS), decide=approve, thread_id="m-guided"))
+    metrics = guided["metrics"]
+    assert metrics["supervisor_model_calls"] == 0
+    assert metrics["agent_model_calls"] > 0
+    assert metrics["model_calls"] == metrics["agent_model_calls"]
+    assert metrics["per_agent"]["provisioner"]["tool_calls"] >= 2
+    assert metrics["hops"] == guided["hops"]
+
+    plan = ["triage", "validator", "risk_officer", "provisioner", "verifier",
+            "evidence_officer", "closer", "DONE"]
+    agentic = asyncio.run(one_process(
+        local_settings(tmp_path / "a"), ScriptedLLM(plan, GUIDED_SCRIPTS),
+        decide=approve, thread_id="m-agentic"))
+    assert agentic["metrics"]["supervisor_model_calls"] == agentic["hops"]

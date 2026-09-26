@@ -11,6 +11,7 @@ from __future__ import annotations
 import getpass
 import json
 import textwrap
+import time
 from pathlib import Path
 
 
@@ -146,6 +147,7 @@ async def drive(graph, ctx, *, thread_id: str, decide, console: Console,
     from .graph import resume_run, run_config, start_run
 
     config = run_config(thread_id)
+    started = time.monotonic()
     if resume:
         snapshot = await graph.aget_state(config)
         if not snapshot.values:
@@ -189,7 +191,38 @@ async def drive(graph, ctx, *, thread_id: str, decide, console: Console,
         "agents": [e.get("agent") for e in final.get("agent_history") or []],
         "results": [r.model_dump(mode="json") for r in final.get("results") or []],
         "approval_rounds": approvals,
+        "metrics": run_metrics(final, time.monotonic() - started),
         "audit_events": await ctx.store.run_events(ctx.run_id),
+    }
+
+
+def run_metrics(state: dict, wall_seconds: float) -> dict:
+    """What the run cost: model calls, tool calls, hops, time, per agent.
+
+    Built from the run's own state, so a resumed run reports the whole run -
+    except wall time, which is this process's share.
+    """
+    per_agent: dict[str, dict] = {}
+    for entry in state.get("agent_history") or []:
+        name = entry.get("agent", "?")
+        if name == "approval":
+            continue
+        row = per_agent.setdefault(name, {"runs": 0, "model_calls": 0,
+                                          "tool_calls": 0, "denials": 0})
+        row["runs"] += 1
+        row["model_calls"] += int(entry.get("model_calls") or 0)
+        row["tool_calls"] += int(entry.get("calls") or 0)
+        row["denials"] += int(entry.get("denials") or 0)
+    agent_calls = sum(r["model_calls"] for r in per_agent.values())
+    supervisor_calls = int(state.get("supervisor_model_calls") or 0)
+    return {
+        "model_calls": agent_calls + supervisor_calls,
+        "agent_model_calls": agent_calls,
+        "supervisor_model_calls": supervisor_calls,
+        "tool_calls": sum(r["tool_calls"] for r in per_agent.values()),
+        "hops": int(state.get("hops") or 0),
+        "wall_seconds": round(wall_seconds, 1),
+        "per_agent": per_agent,
     }
 
 
@@ -200,6 +233,12 @@ def print_report(report: dict, console: Console) -> None:
     console.line(f"run {report['run_id']}  thread {report['thread_id']}  {status}")
     console.line(f"hops {report['hops']}  approvals {report['approval_rounds']}  "
                  f"policy {report.get('policy', {})}")
+    metrics = report.get("metrics") or {}
+    if metrics:
+        console.line(f"cost: {metrics['model_calls']} model calls "
+                     f"(agents {metrics['agent_model_calls']}, supervisor "
+                     f"{metrics['supervisor_model_calls']}), {metrics['tool_calls']} tool "
+                     f"calls, {metrics['wall_seconds']}s")
     console.line("")
     console.line("writes (through guarded_write):")
     for r in report["results"]:

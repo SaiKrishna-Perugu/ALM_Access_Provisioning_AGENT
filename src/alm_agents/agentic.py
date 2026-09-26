@@ -140,6 +140,7 @@ def make_supervisor_node(runtime: AgenticRuntime):
         decision = (guided_next(history, snapshot, shadow=runtime.policy.shadow)
                     if runtime.guided else None)
         guided = decision is not None
+        consulted = not guided and runtime.supervisor_llm is not None
         if decision is None:
             decision = await decide(
                 runtime.supervisor_llm,
@@ -164,6 +165,8 @@ def make_supervisor_node(runtime: AgenticRuntime):
 
         return PipelineState(next_agent=decision.next_agent, next_task=decision.task,
                              hops=hops + 1, handoff_hint="",
+                             supervisor_model_calls=(state.get("supervisor_model_calls")
+                                                     or 0) + int(consulted),
                              board=runtime.board.to_state(),
                              policy=runtime.policy.summary())
 
@@ -203,6 +206,7 @@ def make_agent_node(runtime: AgenticRuntime):
             "task": state.get("next_task", "")[:200],
             "output": result.output[:600],
             "calls": len(result.calls),
+            "model_calls": result.iterations,
             "denials": sum(1 for c in result.calls if c.denied),
             "stopped": result.stopped_because,
             "handoff_to": result.handoff_to,
