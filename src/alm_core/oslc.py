@@ -15,6 +15,9 @@ import re
 from collections.abc import Iterator
 from typing import Any
 
+# defusedxml does the parsing; Element is only the stdlib type it returns.
+from xml.etree.ElementTree import Element  # noqa: S405 - type only, never parses
+
 import defusedxml.ElementTree as ET
 from defusedxml.common import DefusedXmlException
 
@@ -61,7 +64,7 @@ def local_name(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
 
 
-def parse_xml(content: bytes | str) -> ET.Element:
+def parse_xml(content: bytes | str) -> Element:
     """Parse OSLC XML, sanitising the malformations this server produces."""
     text = content.decode("utf-8", "replace") if isinstance(content, bytes | bytearray) \
         else content

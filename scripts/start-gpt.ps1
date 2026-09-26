@@ -42,14 +42,6 @@ if (-not $profileDir) {
     $profileDir = Join-Path (Join-Path $env:LOCALAPPDATA "alm-agent") "chrome-debug"
 }
 
-if ($Fresh -and (Test-Path $profileDir)) {
-    Write-Host "Removing existing profile directory: $profileDir"
-    Remove-Item -Recurse -Force $profileDir -ErrorAction SilentlyContinue
-}
-if (-not (Test-Path $profileDir)) {
-    New-Item -ItemType Directory -Path $profileDir -Force | Out-Null
-}
-
 $cdpUrl = $env:CDP_URL
 if (-not $cdpUrl -and (Test-Path $envFile)) {
     $line = Get-Content $envFile | Where-Object { $_ -match '^\s*CDP_URL\s*=' } | Select-Object -Last 1
@@ -72,6 +64,23 @@ $flags = @(
     "--no-default-browser-check"
 ) -join " "
 try { $up = (Invoke-WebRequest "http://$($cdp.Host):$port/json/version" -UseBasicParsing -TimeoutSec 2).StatusCode -eq 200 } catch { $up = $false }
+
+if ($Fresh) {
+    # Deleting a profile that a running Chrome holds open fails part-way and
+    # leaves a half-deleted profile behind - and that Chrome keeps its session.
+    if ($up) {
+        Write-Error "-Fresh: the debug Chrome on port $port is still running. Close it, then run again."
+        exit 1
+    }
+    if (Test-Path $profileDir) {
+        Write-Host "Removing the old profile (GPT and JTS session cookies): $profileDir"
+        Remove-Item -Recurse -Force $profileDir -ErrorAction Stop
+    }
+}
+if (-not (Test-Path $profileDir)) {
+    New-Item -ItemType Directory -Path $profileDir -Force | Out-Null
+}
+
 if (-not $up) {
     Start-Process $chrome "$flags $Url"
     Start-Sleep -Seconds 3

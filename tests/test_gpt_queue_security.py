@@ -12,7 +12,7 @@ def test_build_job_payload_contains_no_personal_data_beyond_userid():
         run_id="run-123",
         thread_id="th-456",
         userid="AB12345",
-        work_item_id="WI-9999",
+        work_item_id="9999",
         group="CN=ALM_Users,OU=Groups,DC=example,DC=com",
         domain="example.com",
         approver="approver@example.com",
@@ -56,7 +56,7 @@ def test_build_job_idempotency_key_is_deterministic():
         run_id="run-1",
         thread_id="th-1",
         userid="AB12345",
-        work_item_id="WI-9999",
+        work_item_id="9999",
         group="ALM_GROUP",
         domain="example.com",
         approver="approver@example.com",
@@ -66,14 +66,14 @@ def test_build_job_idempotency_key_is_deterministic():
         run_id="run-2",  # different run
         thread_id="th-2",  # different thread
         userid="AB12345",
-        work_item_id="WI-9999",
+        work_item_id="9999",
         group="ALM_GROUP",
         domain="example.com",
         approver="approver@example.com",
         environment="TEST",
     )
 
-    expected_key = idempotency_key("WI-9999", "AB12345", Operation.AD_GROUP_ADD)
+    expected_key = idempotency_key("9999", "AB12345", Operation.AD_GROUP_ADD)
     assert job1["idempotency_key"] == expected_key
     assert job2["idempotency_key"] == expected_key
     assert job1["idempotency_key"] == job2["idempotency_key"]
@@ -96,7 +96,7 @@ def test_pubsub_publisher_publishes_idempotency_attributes():
         run_id="run-1",
         thread_id="th-1",
         userid="AB12345",
-        work_item_id="WI-9999",
+        work_item_id="9999",
         group="ALM_GROUP",
         domain="example.com",
         approver="approver@example.com",

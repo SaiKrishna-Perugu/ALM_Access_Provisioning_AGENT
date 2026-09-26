@@ -84,13 +84,14 @@ jobs:
       - name: Install the cloud dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements-cloud.txt
-          pip install pytest ruff
+          pip install -r requirements-cloud.txt -r requirements-dev.txt
       - name: Test the multi-agent system end to end
         env:
           # Fail if any checkpointed type is missing from the allowlist.
           LANGGRAPH_STRICT_MSGPACK: "true"
-        run: pytest -q
+        # Coverage was 54% when the floor was set (2026-09-27); the margin
+        # covers Windows-only paths CI does not run. Raise it as tests land.
+        run: pytest -q --cov=src --cov-report=term --cov-fail-under=50
 
   security:
     runs-on: ubuntu-latest

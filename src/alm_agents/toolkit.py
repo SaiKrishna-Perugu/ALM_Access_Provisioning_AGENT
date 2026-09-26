@@ -608,8 +608,17 @@ def build_registry(ctx: ToolContext, board: Blackboard, memory: MemoryStore,
         # its words come from the records, never from the model: an agent (or
         # text a requester planted in the work item) can decide *whether* to
         # comment, but cannot make the comment claim anything unrecorded.
+        def name_for(userid: str, user: RequestedUser) -> str:
+            # A user recovered from free text has no requester-given name, so
+            # display_name falls back to the ID ("TB22322: TB22322"). LDAP knows
+            # the name; use it before repeating the ID.
+            if user.first_name or user.last_name:
+                return user.display_name
+            status = board.statuses.get(userid)
+            return (status.ldap_name if status and status.ldap_name else userid)
+
         entries = [
-            (userid, user.display_name,
+            (userid, name_for(userid, user),
              action_from_records(userid, board.results, board.statuses))
             for userid, user in sorted(board.users.items())
             if userid in board.verified and work_item_id in user.work_item_ids]

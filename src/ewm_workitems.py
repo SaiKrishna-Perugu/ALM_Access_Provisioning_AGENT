@@ -21,6 +21,9 @@ import getpass
 import os
 import sys
 
+# defusedxml does the parsing; Element is only the stdlib type it returns.
+from xml.etree.ElementTree import Element  # noqa: S405 - type only, never parses
+
 import defusedxml.ElementTree as ET
 import requests
 
@@ -64,7 +67,7 @@ def _localname(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
 
 
-def _attr(elem: ET.Element, local: str) -> str:
+def _attr(elem: Element, local: str) -> str:
     """Get an attribute by local name, ignoring its XML namespace prefix."""
     for key, val in elem.attrib.items():
         if _localname(key) == local:

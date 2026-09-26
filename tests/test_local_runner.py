@@ -1072,6 +1072,34 @@ def test_evidence_goes_only_to_the_work_items_that_requested_the_user(tmp_path):
     assert "EF11111.png" not in estate.attachments.get("1001", [])
 
 
+def test_a_recovered_user_is_named_from_ldap_in_the_comment(tmp_path):
+    """Sandbox run: a user recovered from free text was written 'TB22322: TB22322'."""
+    from alm_agents.memory import MemoryStore as AgentMemory
+    from alm_agents.toolkit import Blackboard, build_registry
+    from alm_core.models import RequestedUser, SourceWorkItem
+    from alm_core.store.memory import MemoryStore
+    from alm_core.tools.base import ToolContext
+
+    board = Blackboard()
+    board.users["TB22322"] = RequestedUser(
+        userid="TB22322", extracted_by_llm=True, extraction_confidence=0.9,
+        source_work_items=[SourceWorkItem(work_item_id="1002", summary="")])
+    ctx = ToolContext(settings=local_settings(tmp_path, commit=False), client=None,
+                      store=MemoryStore(), run_id="t")
+    registry = build_registry(ctx, board, AgentMemory(None),
+                              backend=SandboxBackend(SandboxEstate.default()))
+
+    async def scenario():
+        await registry.get("classify_user").run(userid="TB22322")
+        board.verified.add("TB22322")
+        return json.loads(await registry.get("post_workitem_comment").run(
+            work_item_id="1002"))
+
+    posted = asyncio.run(scenario())["posted_text"]
+    assert "TB22322: TB22322" not in posted
+    assert "TOM BAKER" in posted.upper()
+
+
 def test_no_comment_is_posted_before_anyone_is_verified(tmp_path):
     llm = ScriptedLLM(
         ["triage", "validator", "risk_officer", "closer", "DONE"], {
