@@ -39,9 +39,13 @@ variable "corporate_dns_servers" {
 }
 
 variable "corporate_dns_suffix" {
-  description = "Domain forwarded to the corporate resolvers."
+  description = "Domain forwarded to the corporate resolvers, with a trailing dot. Supplied at deploy time (GitHub environment variable CORPORATE_DNS_SUFFIX), never committed."
   type        = string
-  default     = "example.intra."
+
+  validation {
+    condition     = endswith(var.corporate_dns_suffix, ".") && !strcontains(var.corporate_dns_suffix, "example.intra")
+    error_message = "corporate_dns_suffix must be the real intranet domain with a trailing dot, not the example.intra placeholder."
+  }
 }
 
 variable "interconnect_router_name" {
@@ -97,15 +101,23 @@ variable "supervisor_model" {
 }
 
 variable "ewm_server" {
-  description = "EWM base URL, e.g. https://ewm-test.example.intra/ccm"
+  description = "EWM base URL (https://<host>/ccm). Supplied at deploy time (GitHub environment variable EWM_SERVER), never committed."
   type        = string
-  default     = ""
+
+  validation {
+    condition     = startswith(var.ewm_server, "https://") && !strcontains(var.ewm_server, "example.intra")
+    error_message = "ewm_server must be the real https:// EWM URL, not empty or the example.intra placeholder."
+  }
 }
 
 variable "jts_server" {
-  description = "JTS base URL."
+  description = "JTS base URL (https://<host>/jts). Supplied at deploy time (GitHub environment variable JTS_SERVER), never committed."
   type        = string
-  default     = ""
+
+  validation {
+    condition     = startswith(var.jts_server, "https://") && !strcontains(var.jts_server, "example.intra")
+    error_message = "jts_server must be the real https:// JTS URL, not empty or the example.intra placeholder."
+  }
 }
 
 variable "service_account_cid" {

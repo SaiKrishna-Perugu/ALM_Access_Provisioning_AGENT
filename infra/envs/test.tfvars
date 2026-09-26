@@ -13,8 +13,9 @@ psa_cidr    = "10.60.4.0/24"
 corporate_dns_servers    = []
 interconnect_router_name = ""
 
-ewm_server          = "https://ewm-test.example.intra/ccm"
-jts_server          = "https://jts-test.example.intra/jts"
+# ewm_server, jts_server and corporate_dns_suffix are real intranet names:
+# they come from this environment's GitHub variables at deploy time
+# (EWM_SERVER, JTS_SERVER, CORPORATE_DNS_SUFFIX) and are never committed.
 service_account_cid = ""
 
 container_image = ""        # set by CI to an image digest

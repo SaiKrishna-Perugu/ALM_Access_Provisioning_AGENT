@@ -10,6 +10,13 @@ name: Deploy
 # The environment gates matter: `test` deploys on a push to main, `prod` needs a
 # GitHub environment approval. Turning shadow mode off is not done here at all -
 # it is a deliberate configuration change, made once, with a change record.
+#
+# Each GitHub environment (test, prod) needs these variables (Settings >
+# Environments > Variables). They are the real intranet names, so they are
+# kept out of the repository; Terraform refuses to apply without them:
+#   EWM_SERVER            https://<ewm host>/ccm
+#   JTS_SERVER            https://<jts host>/jts
+#   CORPORATE_DNS_SUFFIX  <intranet domain>.   (trailing dot)
 
 on:
   push:
@@ -175,10 +182,15 @@ jobs:
           terraform -chdir=infra init \
             -backend-config="bucket=${{ secrets.GCP_TF_STATE_BUCKET }}" \
             -backend-config="prefix=alm/$TARGET"
-          terraform -chdir=infra apply -auto-approve \
+          # Intranet host names are GitHub environment variables, not committed:
+          # the variables' validation fails the apply if one is missing.
+          terraform -chdir=infra apply -auto-approve -input=false \
             -var-file="envs/$TARGET.tfvars" \
             -var="project_id=${{ secrets.GCP_PROJECT_ID }}" \
-            -var="container_image=${{ needs.build.outputs.image }}"
+            -var="container_image=${{ needs.build.outputs.image }}" \
+            -var="ewm_server=${{ vars.EWM_SERVER }}" \
+            -var="jts_server=${{ vars.JTS_SERVER }}" \
+            -var="corporate_dns_suffix=${{ vars.CORPORATE_DNS_SUFFIX }}"
 
       - name: Connectivity smoke test
         # A green apply proves the resources exist. It proves nothing about
