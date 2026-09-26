@@ -30,7 +30,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from alm_core.logging import get_logger, redact_pii, scrub_secrets
+from alm_core.logging import get_logger, redact_names, redact_pii, scrub_secrets
 from alm_core.models import AuditEvent, Outcome
 
 from .policy import PolicyEngine
@@ -231,11 +231,14 @@ class AgentRunner:
                  store=None, run_id: str = "", thread_id: str = "",
                  environment: str = "",
                  on_event: Callable[[str, dict], None] | None = None,
-                 redact: bool = True):
+                 redact: bool = True,
+                 known_names: Callable[[], Any] | None = None):
         self.llm = llm
-        # Strip e-mail addresses from what the model reads. User IDs stay: they
-        # are what the agents work with. The console and audit keep the original.
+        # Strip e-mail addresses, and the personal names this run holds, from
+        # what the model reads. User IDs stay: they are what the agents work
+        # with. The console and audit keep the original.
         self.redact = redact
+        self.known_names = known_names
         # Optional live progress hook - the sandbox prints agent reasoning and
         # tool calls as they happen. Never allowed to break the run.
         self.on_event = on_event
@@ -327,9 +330,10 @@ class AgentRunner:
         instructions = agent.instructions(self.registry)
         if self.redact:
             instructions += (
-                "\n- E-mail addresses appear as [email]. They are withheld from you on "
-                "purpose; that is not a defect in the data. The e-mail checks run in "
-                "code, and the tools always work on the real values.")
+                "\n- E-mail addresses appear as [email] and personal names as [name]. "
+                "They are withheld from you on purpose; that is not a defect in the "
+                "data. The e-mail and name checks run in code, and the tools always "
+                "work on the real values.")
         messages: list[Any] = [
             SystemMessage(content=instructions),
             HumanMessage(content=f"{task}\n\n{context}".strip()),
@@ -382,8 +386,12 @@ class AgentRunner:
                 result.calls.append(record)
                 # name= matters for Gemini, which pairs a function response with
                 # its call by name rather than by id.
-                model_view = (redact_pii(observation, keep_userids=True)
-                              if self.redact else observation)
+                model_view = observation
+                if self.redact:
+                    model_view = redact_pii(observation, keep_userids=True)
+                    if self.known_names is not None:
+                        # Read now: the tool that just ran may have added names.
+                        model_view = redact_names(model_view, self.known_names())
                 messages.append(ToolMessage(content=model_view, name=name,
                                             tool_call_id=call.get("id") or name))
                 log.info("agent_tool_call", agent=agent.name, tool=name,

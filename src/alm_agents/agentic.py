@@ -183,7 +183,8 @@ def make_agent_node(runtime: AgenticRuntime):
             store=runtime.ctx.store, run_id=state.get("run_id", ""),
             thread_id=state.get("thread_id", ""),
             environment=runtime.ctx.environment, on_event=runtime.on_event,
-            redact=getattr(runtime.ctx.settings, "redact_for_model", True))
+            redact=getattr(runtime.ctx.settings, "redact_for_model", True),
+            known_names=runtime.board.known_names)
 
         subjects = sorted(runtime.board.users) + sorted(runtime.board.work_items)
         brief = await runtime.memory.brief(subjects, tags=[name])

@@ -103,12 +103,41 @@ def redact_pii(text: str, *, keep_userids: bool = False) -> str:
 
     Run this on anything heading for an LLM. ``keep_userids=True`` is for the
     extraction fallback, where the user ID is the thing being extracted and the
-    prompt is useless without it - the e-mail and display name still go.
+    prompt is useless without it. Names cannot be found by pattern; use
+    :func:`redact_names` with the names the caller already knows.
     """
     text = _EMAIL_RE.sub("[email]", text or "")
     if not keep_userids:
         text = _USERID_RE.sub("[userid]", text)
     return text
+
+
+# Words that appear in names on this estate but also in ordinary sentences a
+# model needs to read ("User already present"). Redacting them would garble
+# the text without protecting anyone.
+_NAME_STOPWORDS = {"USER", "USERS", "TEST", "ADMIN", "EXTERNAL", "INTERNAL", "TEAM",
+                   "THE", "AND", "NEW", "ALM", "JAZZ", "ACCESS", "REQUEST"}
+
+
+def redact_names(text: str, names) -> str:
+    """Replace every word of the given personal names with ``[name]``.
+
+    ``names`` are the names this run actually holds (parsed requesters, LDAP
+    display names). Each alphabetic word of three letters or more is replaced
+    wherever it appears, case-insensitively and on word boundaries, so
+    "SOROBERTO,ANDREA" and "Andrea Soroberto" both disappear. User IDs contain
+    digits and are never touched.
+    """
+    words = set()
+    for name in names or ():
+        for word in re.findall(r"[^\W\d_]{3,}", str(name)):
+            if word.upper() not in _NAME_STOPWORDS:
+                words.add(word)
+    if not text or not words:
+        return text or ""
+    pattern = r"(?<![\w])(" + "|".join(
+        re.escape(w) for w in sorted(words, key=len, reverse=True)) + r")(?![\w])"
+    return re.sub(pattern, "[name]", text, flags=re.IGNORECASE)
 
 
 # --------------------------------------------------------------------- backend

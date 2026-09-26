@@ -416,7 +416,8 @@ from the server names, typed `PROD` confirmation, the same TLS settings - and
 adds the agents' guards on top: every tool call checked by the policy engine,
 a human approval before any write, the run limited to the work items named, and
 an idempotency ledger so a re-run reports earlier writes instead of repeating
-them. E-mail addresses are stripped before Gemini sees anything.
+them. E-mail addresses and the requesters' names are stripped before Gemini sees
+anything; user IDs are kept.
 
 The CLI is unchanged and remains the supported path. The autonomous stack is
 additive - it shares no state with the CLI and cannot interfere with it - and is

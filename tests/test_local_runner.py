@@ -899,3 +899,30 @@ def test_a_refused_agent_is_not_counted_as_done():
     assert "closer" in names and names[-1] == "DONE"
     assert guided_next([{"agent": "validator", "stopped": "iteration limit"}],
                        snapshot, shadow=False) is None
+
+
+# ------------------------------------------------------ T4: names stay local
+
+def test_personal_names_never_reach_the_model_but_stay_on_the_console(tmp_path):
+    llm = RecordingLLM(["triage", "validator", "DONE"], {
+        "triage": [[("fetch_work_item", {"work_item_id": "1001"})]],
+        "validator": [[("classify_user", {"userid": "AB12345"})]]})
+    events = Events()
+    asyncio.run(one_process(local_settings(tmp_path, commit=False), llm,
+                            decide=approve, thread_id="names", console=events))
+    shown = " ".join(m.content for m in llm.seen if isinstance(m, ToolMessage))
+    for name in ("ALICE", "SMITH", "CLAIRE", "DUPONT", "Alice Smith"):
+        assert name.lower() not in shown.lower(), name
+    assert "AB12345" in shown and "[name]" in shown
+    console_view = " ".join(d["observation"] for k, d in events.events
+                            if k == "tool_call")
+    assert "SMITH" in console_view
+
+
+def test_name_redaction_keeps_ordinary_words_and_user_ids():
+    from alm_core.logging import redact_names
+
+    text = "USER: AB12345 GHOST USER - User already present in JTS"
+    assert redact_names(text, ["GHOST", "USER"]) == (
+        "USER: AB12345 [name] USER - User already present in JTS")
+    assert redact_names("nothing to hide", []) == "nothing to hide"

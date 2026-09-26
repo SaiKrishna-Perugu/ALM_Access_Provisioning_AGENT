@@ -73,6 +73,15 @@ class Blackboard:
     # the run's state by the runtime, not by any agent.
     scope: set[str] = field(default_factory=set)
 
+    def known_names(self) -> list[str]:
+        """Every personal name this run holds, for redaction before a model."""
+        names: list[str] = []
+        for user in self.users.values():
+            names += [user.first_name, user.last_name, user.display_name]
+        for status in self.statuses.values():
+            names.append(status.ldap_name)
+        return [n for n in names if n]
+
     def out_of_scope(self, work_item_ids) -> list[str]:
         """The given work items that this run may not touch."""
         if not self.scope:
