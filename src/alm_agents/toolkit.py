@@ -214,7 +214,7 @@ class RecoverArgs(BaseModel):
 
 
 class UserArgs(BaseModel):
-    userid: str = Field(description="The Jazz user ID, e.g. SF58083.")
+    userid: str = Field(description="The Jazz user ID, e.g. AB12345.")
 
 
 class CommentArgs(BaseModel):

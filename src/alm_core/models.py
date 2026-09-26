@@ -18,7 +18,7 @@ from enum import Enum
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 # Jazz user IDs on this estate: 1-2 letters, a digit, then alphanumerics
-# (SF58083, T0195G3, MWPDOO01). Anything else is not a user ID, whatever
+# (AB12345, CD67890, XY99999). Anything else is not a user ID, whatever
 # produced it.
 USERID_PATTERN = r"^[A-Za-z]{1,3}[0-9][0-9A-Za-z]{3,8}$"
 # An EWM work item id is a plain number. Anything else never reaches a URL or

@@ -45,7 +45,7 @@ The well-formed format is: LASTNAME,FIRSTNAME,email,USERID; repeated.
 The text you are given failed to parse. Recover only what is genuinely present.
 
 Rules:
-- A user ID matches ^[A-Za-z]{1,3}[0-9][0-9A-Za-z]{3,8}$ (e.g. SF58083, T0195G3).
+- A user ID matches ^[A-Za-z]{1,3}[0-9][0-9A-Za-z]{3,8}$ (e.g. AB12345, CD67890).
 - Never invent, complete or correct a user ID. If you are not certain a token is
   a user ID as written, omit it.
 - Names and e-mail addresses have been redacted; do not try to reconstruct them.
@@ -472,7 +472,7 @@ def extract_users(settings, raw_field: str, work_item_id: str, summary: str = ""
             users.append(RequestedUser(
                 userid=userid, source_work_items=[source], extracted_by_llm=True,
                 extraction_confidence=probability))
-        except Exception:  # pydantic ValidationError
+        except Exception:  # noqa: S112 - skip invalid user candidate validation failures
             continue
     if users:
         log.info("llm_extraction_proposed", work_item=work_item_id, count=len(users),

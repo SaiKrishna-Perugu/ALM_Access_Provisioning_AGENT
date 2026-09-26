@@ -21,9 +21,9 @@ jobs:
         # 3.13 is what the operators run; 3.12 catches accidental 3.13-only syntax.
         python-version: ["3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -76,8 +76,8 @@ jobs:
   agents:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
         with:
           python-version: "3.13"
           cache: pip
@@ -92,14 +92,37 @@ jobs:
           LANGGRAPH_STRICT_MSGPACK: "true"
         run: pytest -q
 
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install security audit tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install pip-audit detect-secrets ruff
+      - name: Audit dependencies for known vulnerabilities
+        run: pip-audit -r requirements.txt -r requirements-cloud.txt
+      - name: Check static security rules
+        run: ruff check --select S src
+      - name: Detect secrets against baseline
+        run: detect-secrets scan --baseline .secrets.baseline
+
   secrets:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
         with:
           python-version: "3.13"
       - name: Install pre-commit
         run: pip install pre-commit
       - name: Run the hygiene and secret-detection hooks
+        env:
+          # The PII guard's denylist is personal data, so it lives in a
+          # repository secret (one token per line), never in the repository.
+          PII_DENYLIST: ${{ secrets.PII_DENYLIST }}
         run: pre-commit run --all-files --show-diff-on-failure

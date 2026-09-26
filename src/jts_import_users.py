@@ -22,7 +22,6 @@ import os
 import sys
 
 import requests
-import urllib3
 from dotenv import load_dotenv
 
 import alm_config
@@ -30,10 +29,9 @@ import alm_log
 import audit
 import jazz_client
 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 load_dotenv()
 
-JTS_SERVER = os.getenv("JTS_SERVER", "https://prsse.intra.chrysler.com/jts").rstrip("/")
+JTS_SERVER = os.getenv("JTS_SERVER", "https://jts.example.intra/jts").rstrip("/")
 USERS_IN_DEFAULT = os.getenv("ALM_USERS_OUT", "out/alm_users.json")
 CID = os.getenv("CID", "")
 COMMIT_ENV = os.getenv("COMMIT", "false").strip().lower() == "true"

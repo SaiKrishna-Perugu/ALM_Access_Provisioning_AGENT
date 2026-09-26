@@ -36,11 +36,15 @@ repos:
         args: ['--fix']
         files: ^(src|tests|\.github/hooks/scripts)/.*\.py$
 
-  # 4. The test suite runs offline in under a second - there is no reason to
-  #    let a commit through without it. This is what was missing when the
-  #    login-page screenshots reached production.
+  # 4. Local hygiene and safety guards
   - repo: local
     hooks:
+      - id: guard-pii
+        name: guard-pii (PII, hostnames, and file hygiene)
+        entry: python .github/hooks/scripts/guard-pii.py
+        language: system
+        stages: [pre-commit]
+
       - id: pytest
         name: pytest (offline suite)
         entry: python -m pytest

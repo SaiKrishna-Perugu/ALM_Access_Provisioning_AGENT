@@ -3,7 +3,7 @@
 // The single most common failure after a clean deploy is DNS, in one of two
 // directions, and both are configured here:
 //
-//   1. The container must resolve *.intra.chrysler.com through the corporate
+//   1. The container must resolve *.example.intra through the corporate
 //      resolvers reached over the interconnect - that is the forwarding zone.
 //   2. It must also resolve googleapis.com to restricted VIPs without leaving
 //      the VPC - that is Private Google Access plus the private-googleapis zone.

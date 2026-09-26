@@ -105,11 +105,22 @@ def tls_verify():
             "[STOP] ALM_TLS_VERIFY=strict but no ALM_CA_BUNDLE is configured. "
             "Point ALM_CA_BUNDLE at the corporate CA bundle to run verified.")
 
+    env = alm_env()
+    if env == "PROD":
+        raise SystemExit(
+            "[STOP] Refusing to run over unverified TLS in PRODUCTION (ALM_TLS_INSECURE is not allowed). "
+            "Configure ALM_CA_BUNDLE or ALM_TLS_VERIFY.")
+
     if not _warned:
         _warned = True
         print("[warn] TLS certificate verification is DISABLED (corporate self-signed "
               "certs). Set ALM_CA_BUNDLE=<path to corporate CA .pem> to verify.",
               file=sys.stderr, flush=True)
+        try:
+            import urllib3
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        except Exception:  # noqa: S110 - best-effort urllib3 warning suppression
+            pass
     return False
 
 

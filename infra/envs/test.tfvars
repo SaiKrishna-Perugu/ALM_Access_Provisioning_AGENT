@@ -13,8 +13,8 @@ psa_cidr    = "10.60.4.0/24"
 corporate_dns_servers    = []
 interconnect_router_name = ""
 
-ewm_server          = "https://prssetst.intra.chrysler.com/ccm"
-jts_server          = "https://prssetst.intra.chrysler.com/jts"
+ewm_server          = "https://ewm-test.example.intra/ccm"
+jts_server          = "https://jts-test.example.intra/jts"
 service_account_cid = ""
 
 container_image = ""        # set by CI to an image digest

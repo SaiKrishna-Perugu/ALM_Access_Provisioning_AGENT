@@ -212,10 +212,10 @@ def env(monkeypatch, tmp_path):
     return set_servers
 
 
-TEST_EWM = "https://prssetst.intra.chrysler.com/ccm"
-TEST_JTS = "https://prssetst.intra.chrysler.com/jts"
-PROD_EWM = "https://prsse.intra.chrysler.com/ccm"
-PROD_JTS = "https://prsse.intra.chrysler.com/jts"
+TEST_EWM = "https://prssetst.example.intra/ccm"
+TEST_JTS = "https://prssetst.example.intra/jts"
+PROD_EWM = "https://prsse.example.intra/ccm"
+PROD_JTS = "https://prsse.example.intra/jts"
 
 
 def test_test_servers_give_a_dry_run_by_default(env, tmp_path):
@@ -613,7 +613,7 @@ def test_both_google_key_formats_are_redacted():
 # ------------------------------------------------------- lessons from first run
 
 def test_the_parser_reads_the_stored_field_not_the_models_redacted_copy(tmp_path):
-    """First live run: the model passed back 'SOROBERTO,ANDREA,[email],SF58083;'
+    """First live run: the model passed back 'DOE,JANE,[email],AB12345;'
     and the parser rejected a perfectly good row because redaction removed '@'."""
     from alm_agents.memory import MemoryStore as AgentMemory
     from alm_agents.toolkit import Blackboard, build_registry
@@ -754,8 +754,10 @@ def test_purge_removes_old_personal_data_and_keeps_the_ledger(tmp_path):
     for path in [out / "run-old.json", out / "evidence" / "old" / "AB12345.png"]:
         os.utime(path, (old, old))
     purged = asyncio.run(purge(settings, Events(), 30, out_dir=out, now=later))
-    assert purged == {"runs": 1, "approvals": 1, "memories": 1,
-                      "reports": 1, "evidence": 1}
+    assert purged == {
+        "runs": 1, "approvals": 1, "memories": 1, "reports": 1, "evidence": 1,
+        "cli_audit": 0, "cli_screenshots": 0, "cli_users": 0, "cli_comments": 0,
+    }
     assert not (out / "run-old.json").exists()
     assert not (out / "evidence" / "old").exists()
 
@@ -1055,7 +1057,7 @@ def test_agent_and_cli_comment_lines_have_the_same_format():
 def test_a_commit_run_must_name_its_work_items():
     with pytest.raises(local.SetupError, match="--commit needs --work-item"):
         local.check_commit_scope(local.parse_args(["--commit"]))
-    local.check_commit_scope(local.parse_args(["--commit", "--work-item", "2781796"]))
+    local.check_commit_scope(local.parse_args(["--commit", "--work-item", "100001"]))
     local.check_commit_scope(local.parse_args([]))          # a dry run may scan
     local.check_commit_scope(local.parse_args(["--commit", "--resume", "local-1"]))
 

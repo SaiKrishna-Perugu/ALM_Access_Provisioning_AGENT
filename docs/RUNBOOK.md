@@ -318,3 +318,26 @@ Anything involving a production write that should not have happened: capture
 `run_id`, the `alm_audit` rows and the `alm_idempotency` rows **before** changing
 configuration. Restarting the revision does not lose them, but knowing the run id
 is what makes the rest of the investigation possible.
+
+---
+
+## 10. Data Retention and Cleanup (30-Day Policy)
+
+Local runs and CLI executions generate operational files in `out/` and `out/local/` that may contain transient personal data (usernames, screenshots, query responses).
+
+### Retention Policy
+- **Maximum Retention:** 30 days for local session checkpoints, screenshots, and temporary user caches.
+- **Permanent Records:** The durability ledger (`alm_idempotency`) and audit logs (`alm_audit`) are preserved indefinitely because they record what was written and prevent duplicate provisioning upon re-runs. They contain user IDs and timestamps, never passwords or session cookies.
+
+### Cleanup Procedures
+Run the local cleanup script periodically or schedule it via Windows Task Scheduler:
+```powershell
+# Default 30-day purge for all CLI and agent artifacts
+.\scripts\purge-local.ps1 -Days 30
+
+# Dry run to see what would be removed
+.\scripts\purge-local.ps1 -Days 30 -DryRun
+
+# Agent-specific purge
+python src/agent_local.py --purge-older-than 30
+```

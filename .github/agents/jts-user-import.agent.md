@@ -1,5 +1,5 @@
 ---
-description: 'Import the ALM users retrieved by the alm-access-retrieval agent into the Jazz Team Server (JTS) user registry at https://prsse.intra.chrysler.com/jts/. Reads the stored user IDs from out/alm_users.json and registers each user via the JTS REST API. Triggers: import users into JTS, add users to Jazz Team Server, JTS user registry, provision ALM users, jts user import, register jazz contributors.'
+description: 'Import the ALM users retrieved by the alm-access-retrieval agent into the Jazz Team Server (JTS) user registry at https://jts.example.intra/jts/. Reads the stored user IDs from out/alm_users.json and registers each user via the JTS REST API. Triggers: import users into JTS, add users to Jazz Team Server, JTS user registry, provision ALM users, jts user import, register jazz contributors.'
 tools: ['runInTerminal', 'getTerminalOutput', 'editFiles']
 model: 'Claude Sonnet 4.5 (copilot)'
 ---
@@ -60,7 +60,7 @@ failed. Report the code honestly: `3` is not success.
 - `--commit`            Actually import (otherwise dry run). `COMMIT=true` also works.
 
 ## Verified facts (this server)
-- JTS base: `https://prsse.intra.chrysler.com/jts` (set `JTS_SERVER` in `.env`).
+- JTS base: `https://jts.example.intra/jts` (set `JTS_SERVER` in `.env`).
 - Registry type is LDAP and read-only (`writable=false`), so contributors must be imported
   from LDAP - a plain create / RDF `foaf:Person` POST is rejected.
 - Auth: Jazz form auth - GET `/authenticated/identity`, POST `/authenticated/j_security_check`;

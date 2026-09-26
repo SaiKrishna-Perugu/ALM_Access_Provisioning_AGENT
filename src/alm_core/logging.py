@@ -125,7 +125,7 @@ def redact_names(text: str, names) -> str:
     ``names`` are the names this run actually holds (parsed requesters, LDAP
     display names). Each alphabetic word of three letters or more is replaced
     wherever it appears, case-insensitively and on word boundaries, so
-    "SOROBERTO,ANDREA" and "Andrea Soroberto" both disappear. User IDs contain
+    "DOE,JANE" and "Jane Doe" both disappear. User IDs contain
     digits and are never touched.
     """
     words = set()

@@ -249,7 +249,7 @@ class SqliteStore:
                    "work_item_id", "operation", "outcome", "idempotency_key", "approver",
                    "message", "error_type", "detail"]
         rows = await self._fetchall(
-            f"SELECT {', '.join(columns)} FROM alm_audit WHERE run_id = ? ORDER BY at, id",
+            f"SELECT {', '.join(columns)} FROM alm_audit WHERE run_id = ? ORDER BY at, id",  # noqa: S608 - column list is a fixed list of static schema columns
             (run_id,))
         events = []
         for row in rows:

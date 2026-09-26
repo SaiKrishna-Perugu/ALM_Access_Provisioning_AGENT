@@ -299,7 +299,7 @@ class SandboxBackend:
 
 def _profile_png(userid: str, width: int = 240, height: int = 80) -> bytes:
     """A real, viewable PNG that is unique per user and above the size floor."""
-    rng = random.Random(userid)
+    rng = random.Random(userid)  # noqa: S311 - pseudo-random generation for deterministic test mock PNG image bytes
     base = [rng.randrange(40, 200) for _ in range(3)]
     rows = bytearray()
     for _y in range(height):

@@ -68,7 +68,7 @@ validated, idempotent tool functions.
 
 ## 4. Hard Constraints and Risks
 
-1. **Intranet-only endpoints.** EWM and JTS live on `*.intra.chrysler.com`. Google Cloud requires
+1. **Intranet-only endpoints.** EWM and JTS live on `*.example.intra`. Google Cloud requires
    Direct VPC egress plus Cloud Interconnect or HA VPN and Cloud DNS.
 2. **Self-signed corporate certificates.** A corporate CA bundle must be mounted; do not
    restore `verify=False`.
@@ -179,7 +179,7 @@ graph TD
 *Depends on Phase 4.*
 
 19. Establish Cloud Interconnect or HA VPN to the corporate network.
-20. Configure Cloud DNS resolution for `*.intra.chrysler.com` and firewall rules for EWM/JTS.
+20. Configure Cloud DNS resolution for `*.example.intra` and firewall rules for EWM/JTS.
 21. Add a connectivity smoke job that runs on every deployment.
 22. Populate Secret Manager: service-account password, Vertex AI credential, approval signing key.
 

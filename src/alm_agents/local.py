@@ -34,7 +34,7 @@ from urllib.parse import urlparse
 ROOT = Path(__file__).resolve().parents[2]
 OUT_DIR = ROOT / "out" / "local"
 DEFAULT_LEDGER = OUT_DIR / "alm.db"
-DEFAULT_GPT_URL = "https://gpt.fiatspa.com/GlobalProvisioningTool/home.jsf"
+DEFAULT_GPT_URL = os.getenv("GPT_URL", "https://gpt.example.intra/GlobalProvisioningTool/home.jsf")
 
 
 class SetupError(Exception):
@@ -85,7 +85,7 @@ def make_local_backend(*, cdp_url: str, gpt_url: str, ad_label: str):
             if session is not None:
                 try:
                     session.close()
-                except Exception:  # noqa: BLE001 - it is already broken
+                except Exception:  # noqa: S110, BLE001 - it is already broken
                     pass
 
         def _add_member(self, userid: str, group: str, domain: str) -> tuple[bool, str]:
@@ -145,7 +145,7 @@ def make_local_backend(*, cdp_url: str, gpt_url: str, ad_label: str):
             if self._session is not None:
                 try:
                     self._executor.submit(self._session.close).result(timeout=30)
-                except Exception:  # noqa: BLE001 - closing must not mask the run result
+                except Exception:  # noqa: S110, BLE001 - closing must not mask the run result
                     pass
                 self._session = None
             self._executor.shutdown(wait=False)
@@ -513,7 +513,10 @@ async def purge(settings, console, days: int, *, out_dir: Path = OUT_DIR,
     from .memory import MemoryStore as AgentMemory
 
     cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=days)
-    counts = {"runs": 0, "approvals": 0, "memories": 0, "reports": 0, "evidence": 0}
+    counts = {
+        "runs": 0, "approvals": 0, "memories": 0, "reports": 0, "evidence": 0,
+        "cli_audit": 0, "cli_screenshots": 0, "cli_users": 0, "cli_comments": 0,
+    }
 
     checkpoints = checkpoint_db_path(settings.ledger_path)
     if os.path.exists(checkpoints):
@@ -536,12 +539,15 @@ async def purge(settings, console, days: int, *, out_dir: Path = OUT_DIR,
             await store.migrate()
             await AgentMemory(store).migrate()
             since = cutoff.isoformat()
+            allowed_tables = {"alm_approval", "alm_agent_memory"}
             async with store._lock:
                 db = store._conn()
                 for table, key in (("alm_approval", "approvals"),
                                    ("alm_agent_memory", "memories")):
+                    if table not in allowed_tables:
+                        raise ValueError(f"Table '{table}' is not in allowed purge tables")
                     cursor = await db.execute(
-                        f"DELETE FROM {table} WHERE created_at < ?", (since,))
+                        f"DELETE FROM {table} WHERE created_at < ?", (since,))  # noqa: S608 - table is checked against allowed_tables
                     counts[key] = cursor.rowcount or 0
                 await db.execute("VACUUM")
         finally:
@@ -561,13 +567,43 @@ async def purge(settings, console, days: int, *, out_dir: Path = OUT_DIR,
                 shutil.rmtree(folder)
                 counts["evidence"] += 1
 
+    # F4: Clean up CLI out/ artifacts older than cutoff
+    out_base = out_dir.parent if out_dir.name == "local" else out_dir
+    audit_dir = out_base / "audit"
+    if audit_dir.is_dir():
+        for audit_file in audit_dir.glob("*.json"):
+            if audit_file.stat().st_mtime < stamp:
+                audit_file.unlink()
+                counts["cli_audit"] += 1
+
+    screenshots_dir = out_base / "screenshots"
+    if screenshots_dir.is_dir():
+        for shot in screenshots_dir.glob("*.png"):
+            if shot.stat().st_mtime < stamp:
+                shot.unlink()
+                counts["cli_screenshots"] += 1
+
+    for ufile in out_base.glob("alm_users*.json"):
+        if ufile.is_file() and ufile.stat().st_mtime < stamp:
+            ufile.unlink()
+            counts["cli_users"] += 1
+
+    comment_file = out_base / "comment_capture.json"
+    if comment_file.is_file() and comment_file.stat().st_mtime < stamp:
+        comment_file.unlink()
+        counts["cli_comments"] += 1
+
     console.line(f"purged local data older than {days} day(s): "
                  f"{counts['runs']} run checkpoint(s), {counts['approvals']} approval "
                  f"card(s), {counts['memories']} agent memor(y/ies), {counts['reports']} "
-                 f"report(s), {counts['evidence']} evidence folder(s)")
+                 f"report(s), {counts['evidence']} evidence folder(s), "
+                 f"{counts['cli_audit']} CLI audit file(s), "
+                 f"{counts['cli_screenshots']} CLI screenshot(s), "
+                 f"{counts['cli_users']} CLI user cache(s)")
     console.line("kept: the ledger and audit trail (user IDs only) - they record what "
                  "was written and stop a re-run from repeating it")
     return counts
+
 
 
 def _days(value: str) -> int:

@@ -190,6 +190,7 @@ class MemoryStore:
             return sorted(rows, key=lambda m: m["created_at"], reverse=True)[:limit]
 
         if self._sqlite:
+            allowed_sqlite_clauses = {"superseded = 0", "subject = ?", "kind = ?"}
             clauses, params = ["superseded = 0"], []
             if subject:
                 clauses.append("subject = ?")
@@ -197,9 +198,12 @@ class MemoryStore:
             if kind:
                 clauses.append("kind = ?")
                 params.append(kind)
+            for c in clauses:
+                if c not in allowed_sqlite_clauses:
+                    raise ValueError(f"Disallowed WHERE clause: {c}")
             async with self.owner._lock:
                 rows = await self.owner._fetchall(
-                    f"SELECT {', '.join(_COLUMNS)} FROM alm_agent_memory "
+                    f"SELECT {', '.join(_COLUMNS)} FROM alm_agent_memory "  # noqa: S608 - static allowlist clauses, params bound with ?
                     f"WHERE {' AND '.join(clauses)} "
                     "ORDER BY confidence DESC, created_at DESC", tuple(params))
             found = []
@@ -211,6 +215,7 @@ class MemoryStore:
                     found.append(item)
             return found[:limit]
 
+        allowed_pg_clauses = {"NOT superseded", "subject = %s", "kind = %s", "tags && %s"}
         clauses = ["NOT superseded"]
         params: list = []
         if subject:
@@ -222,11 +227,14 @@ class MemoryStore:
         if tags:
             clauses.append("tags && %s")
             params.append(tags)
+        for c in clauses:
+            if c not in allowed_pg_clauses:
+                raise ValueError(f"Disallowed WHERE clause: {c}")
         params.append(limit)
 
         async with self.owner._conn() as conn, conn.cursor() as cur:
             await cur.execute(
-                "SELECT kind, subject, tags, content, author, confidence, created_at "
+                "SELECT kind, subject, tags, content, author, confidence, created_at "  # noqa: S608 - static allowlist clauses, params bound with %s
                 f"FROM alm_agent_memory WHERE {' AND '.join(clauses)} "
                 "ORDER BY confidence DESC, created_at DESC LIMIT %s", params)
             rows = await cur.fetchall()

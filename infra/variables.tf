@@ -33,7 +33,7 @@ variable "psa_cidr" {
 }
 
 variable "corporate_dns_servers" {
-  description = "On-premises DNS servers that resolve *.intra.chrysler.com. Without these the container cannot find EWM or JTS, whatever the interconnect says."
+  description = "On-premises DNS servers that resolve *.example.intra. Without these the container cannot find EWM or JTS, whatever the interconnect says."
   type        = list(string)
   default     = []
 }
@@ -41,7 +41,7 @@ variable "corporate_dns_servers" {
 variable "corporate_dns_suffix" {
   description = "Domain forwarded to the corporate resolvers."
   type        = string
-  default     = "intra.chrysler.com."
+  default     = "example.intra."
 }
 
 variable "interconnect_router_name" {
@@ -97,7 +97,7 @@ variable "supervisor_model" {
 }
 
 variable "ewm_server" {
-  description = "EWM base URL, e.g. https://prssetst.intra.chrysler.com/ccm"
+  description = "EWM base URL, e.g. https://ewm-test.example.intra/ccm"
   type        = string
   default     = ""
 }

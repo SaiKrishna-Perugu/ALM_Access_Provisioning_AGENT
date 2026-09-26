@@ -12,9 +12,11 @@ from __future__ import annotations
 
 import html
 import re
-import xml.etree.ElementTree as ET
 from collections.abc import Iterator
 from typing import Any
+
+import defusedxml.ElementTree as ET
+from defusedxml.common import DefusedXmlException
 
 from .errors import AuthorizationError, DataError, ParseError
 from .models import RequestedUser, SourceWorkItem
@@ -61,7 +63,7 @@ def local_name(tag: str) -> str:
 
 def parse_xml(content: bytes | str) -> ET.Element:
     """Parse OSLC XML, sanitising the malformations this server produces."""
-    text = content.decode("utf-8", "replace") if isinstance(content, (bytes, bytearray)) \
+    text = content.decode("utf-8", "replace") if isinstance(content, bytes | bytearray) \
         else content
     head = text.lstrip()[:64].lower()
     if head.startswith("<!doctype html") or head.startswith("<html"):
@@ -70,12 +72,14 @@ def parse_xml(content: bytes | str) -> ET.Element:
             "authorised for API access on this server")
     try:
         return ET.fromstring(text)
-    except ET.ParseError:
+    except (ET.ParseError, DefusedXmlException) as err:
+        if isinstance(err, DefusedXmlException):
+            raise ParseError(f"hostile XML payload rejected: {err}") from err
         cleaned = _XML_BARE_AMP.sub("&amp;", _XML_INVALID_CHARS.sub("", text))
         try:
             return ET.fromstring(cleaned)
-        except ET.ParseError as err:
-            raise ParseError(f"unparseable OSLC XML: {err}") from err
+        except (ET.ParseError, DefusedXmlException) as err2:
+            raise ParseError(f"unparseable OSLC XML: {err2}") from err2
 
 
 def strip_html(text: str) -> str:

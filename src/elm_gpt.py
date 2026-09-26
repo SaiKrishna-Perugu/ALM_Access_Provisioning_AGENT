@@ -29,7 +29,7 @@ import alm_log
 import audit
 
 load_dotenv()
-GPT_URL = os.getenv("GPT_URL", "https://gpt.fiatspa.com/GlobalProvisioningTool/home.jsf")
+GPT_URL = os.getenv("GPT_URL", "https://gpt.example.intra/GlobalProvisioningTool/home.jsf")
 GROUP_NAME = os.getenv("GROUP_NAME", "GR_D-JazzUser-NA")
 DOMAIN = os.getenv("DOMAIN", "INETPSA")
 AD_LABEL = os.getenv("AD_LABEL", "inetpsa.com")

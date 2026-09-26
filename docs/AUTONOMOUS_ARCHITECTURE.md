@@ -409,7 +409,7 @@ both against the same work items.
 The container must resolve two different things privately, and the configuration
 is different for each:
 
-1. `*.intra.chrysler.com` → a **Cloud DNS forwarding zone** pointing at the
+1. `*.example.intra` → a **Cloud DNS forwarding zone** pointing at the
    corporate resolvers, with `forwarding_path = PRIVATE` so the query goes over
    the interconnect rather than the internet.
 2. `*.googleapis.com` → a **private zone** CNAMEd to `restricted.googleapis.com`,
@@ -526,8 +526,8 @@ export PYTHONPATH=src
 
 # Connectivity only - read-only, no model, no writes.
 export ALM_ENVIRONMENT=TEST ALM_ORCHESTRATION=deterministic ALM_LLM_ENABLED=false
-export EWM_SERVER=https://prssetst.intra.chrysler.com/ccm
-export JTS_SERVER=https://prssetst.intra.chrysler.com/jts
+export EWM_SERVER=https://prssetst.example.intra/ccm
+export JTS_SERVER=https://prssetst.example.intra/jts
 export CID=<service account> EWM_PASSWORD=<prompted or injected>
 python -m alm_core.smoke
 

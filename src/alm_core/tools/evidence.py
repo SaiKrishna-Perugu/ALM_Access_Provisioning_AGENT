@@ -133,7 +133,7 @@ def _capture(jts_server: str, user: str, password: str, userids: list[str],
                 # The Jazz login widget is built by Dojo, so it is absent at
                 # domcontentloaded.
                 page.wait_for_selector(LOGIN_USER_SELECTOR, timeout=15000)
-            except Exception:  # noqa: BLE001 - no form means the session is valid
+            except Exception:  # noqa: S110, BLE001 - no form means the session is valid
                 pass
             if page.locator(LOGIN_USER_SELECTOR).count():
                 page.fill(LOGIN_USER_SELECTOR, user)

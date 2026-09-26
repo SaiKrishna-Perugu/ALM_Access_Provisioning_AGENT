@@ -26,10 +26,10 @@ import json
 import os
 import re
 import sys
-import xml.etree.ElementTree as ET
 
+import defusedxml.ElementTree as ET
 import requests
-import urllib3
+from defusedxml.common import DefusedXmlException
 
 import alm_config
 import alm_log
@@ -62,8 +62,6 @@ try:
 except Exception:  # dotenv optional
     _load_local_env()
 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
 # Some EWM/OSLC servers (notably TEST) return XML containing invalid control
 # characters or unescaped ampersands that break the strict ElementTree parser.
 _XML_INVALID_CHARS = re.compile(
@@ -74,7 +72,7 @@ _XML_BARE_AMP = re.compile(r"&(?!(?:amp|lt|gt|quot|apos|#\d+|#x[0-9A-Fa-f]+);)")
 
 def parse_xml(content):
     """Parse XML defensively; sanitize invalid chars / stray ampersands on failure."""
-    text = content.decode("utf-8", "replace") if isinstance(content, (bytes, bytearray)) else content
+    text = content.decode("utf-8", "replace") if isinstance(content, bytes | bytearray) else content
     head = text.lstrip()[:64].lower()
     if head.startswith("<!doctype html") or head.startswith("<html"):
         raise RuntimeError(
@@ -84,12 +82,17 @@ def parse_xml(content):
         )
     try:
         return ET.fromstring(text)
-    except ET.ParseError:
+    except (ET.ParseError, DefusedXmlException) as err:
+        if isinstance(err, DefusedXmlException):
+            raise RuntimeError(f"Hostile XML payload rejected: {err}") from err
         cleaned = _XML_BARE_AMP.sub("&amp;", _XML_INVALID_CHARS.sub("", text))
-        return ET.fromstring(cleaned)
+        try:
+            return ET.fromstring(cleaned)
+        except (ET.ParseError, DefusedXmlException) as err2:
+            raise RuntimeError(f"Unparseable OSLC XML: {err2}") from err2
 
 
-SERVER = os.getenv("EWM_SERVER", "https://prsse.intra.chrysler.com/ccm")
+SERVER = os.getenv("EWM_SERVER", "https://ewm.example.intra/ccm")
 PROJECT_NAME = "Unified Tracking System (Change Management)"
 TYPE_ID = "com.fca.alm.rtc.workitem.workItemType.almAccessRequest"
 WORKFLOW = "com.ibm.team.workitem.almAccessRequestWorkflow"
@@ -517,7 +520,7 @@ def main() -> int:
                 print(f"User IDs: {ids}")
     except Exception as err:  # noqa: BLE001
         print(f"\n[ERROR] {err}")
-        if isinstance(err, (requests.exceptions.ConnectionError, requests.exceptions.Timeout)):
+        if isinstance(err, requests.exceptions.ConnectionError | requests.exceptions.Timeout):
             print("Ensure you are on the Chrysler intranet / VPN.")
         return 1
     return 0

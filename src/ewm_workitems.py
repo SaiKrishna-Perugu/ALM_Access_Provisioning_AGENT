@@ -20,10 +20,9 @@ import csv
 import getpass
 import os
 import sys
-import xml.etree.ElementTree as ET
 
+import defusedxml.ElementTree as ET
 import requests
-import urllib3
 
 import alm_config
 import jazz_client
@@ -32,12 +31,10 @@ try:
     from dotenv import load_dotenv
 
     load_dotenv()
-except Exception:  # dotenv optional
+except Exception:  # noqa: S110 - dotenv optional
     pass
 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-DEFAULT_SERVER = os.getenv("EWM_SERVER", "https://prsse.intra.chrysler.com/ccm")
+DEFAULT_SERVER = os.getenv("EWM_SERVER", "https://ewm.example.intra/ccm")
 
 
 def get_authenticated_session(server: str, username: str, password: str) -> requests.Session:

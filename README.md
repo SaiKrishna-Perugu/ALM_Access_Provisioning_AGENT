@@ -305,7 +305,7 @@ Example structure:
   "source": "alm_access_requests.py",
   "count": 2,
   "users": [
-    { "userId": "MWPABC01", "name": "Smith, John", "email": "john.smith@stellantis.com", "workItems": ["WI-1234"] }
+    { "userId": "MWPABC01", "name": "Smith, John", "email": "john.smith@example.com", "workItems": ["WI-1234"] }
   ]
 }
 ```
