@@ -46,7 +46,9 @@ resource "google_project_iam_member" "run" {
 }
 
 // Secret access is granted per secret, not project-wide: the orchestrator can
-// read its three secrets and nothing else in the project.
+// read its own secrets (three, or four with the Gemini API key) and nothing else.
+// The Gemini key needs no env var or mount: the application reads it from
+// Secret Manager by name (alm_core.credentials.gemini_api_key).
 resource "google_secret_manager_secret_iam_member" "run" {
   for_each  = google_secret_manager_secret.secrets
   secret_id = each.value.id

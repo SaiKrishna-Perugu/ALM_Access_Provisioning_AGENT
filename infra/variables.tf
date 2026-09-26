@@ -73,10 +73,21 @@ variable "orchestration" {
   default     = "agentic"
 }
 
-variable "agent_model" {
-  description = "Vertex AI model the agents reason with. A claude-* id from Model Garden switches the client automatically."
+variable "llm_provider" {
+  description = "vertex (service account, no key - recommended) or gemini_api (Gemini Developer API key from Secret Manager)."
   type        = string
-  default     = "gemini-2.0-flash"
+  default     = "vertex"
+
+  validation {
+    condition     = contains(["vertex", "gemini_api"], var.llm_provider)
+    error_message = "llm_provider must be vertex or gemini_api."
+  }
+}
+
+variable "agent_model" {
+  description = "Gemini model the agents reason with. With llm_provider = vertex, a claude-* id from Model Garden switches the client automatically."
+  type        = string
+  default     = "gemini-3.5-flash"
 }
 
 variable "supervisor_model" {

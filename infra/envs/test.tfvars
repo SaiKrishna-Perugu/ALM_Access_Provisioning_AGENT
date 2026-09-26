@@ -28,6 +28,9 @@ onprem_wif_issuer  = ""
 onprem_wif_subject = ""
 
 orchestration    = "agentic"
-agent_model      = "gemini-2.0-flash"
-supervisor_model = "gemini-2.0-flash-lite"
+# vertex: the service account calls Gemini on Vertex AI - no API key exists.
+# gemini_api: a Gemini Developer API key, read from Secret Manager.
+llm_provider     = "vertex"
+agent_model      = "gemini-3.5-flash"
+supervisor_model = "gemini-3.1-flash-lite"
 shadow_mode      = true

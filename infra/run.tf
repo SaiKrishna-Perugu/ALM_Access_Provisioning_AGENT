@@ -78,6 +78,10 @@ resource "google_cloud_run_v2_service" "api" {
         value = var.region
       }
       env {
+        name  = "ALM_LLM_PROVIDER"
+        value = var.llm_provider
+      }
+      env {
         name  = "ALM_AGENT_MODEL"
         value = var.agent_model
       }

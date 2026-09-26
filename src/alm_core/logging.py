@@ -35,7 +35,13 @@ SECRET_KEYS = {
     "password", "j_password", "secret", "token", "credential", "pwd", "authorization",
     "api_key", "apikey", "client_secret", "connection_string", "sas", "cookie",
     "jsessionid", "x-jazz-csrf-prevent", "signature",
+    "google_api_key", "gemini_api_key", "x-goog-api-key", "typesafe_api_key",
 }
+
+# A Google API key has a fixed shape. Matched by value as well as by key name,
+# because SDK transport errors can echo a request URL carrying "?key=...".
+# Both formats Google issues: the classic AIza... and the newer AQ.... keys.
+_GOOGLE_API_KEY_RE = re.compile(r"AIza[0-9A-Za-z_-]{35}|AQ\.[0-9A-Za-z_-]{40,}")
 
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 # Jazz/Stellantis CIDs: two letters or a letter-digit pair, then alphanumerics.
@@ -63,8 +69,15 @@ def current_thread_id() -> str:
     return _thread_id.get()
 
 
+def scrub_secrets(text: str) -> str:
+    """Remove anything shaped like a Google API key from free text."""
+    return _GOOGLE_API_KEY_RE.sub(REDACTED, text)
+
+
 def redact_value(key: str, value: Any) -> Any:
-    return REDACTED if key.lower() in SECRET_KEYS else value
+    if key.lower() in SECRET_KEYS:
+        return REDACTED
+    return scrub_secrets(value) if isinstance(value, str) else value
 
 
 def redact_mapping(data: dict) -> dict:
@@ -76,7 +89,10 @@ def redact_mapping(data: dict) -> dict:
         elif isinstance(value, dict):
             out[key] = redact_mapping(value)
         elif isinstance(value, list):
-            out[key] = [redact_mapping(v) if isinstance(v, dict) else v for v in value]
+            out[key] = [redact_mapping(v) if isinstance(v, dict)
+                        else scrub_secrets(v) if isinstance(v, str) else v for v in value]
+        elif isinstance(value, str):
+            out[key] = scrub_secrets(value)
         else:
             out[key] = value
     return out

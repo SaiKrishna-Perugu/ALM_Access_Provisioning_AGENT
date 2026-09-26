@@ -100,6 +100,16 @@ class Settings(BaseSettings):
         description="Use a short-lived IAM access token as the database password.")
     postgres_pool_min: int = Field(default=1, ge=0)
     postgres_pool_max: int = Field(default=10, ge=1)
+    ledger_path: str = Field(
+        default="",
+        description=("Local SQLite file for the ledger, audit trail, approvals and graph "
+                     "checkpoints - the laptop alternative to ALM_POSTGRES_DSN."))
+
+    # ------------------------------------------------------------ local run
+    redact_for_model: bool = Field(
+        default=True,
+        description=("Strip e-mail addresses from tool results before a model sees them. "
+                     "The agents never need them: the e-mail-vs-LDAP check runs in code."))
 
     # ------------------------------------------------------------ pub/sub
     pubsub_topic: str = Field(
@@ -109,13 +119,37 @@ class Settings(BaseSettings):
         default="alm-ad-provisioning-worker",
         description="Subscription the Windows worker pulls from.")
 
-    # ---------------------------------------------------------- vertex ai
+    # ---------------------------------------------------------------- llm
+    llm_provider: Literal["gemini_api", "vertex_express", "vertex"] = Field(
+        default="gemini_api",
+        description=("gemini_api: the Gemini Developer API with a key from Google AI "
+                     "Studio (GEMINI_API_KEY). vertex_express: Vertex AI with an API key "
+                     "created in the Google Cloud console (also GEMINI_API_KEY) - the two "
+                     "kinds of key look alike but each works on one endpoint only. "
+                     "vertex: Vertex AI as a service account - no key, project-scoped. "
+                     "Same models every way; see llm.py."))
+    gemini_api_key_secret_name: str = Field(
+        default="alm-gemini-api-key",
+        description="Secret Manager id holding the Gemini API key (gemini_api provider).")
+    llm_requests_per_minute: float = Field(
+        default=10.0, gt=0,
+        description=("Client-side ceiling on model calls, shared by every agent in the "
+                     "process. The Gemini free tier rejects bursts; a multi-agent run "
+                     "makes several calls per second without this."))
+    llm_thinking_level: Literal["default", "minimal", "low", "medium", "high"] = Field(
+        default="low",
+        description=("How much a Gemini model reasons before answering. Tool routing "
+                     "needs little; 'low' keeps latency and free-tier quota down. "
+                     "Gemini 3+ takes it as thinking_level. On Gemini 2.5 Flash, "
+                     "'minimal' switches thinking off; other values leave the model's "
+                     "default. 'default' never sends the parameter."))
     vertex_location: str = Field(
         default="", description="Vertex AI region. Defaults to `region` when unset.")
     agent_model: str = Field(
-        default="gemini-2.0-flash",
-        description=("Model the agents reason and call tools with. A Claude id from "
-                     "Vertex Model Garden switches the client - see llm.py."))
+        default="gemini-3.5-flash",
+        description=("Model the agents reason and call tools with. With the vertex "
+                     "provider a Claude id from Model Garden switches the client - see "
+                     "llm.py."))
     supervisor_model: str = Field(
         default="",
         description="Optional cheaper model for routing. Defaults to agent_model.")
@@ -123,6 +157,25 @@ class Settings(BaseSettings):
         default=True,
         description="Turn the extraction fallback and comment drafting off entirely.")
     llm_max_output_tokens: int = Field(default=800, ge=1)
+
+    # --------------------------------------------- user-ID recovery (TypeSafe)
+    extraction_provider: Literal["auto", "typesafe", "gemini"] = Field(
+        default="auto",
+        description=("Who judges user IDs in rows the parser rejected. Either way, code "
+                     "finds the candidate tokens and only those can be returned. "
+                     "typesafe: a yes/no probability per candidate from TypeSafe's Jev "
+                     "model. gemini: the agent model proposes, and anything not in the "
+                     "text is dropped. auto: TypeSafe when TYPESAFE_API_KEY resolves, "
+                     "Gemini otherwise or if TypeSafe fails."))
+    typesafe_model: str = Field(default="jev-latest")
+    typesafe_api_key_secret_name: str = Field(
+        default="alm-typesafe-api-key",
+        description="Secret Manager id holding the TypeSafe API key.")
+    extraction_min_probability: float = Field(
+        default=0.5, ge=0.0, le=1.0,
+        description=("A candidate below this probability is not proposed. A placeholder: "
+                     "tune it on real malformed rows before relying on it. Every "
+                     "recovered ID is HIGH risk and goes to a human regardless."))
 
     # ---------------------------------------------------- orchestration
     orchestration: Literal["agentic", "deterministic"] = Field(
@@ -181,20 +234,30 @@ class Settings(BaseSettings):
             raise ValueError(
                 "ALM_TLS_INSECURE cannot be set when ALM_ENVIRONMENT=PROD. "
                 "Mount the corporate CA bundle and point ALM_CA_BUNDLE at it.")
+        # The Gemini API key is not checked here: it is a secret, resolved by
+        # credentials.gemini_api_key() from the environment, a mounted file or
+        # Secret Manager, and never held on this object.
         if (self.orchestration == "agentic" and self.llm_enabled
-                and not self.project_id):
+                and self.llm_provider == "vertex" and not self.project_id):
             raise ValueError(
-                "ALM_ORCHESTRATION=agentic needs GOOGLE_CLOUD_PROJECT: the agents are "
-                "Vertex AI models and the client is project-scoped. Set it, or run with "
-                "ALM_ORCHESTRATION=deterministic.")
+                "ALM_LLM_PROVIDER=vertex needs GOOGLE_CLOUD_PROJECT: the Vertex AI "
+                "client is project-scoped. Set it, use ALM_LLM_PROVIDER=gemini_api "
+                "with a GEMINI_API_KEY, or run with ALM_ORCHESTRATION=deterministic.")
+        if self.llm_provider != "vertex" and any(
+                m.lower().startswith("claude") for m in (self.agent_model,
+                                                         self.supervisor_model)):
+            raise ValueError(
+                "Claude models are served through Vertex AI Model Garden, not the "
+                "Gemini API. Set ALM_LLM_PROVIDER=vertex, or choose a gemini-* model.")
         if self.orchestration == "agentic" and not self.llm_enabled:
             raise ValueError(
                 "ALM_ORCHESTRATION=agentic contradicts ALM_LLM_ENABLED=false. Choose "
                 "one: agentic routing with a model, or the deterministic graph.")
-        if not self.shadow_mode and not self.postgres_dsn:
+        if not self.shadow_mode and not (self.postgres_dsn or self.ledger_path):
             raise ValueError(
-                "ALM_POSTGRES_DSN is required outside shadow mode: the idempotency "
-                "ledger and approval record are what make a write safe to replay.")
+                "A durable ledger is required outside shadow mode - ALM_POSTGRES_DSN, or "
+                "ALM_LEDGER_PATH for a local SQLite file. The idempotency ledger and "
+                "approval record are what make a write safe to replay.")
         for name, host in (("EWM_SERVER", self.ewm_server), ("JTS_SERVER", self.jts_server)):
             if host and not host.startswith("https://"):
                 raise ValueError(f"{name} must be an https:// URL, got {host!r}")

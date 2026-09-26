@@ -25,6 +25,7 @@ while the container restarts, and resume where it stopped.
 """
 from __future__ import annotations
 
+import os
 from contextlib import asynccontextmanager
 
 from alm_core.auth import JazzClient
@@ -149,6 +150,32 @@ def build_graph(ctx: ToolContext, *, checkpointer=None, notifier=None,
     return builder.compile(checkpointer=checkpointer)
 
 
+# Every alm_core type that lives in PipelineState, and so in a checkpoint.
+# LangGraph deserialises unlisted types with a warning today and will refuse
+# them in a future release - which would strand every run parked at the
+# approval gate across that upgrade. Add a type here when it enters the state.
+CHECKPOINT_TYPES = (
+    "SourceWorkItem", "RequestedUser", "WorkItem", "UserStatus", "UserState",
+    "RiskLevel", "Operation", "Outcome", "ProvisionResult", "ApprovalItem",
+    "ApprovalRequest", "ApprovalDecision",
+)
+
+
+def checkpoint_serde():
+    """The checkpoint serializer, with this system's types explicitly allowed."""
+    from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+
+    return JsonPlusSerializer(
+        allowed_msgpack_modules=[("alm_core.models", name) for name in CHECKPOINT_TYPES])
+
+
+def checkpoint_db_path(ledger_path: str) -> str:
+    """Checkpoints live in their own file beside the ledger: LangGraph manages
+    its schema, and keeping it apart keeps the ledger's tables ours alone."""
+    root, _ext = os.path.splitext(ledger_path)
+    return f"{root}-checkpoints.db"
+
+
 @asynccontextmanager
 async def checkpointer_for(settings):
     """A Postgres checkpointer, or an in-memory one in shadow mode.
@@ -165,19 +192,37 @@ async def checkpointer_for(settings):
                 "langgraph-checkpoint-postgres is required for durable runs") from err
         from alm_core.credentials import postgres_dsn
 
-        async with AsyncPostgresSaver.from_conn_string(postgres_dsn(settings)) as saver:
+        async with AsyncPostgresSaver.from_conn_string(
+                postgres_dsn(settings), serde=checkpoint_serde()) as saver:
+            await saver.setup()
+            yield saver
+        return
+
+    if getattr(settings, "ledger_path", ""):
+        # Local mode: checkpoints next to the ledger, so a paused or crashed run
+        # resumes from the same file.
+        try:
+            import aiosqlite
+            from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+        except ImportError as err:  # pragma: no cover
+            raise ConfigError(
+                "langgraph-checkpoint-sqlite is required for local durable runs") from err
+        path = checkpoint_db_path(settings.ledger_path)
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        async with aiosqlite.connect(path) as conn:
+            saver = AsyncSqliteSaver(conn, serde=checkpoint_serde())
             await saver.setup()
             yield saver
         return
 
     if not settings.shadow_mode:
         raise ConfigError(
-            "durable checkpointing requires ALM_POSTGRES_DSN: without it a run "
-            "paused for approval would not survive a restart")
+            "durable checkpointing requires ALM_POSTGRES_DSN or ALM_LEDGER_PATH: without "
+            "it a run paused for approval would not survive a restart")
     from langgraph.checkpoint.memory import MemorySaver
 
     log.warning("using_memory_checkpointer", reason="shadow mode, no postgres dsn")
-    yield MemorySaver()
+    yield MemorySaver(serde=checkpoint_serde())
 
 
 @asynccontextmanager
@@ -216,9 +261,12 @@ async def build_runtime(settings=None, *, notifier=None, skip_ad: bool = False):
                 agent_llm = llm_module.get_agent_llm(settings)
                 if agent_llm is None:
                     raise ConfigError(
-                        "agentic orchestration was requested but no Vertex AI client "
-                        "could be built. Check GOOGLE_CLOUD_PROJECT, ALM_REGION and that "
-                        "the runtime service account holds roles/aiplatform.user, or set "
+                        "agentic orchestration was requested but no model client could "
+                        f"be built (ALM_LLM_PROVIDER={settings.llm_provider}). For "
+                        "gemini_api, set GEMINI_API_KEY or the Secret Manager secret "
+                        "named by ALM_GEMINI_API_KEY_SECRET_NAME. For vertex, check "
+                        "GOOGLE_CLOUD_PROJECT, ALM_REGION and that the runtime service "
+                        "account holds roles/aiplatform.user. Or set "
                         "ALM_ORCHESTRATION=deterministic.")
 
                 memory = MemoryStore(store)

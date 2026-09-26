@@ -244,13 +244,35 @@ happen. Combine with `ALM_SHADOW_MODE=true` if you are not yet sure which it is.
 | Many denials naming approval | An agent is trying to write before the risk_officer requested approval. Expected occasionally; constant means a prompt problem |
 | Writes stop mid-batch | The write budget. Raise `ALM_MAX_WRITES_PER_RUN` deliberately, or split the batch |
 | An agent invented a user ID | The policy rejected it before LDAP - look for a denial mentioning the ID pattern. Nothing was provisioned |
+| A recovered user is wrong, or a requested one is missing | Look for the `userid_recovery` log line: it names the judge (`typesafe` or `gemini`) and how many candidates were accepted. A missing user whose ID is not in the row text cannot be recovered by design - it goes to a human. Adjust `ALM_EXTRACTION_MIN_PROBABILITY` only with evidence from several rows |
+| `typesafe_extraction_failed` in the logs | TypeSafe was unreachable or refused the key; with `auto`, Gemini judged instead. From Cloud Run this is expected - there is no internet egress |
 | Costs climbing | Every hop is a model call. Lower `ALM_MAX_HOPS`, or set `ALM_SUPERVISOR_MODEL` to a cheaper model |
+| Agents stop with `model unavailable: ...ResourceExhausted` or HTTP 429 | The Gemini quota. Lower `ALM_LLM_REQUESTS_PER_MINUTE`, or move to `ALM_LLM_PROVIDER=vertex`, whose quota is the project's |
+| Agents stop with `model unavailable` naming a 400 or 403 | The API key was revoked or the model id retired. Run `python src/agent_sandbox.py --check` with the same settings |
 
 **Do not "fix" an agent by loosening the policy.** A denial is the system
 working. If an agent legitimately needs a capability it lacks, that is a roster
 change, reviewed like any other code.
 
 ---
+
+## 7b. Local runs (`python src/agent_local.py`)
+
+| Symptom | Cause and fix |
+|---|---|
+| `cannot reach ... Check DNS, the VPN ... NO_PROXY` | The laptop cannot reach EWM/JTS. Connect the VPN; put the intranet domain in `NO_PROXY` |
+| `the server rejected the user ID or password` | Wrong CID or password. Nothing was written |
+| `the login was accepted but the session did not verify` | The account signs in but cannot open that server - check access in a browser |
+| `ALM_CA_BUNDLE points at ... which does not exist` | Point it at the corporate CA `.pem`, as for the CLI |
+| `ALM_TLS_INSECURE cannot be set when ... PROD` | Production requires verified TLS: set `ALM_CA_BUNDLE` |
+| AD step failed: `no debug Chrome at ...` | Run `scripts\start-gpt.ps1`, sign in to GPT, then `--resume` the run |
+| `the agent model is unavailable` | Key or model problem: `python src/agent_local.py --check` |
+| Closed the terminal at the approval prompt | Nothing was written. `--resume <thread-id>` brings the prompt back |
+| A second run reports `(replay)` | Correct: the ledger recorded the first write. Nothing was repeated |
+
+Everything a local run did is in `out/local/run-<run_id>.json` and in the
+`alm_audit` table of `out/local/alm.db` (the SQL in section 1 works unchanged in
+any SQLite client).
 
 ## 8. Connectivity
 

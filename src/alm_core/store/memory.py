@@ -108,7 +108,11 @@ class MemoryStore:
     # ------------------------------------------------------------ approval
 
     async def save_approval_request(self, request: ApprovalRequest) -> None:
-        _existing, decision = self._approvals.get(request.thread_id, (None, None))
+        # A decision belongs to the plan it was made on. A new plan on the same
+        # thread (the agentic graph can ask twice) starts undecided.
+        existing, decision = self._approvals.get(request.thread_id, (None, None))
+        if existing is None or existing.plan_hash != request.plan_hash:
+            decision = None
         self._approvals[request.thread_id] = (request, decision)
 
     async def save_approval_decision(self, decision: ApprovalDecision) -> None:

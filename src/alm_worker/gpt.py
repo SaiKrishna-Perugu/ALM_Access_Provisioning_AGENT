@@ -56,6 +56,7 @@ class GptSession:
         self._playwright = None
         self._context = None
         self._page = None
+        self._browser = None      # set only when attached to an existing browser
 
     # ------------------------------------------------------------ lifecycle
 
@@ -81,14 +82,46 @@ class GptSession:
             else self._context.new_page()
         log.info("gpt_browser_started", host=host, headless=self.headless)
 
+    def attach(self, cdp_url: str) -> None:
+        """Use a browser someone already signed in to GPT, instead of launching one.
+
+        The local counterpart of :meth:`start`, and the path the CLI has always
+        used in production: ``scripts/start-gpt.ps1`` opens a debug Chrome, the
+        operator signs in to GPT once, and this attaches over CDP. The session
+        opens a tab of its own and never touches the operator's tabs.
+        """
+        from playwright.sync_api import sync_playwright
+
+        self._playwright = sync_playwright().start()
+        try:
+            self._browser = self._playwright.chromium.connect_over_cdp(cdp_url)
+        except Exception:
+            self._playwright.stop()
+            self._playwright = None
+            raise
+        # start-gpt.ps1 opens an Incognito window, which is a separate context;
+        # take the one that actually has a window, as elm_gpt.py does.
+        contexts = self._browser.contexts
+        context = next((c for c in contexts if c.pages), contexts[0] if contexts else None)
+        if context is None:
+            context = self._browser.new_context()
+        self._page = context.new_page()
+        log.info("gpt_browser_attached", cdp=cdp_url)
+
     def close(self) -> None:
         try:
-            if self._context is not None:
+            if self._browser is not None:
+                # Attached: close only our tab, then disconnect. The operator's
+                # browser and sign-in stay as they were.
+                if self._page is not None:
+                    self._page.close()
+                self._browser.close()
+            elif self._context is not None:
                 self._context.close()
         finally:
             if self._playwright is not None:
                 self._playwright.stop()
-            self._context = self._page = self._playwright = None
+            self._context = self._page = self._playwright = self._browser = None
 
     # ------------------------------------------------------------ navigation
 

@@ -70,6 +70,28 @@ jobs:
           print("every --commit entry point is known to the guard")
           PY
 
+  # The agent tests skip without the cloud stack, so the job above cannot catch
+  # an agent regression. This one installs it. Still offline: the model is
+  # scripted and the estate simulated - no Gemini key, no network.
+  agents:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install the cloud dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-cloud.txt
+          pip install pytest ruff
+      - name: Test the multi-agent system end to end
+        env:
+          # Fail if any checkpointed type is missing from the allowlist.
+          LANGGRAPH_STRICT_MSGPACK: "true"
+        run: pytest -q
+
   secrets:
     runs-on: ubuntu-latest
     steps:

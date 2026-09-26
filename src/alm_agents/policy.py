@@ -46,6 +46,7 @@ READ_TOOLS = {
     "fetch_open_requests",
     "fetch_work_item",
     "parse_new_users_field",
+    "recover_user_ids",
     "classify_user",
     "check_jazz_permission",
     "existing_work_item_comments",

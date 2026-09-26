@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import getpass
 import os
+import re
 import sys
 import threading
 import time
@@ -139,9 +140,35 @@ class InteractiveProvider:
         self.prompt = prompt
 
     def get(self, key: str) -> str | None:
-        if not (sys.stdin and sys.stdin.isatty()):
+        if not _has_console():
             return None
         return getpass.getpass(f"{self.prompt} ({key}): ") or None
+
+
+def _has_console() -> bool:
+    """True only when a human can actually answer a prompt.
+
+    ``isatty()`` alone is not enough on Windows: the NUL device reports itself as
+    a tty, so a scheduled task or service with stdin on NUL - the Windows worker
+    - would pass the check and then block forever inside getpass.
+    """
+    try:
+        if not (sys.stdin and sys.stdin.isatty()):
+            return False
+    except (AttributeError, ValueError):
+        return False
+    if os.name != "nt":
+        return True
+    try:
+        import ctypes
+        import msvcrt
+
+        mode = ctypes.c_uint32()
+        handle = msvcrt.get_osfhandle(sys.stdin.fileno())
+        # GetConsoleMode fails for anything that is not a real console - NUL included.
+        return bool(ctypes.windll.kernel32.GetConsoleMode(handle, ctypes.byref(mode)))
+    except (OSError, AttributeError, ValueError):
+        return False
 
 
 class CredentialResolver:
@@ -190,11 +217,13 @@ class CredentialResolver:
                 self._cache.clear()
 
 
-def build_resolver(settings=None, *, prompt: str = "Password") -> CredentialResolver:
+def build_resolver(settings=None, *, prompt: str = "Password",
+                   interactive: bool = True) -> CredentialResolver:
     """The standard chain: environment -> mounted file -> Secret Manager -> interactive.
 
     Secret Manager is only added when a project is configured, so a laptop run
-    does not pay for a lookup that cannot succeed.
+    does not pay for a lookup that cannot succeed. ``interactive=False`` is for
+    optional secrets: an absent optional key must not stop a run to ask.
     """
     if settings is None:
         from .config import get_settings
@@ -203,16 +232,75 @@ def build_resolver(settings=None, *, prompt: str = "Password") -> CredentialReso
 
     providers: list[SecretProvider] = [
         EnvironmentProvider({
-            settings.password_secret_name: "EWM_PASSWORD",
-            settings.approval_signing_secret_name: "ALM_APPROVAL_SIGNING_KEY",
-            settings.webhook_secret_name: "ALM_WEBHOOK_HMAC_KEY",
+            settings.password_secret_name: "EWM_PASSWORD",  # pragma: allowlist secret
+            settings.approval_signing_secret_name: "ALM_APPROVAL_SIGNING_KEY",  # pragma: allowlist secret
+            settings.webhook_secret_name: "ALM_WEBHOOK_HMAC_KEY",  # pragma: allowlist secret
+            settings.gemini_api_key_secret_name: "GEMINI_API_KEY",  # pragma: allowlist secret
+            settings.typesafe_api_key_secret_name: "TYPESAFE_API_KEY",  # pragma: allowlist secret
         }),
         FileProvider(os.getenv("ALM_SECRET_DIR", "/secrets")),
     ]
     if settings.project_id:
         providers.append(SecretManagerProvider(settings))
-    providers.append(InteractiveProvider(prompt))
+    if interactive:
+        providers.append(InteractiveProvider(prompt))
     return CredentialResolver(providers)
+
+
+# ---------------------------------------------------------- Gemini API key
+
+# GEMINI_API_KEY is what Google AI Studio tells you to set; GOOGLE_API_KEY is
+# what the google-genai SDK reads on its own. Either works.
+GEMINI_KEY_ENV_VARS = ("GEMINI_API_KEY", "GOOGLE_API_KEY")
+GEMINI_KEY_HELP = (
+    "Create a key at https://aistudio.google.com/apikey and put it in .env as "
+    "GEMINI_API_KEY=... (the file is gitignored). In Cloud Run it comes from the "
+    "Secret Manager secret named by ALM_GEMINI_API_KEY_SECRET_NAME.")
+
+
+# Keys that live in .env for a local run. Listed so load_env can spot a
+# placeholder in the Windows environment shadowing a real value in .env.
+API_KEY_ENV_VARS = (*GEMINI_KEY_ENV_VARS, "TYPESAFE_API_KEY")
+
+_PLACEHOLDER_RE = re.compile(
+    r"^[\s{<\[$%(].*[}>\]%)]\s*$"                      # {YOUR_API_KEY}, <key>, ${VAR}, %VAR%
+    r"|your[_ -]?(api[_ -]?)?key|api[_ -]?key[_ -]?here|changeme|^x{6,}$|^\.\.\.$",
+    re.IGNORECASE)
+
+
+def looks_like_placeholder(value: str) -> bool:
+    """True for template text left where a key should be, e.g. ``{YOUR_API_KEY}``."""
+    return bool(value) and _PLACEHOLDER_RE.search(value.strip()) is not None
+
+
+def gemini_api_key(settings, resolver: CredentialResolver | None = None) -> str:
+    """The Gemini Developer API key: environment, mounted file, Secret Manager, prompt.
+
+    Resolved on demand and handed straight to the model client; it is never
+    stored on Settings, so it cannot turn up in a settings dump or a repr.
+    """
+    for var in GEMINI_KEY_ENV_VARS:
+        value = os.getenv(var, "").strip()
+        if value and not looks_like_placeholder(value):
+            return value
+    resolver = resolver or build_resolver(settings, prompt="Gemini API key")
+    try:
+        return resolver.get(settings.gemini_api_key_secret_name)
+    except CredentialError as err:
+        raise CredentialError(f"no Gemini API key found. {GEMINI_KEY_HELP}") from err
+
+
+def typesafe_api_key(settings, resolver: CredentialResolver | None = None) -> str | None:
+    """The TypeSafe API key, or None. Optional, so it never prompts.
+
+    The SDK would read TYPESAFE_API_KEY itself; resolving it here as well lets the
+    key come from a mounted file or Secret Manager like every other secret.
+    """
+    resolver = resolver or build_resolver(settings, interactive=False)
+    try:
+        return resolver.get(settings.typesafe_api_key_secret_name)
+    except CredentialError:
+        return None
 
 
 # ------------------------------------------------------- Cloud SQL IAM auth

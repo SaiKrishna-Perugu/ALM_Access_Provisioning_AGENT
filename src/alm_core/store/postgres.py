@@ -297,7 +297,14 @@ class PostgresStore:
                 VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s)
                 ON CONFLICT (thread_id) DO UPDATE
                    SET request = EXCLUDED.request, plan_hash = EXCLUDED.plan_hash,
-                       expires_at = EXCLUDED.expires_at
+                       expires_at = EXCLUDED.expires_at,
+                       -- A decision belongs to the plan it was made on; a new plan
+                       -- on the same thread starts undecided. (Right-hand sides
+                       -- read the pre-update row.)
+                       decision = CASE WHEN alm_approval.plan_hash = EXCLUDED.plan_hash
+                                       THEN alm_approval.decision END,
+                       decided_at = CASE WHEN alm_approval.plan_hash = EXCLUDED.plan_hash
+                                         THEN alm_approval.decided_at END
                 """,
                 (request.thread_id, request.run_id, request.environment, request.plan_hash,
                  _json(request.model_dump(mode="json")), request.created_at,

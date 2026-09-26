@@ -30,7 +30,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from alm_core.logging import get_logger
+from alm_core.logging import get_logger, redact_pii, scrub_secrets
 from alm_core.models import AuditEvent, Outcome
 
 from .policy import PolicyEngine
@@ -76,7 +76,12 @@ class ToolRegistry:
         return [self._specs[n] for n in names]
 
     def as_openai_schema(self, names: list[str]) -> list[dict]:
-        """Tool definitions in the shape a chat model expects."""
+        """Tool definitions in the shape a chat model expects.
+
+        The parameters are :func:`portable_schema`, not pydantic's raw output:
+        Gemini's function declarations accept a subset of JSON Schema, and the
+        same definitions must work for Gemini, Vertex and Claude alike.
+        """
         schemas = []
         for spec in self.subset(names):
             schemas.append({
@@ -84,10 +89,64 @@ class ToolRegistry:
                 "function": {
                     "name": spec.name,
                     "description": spec.description,
-                    "parameters": spec.args_schema.model_json_schema(),
+                    "parameters": portable_schema(spec.args_schema),
                 },
             })
         return schemas
+
+
+# JSON Schema keywords Gemini's function declarations reject or ignore. The
+# constraints they carry are not lost: the pydantic model still enforces every
+# one of them when _execute validates the arguments.
+_UNPORTABLE_KEYS = {"title", "default", "examples", "additionalProperties",
+                    "$schema", "$defs", "definitions", "exclusiveMinimum",
+                    "exclusiveMaximum"}
+
+
+def portable_schema(model) -> dict:
+    """A tool's argument schema, reduced to what every provider accepts.
+
+    Inlines ``$ref``, collapses ``Optional[X]`` (``anyOf [X, null]``) to X with
+    ``nullable``, turns ``const`` into a one-value ``enum``, and drops the
+    keywords in ``_UNPORTABLE_KEYS``.
+    """
+    raw = model.model_json_schema()
+    defs = raw.get("$defs", {}) or raw.get("definitions", {})
+
+    def walk(node):
+        if isinstance(node, list):
+            return [walk(n) for n in node]
+        if not isinstance(node, dict):
+            return node
+        if "$ref" in node:
+            target = defs.get(node["$ref"].rsplit("/", 1)[-1], {})
+            merged = {**target, **{k: v for k, v in node.items() if k != "$ref"}}
+            return walk(merged)
+        branches = node.get("anyOf") or node.get("oneOf")
+        if branches:
+            real = [b for b in branches if b.get("type") != "null"]
+            if len(real) == 1:
+                rest = {k: v for k, v in node.items() if k not in ("anyOf", "oneOf")}
+                out = walk({**real[0], **rest})
+                if len(real) < len(branches):
+                    out["nullable"] = True
+                return out
+        out = {}
+        for key, value in node.items():
+            if key in _UNPORTABLE_KEYS:
+                continue
+            if key == "const":
+                out["enum"] = [value]
+            elif key == "properties":
+                out[key] = {name: walk(sub) for name, sub in value.items()}
+            else:
+                out[key] = walk(value)
+        return out
+
+    schema = walk(raw)
+    schema.setdefault("type", "object")
+    schema.setdefault("properties", {})
+    return schema
 
 
 @dataclass
@@ -170,14 +229,30 @@ class AgentRunner:
 
     def __init__(self, *, llm, registry: ToolRegistry, policy: PolicyEngine,
                  store=None, run_id: str = "", thread_id: str = "",
-                 environment: str = ""):
+                 environment: str = "",
+                 on_event: Callable[[str, dict], None] | None = None,
+                 redact: bool = True):
         self.llm = llm
+        # Strip e-mail addresses from what the model reads. User IDs stay: they
+        # are what the agents work with. The console and audit keep the original.
+        self.redact = redact
+        # Optional live progress hook - the sandbox prints agent reasoning and
+        # tool calls as they happen. Never allowed to break the run.
+        self.on_event = on_event
         self.registry = registry
         self.policy = policy
         self.store = store
         self.run_id = run_id
         self.thread_id = thread_id
         self.environment = environment
+
+    def _emit(self, kind: str, **data) -> None:
+        if self.on_event is None:
+            return
+        try:
+            self.on_event(kind, data)
+        except Exception:  # noqa: BLE001 - a display hook must not stop an agent
+            log.exception("agent_event_hook_failed", kind=kind)
 
     # ------------------------------------------------------------ execution
 
@@ -249,8 +324,14 @@ class AgentRunner:
         deadline = time.monotonic() + agent.timeout_seconds
         model = self.llm.bind_tools(self.registry.as_openai_schema(agent.tools))
 
+        instructions = agent.instructions(self.registry)
+        if self.redact:
+            instructions += (
+                "\n- E-mail addresses appear as [email]. They are withheld from you on "
+                "purpose; that is not a defect in the data. The e-mail checks run in "
+                "code, and the tools always work on the real values.")
         messages: list[Any] = [
-            SystemMessage(content=agent.instructions(self.registry)),
+            SystemMessage(content=instructions),
             HumanMessage(content=f"{task}\n\n{context}".strip()),
         ]
 
@@ -267,12 +348,20 @@ class AgentRunner:
                 result.stopped_because = "model call timed out"
                 break
             except Exception as err:  # noqa: BLE001 - a model outage is not a crash
-                log.warning("model_call_failed", agent=agent.name, error=str(err))
-                result.stopped_because = f"model unavailable: {err}"
+                reason = scrub_secrets(f"{type(err).__name__}: {err}")[:300]
+                log.warning("model_call_failed", agent=agent.name, error=reason)
+                result.stopped_because = f"model unavailable: {reason}"
+                self._emit("model_error", agent=agent.name, error=reason)
                 break
 
+            # The AIMessage goes back into the history unchanged: Gemini 3 attaches
+            # thought signatures to its function calls and rejects the next turn
+            # if they are missing.
             messages.append(response)
             tool_calls = getattr(response, "tool_calls", None) or []
+            thought = _text(response).strip()
+            if thought:
+                self._emit("agent_text", agent=agent.name, text=thought)
 
             if not tool_calls:
                 # No tool call and no explicit finish: treat the text as the
@@ -291,10 +380,16 @@ class AgentRunner:
                                   denied=denied,
                                   ms=int((time.monotonic() - started) * 1000))
                 result.calls.append(record)
-                messages.append(ToolMessage(content=observation,
-                                            tool_call_id=call.get("id", name)))
+                # name= matters for Gemini, which pairs a function response with
+                # its call by name rather than by id.
+                model_view = (redact_pii(observation, keep_userids=True)
+                              if self.redact else observation)
+                messages.append(ToolMessage(content=model_view, name=name,
+                                            tool_call_id=call.get("id") or name))
                 log.info("agent_tool_call", agent=agent.name, tool=name,
                          denied=denied, ms=record.ms)
+                self._emit("tool_call", agent=agent.name, tool=name, args=args,
+                           observation=observation, denied=denied, ms=record.ms)
 
                 spec = self.registry.get(name)
                 if spec is not None and spec.terminal and not denied:
@@ -318,12 +413,22 @@ class AgentRunner:
 
 
 def _text(message) -> str:
+    """The visible text of a model response.
+
+    Gemini can return content as a list of parts, some of them thinking blocks
+    or bare strings; only the answer text counts.
+    """
     content = getattr(message, "content", "")
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        return " ".join(part.get("text", "") for part in content
-                        if isinstance(part, dict))
+        parts = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict) and part.get("type", "text") == "text":
+                parts.append(str(part.get("text", "")))
+        return " ".join(p for p in parts if p)
     return str(content)
 
 

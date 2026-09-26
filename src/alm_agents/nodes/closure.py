@@ -11,13 +11,11 @@ first, the model's draft is checked against the recorded action, and any draft
 claiming something the outcome does not support is discarded in favour of the
 template.
 
-Each comment ends with a marker derived from its own content, so a redelivered
-webhook or a retried node recognises its own previous post instead of doubling
-it.
+The comment carries no signature or marker. A redelivered webhook or a retried
+node cannot double it: the idempotency ledger records the post, and the post
+itself is skipped when an identical comment is already on the work item.
 """
 from __future__ import annotations
-
-import hashlib
 
 from alm_core.logging import get_logger
 from alm_core.models import Operation, Outcome, UserState
@@ -30,7 +28,6 @@ from ..state import PipelineState
 log = get_logger("alm.agents.closure")
 
 COMMENT_HEADER = "ALM access provisioning result :"
-MARKER_PREFIX = "alm-agent"
 
 # recorded action -> the sentence that is true about that user
 ACTION_TEXT = {
@@ -59,14 +56,6 @@ def _action_for(userid: str, state: PipelineState) -> str:
     return "unknown"
 
 
-def comment_marker(work_item_id: str, lines: list[tuple[str, str]]) -> str:
-    """Stable marker for this exact comment content on this work item."""
-    blob = f"{work_item_id}|" + "|".join(
-        f"{uid}={action}" for uid, action in sorted(lines))
-    digest = hashlib.sha256(blob.encode("utf-8")).hexdigest()[:12]
-    return f"[{MARKER_PREFIX}:{work_item_id}:{digest}]"
-
-
 def build_comment(ctx: ToolContext, work_item_id: str,
                   entries: list[tuple[str, str, str]]) -> tuple[str, str]:
     """Render the comment. ``entries`` is [(userid, display_name, action)]."""
@@ -78,9 +67,7 @@ def build_comment(ctx: ToolContext, work_item_id: str,
         # The template is always correct; a draft only replaces it if it passes
         # the claim check inside draft_comment_line.
         lines.append(f"{userid}: {draft}" if draft else template)
-    marker = comment_marker(work_item_id, [(u, a) for u, _n, a in entries])
-    lines.append(marker)
-    return "\n".join(lines), marker
+    return "\n".join(lines), ""
 
 
 def make_closure_node(ctx: ToolContext):

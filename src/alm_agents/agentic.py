@@ -36,12 +36,13 @@ from alm_core.tools.base import ToolContext
 
 from .agent import AgentRunner, summarise_calls
 from .memory import MemoryStore
+from .nodes.approval import open_request
 from .nodes.auditor import summarise
 from .policy import PolicyEngine
 from .roster import ROSTER
 from .state import PipelineState, halt
 from .supervisor import MAX_HOPS, decide, honour_handoff
-from .toolkit import Blackboard, build_registry, context_for
+from .toolkit import Backend, Blackboard, build_registry, context_for
 
 log = get_logger("alm.agentic")
 
@@ -51,16 +52,19 @@ class AgenticRuntime:
 
     def __init__(self, ctx: ToolContext, *, llm, supervisor_llm=None,
                  memory: MemoryStore | None = None, max_hops: int = MAX_HOPS,
-                 notifier=None, shots_dir: str = ""):
+                 notifier=None, shots_dir: str = "", backend: Backend | None = None,
+                 on_event=None):
         self.ctx = ctx
         self.llm = llm
         self.supervisor_llm = supervisor_llm or llm
         self.memory = memory or MemoryStore(getattr(ctx, "store", None))
         self.max_hops = max_hops
         self.notifier = notifier
+        # on_event(kind, data): live progress for a terminal or a UI. Optional.
+        self.on_event = on_event
         self.board = Blackboard()
         self.registry = build_registry(ctx, self.board, self.memory,
-                                       shots_dir=shots_dir)
+                                       shots_dir=shots_dir, backend=backend)
         self.policy = PolicyEngine(
             shadow=ctx.shadow,
             environment=ctx.environment,
@@ -71,12 +75,22 @@ class AgenticRuntime:
     def sync_from(self, state: PipelineState) -> None:
         """Rehydrate after a resume in a fresh process."""
         self.board.load_state(state.get("board"))
+        # Scope comes from the run's own state, which only the caller sets.
+        self.board.scope = set(state.get("work_item_ids") or [])
         approval = state.get("approval")
         if approval is not None:
             self.policy.approval = approval
             self.ctx.approval = approval
         self.ctx.run_id = state.get("run_id", "") or self.ctx.run_id
         self.ctx.thread_id = state.get("thread_id", "") or self.ctx.thread_id
+
+    def emit(self, kind: str, **data) -> None:
+        if self.on_event is None:
+            return
+        try:
+            self.on_event(kind, data)
+        except Exception:  # noqa: BLE001 - a display hook must not stop a run
+            log.exception("runtime_event_hook_failed", kind=kind)
 
     def snapshot(self, state: PipelineState) -> dict:
         """What the supervisor sees when it chooses."""
@@ -91,6 +105,7 @@ class AgenticRuntime:
             "approval_requested": self.board.approval_requested,
             "approved": state.get("approval") is not None
             and getattr(state.get("approval"), "approved", False),
+            "scope": sorted(self.board.scope) or "the whole active queue",
             "hops_used": state.get("hops", 0),
             "hops_remaining": self.max_hops - state.get("hops", 0),
         }
@@ -118,6 +133,8 @@ def make_supervisor_node(runtime: AgenticRuntime):
 
         log.info("supervisor_decision", next=decision.next_agent,
                  why=decision.why[:160], fallback=decision.fallback, hop=hops + 1)
+        runtime.emit("supervisor", next=decision.next_agent, why=decision.why,
+                     task=decision.task, fallback=decision.fallback, hop=hops + 1)
 
         await runtime.ctx.store.record(AuditEvent(
             run_id=state.get("run_id", ""), thread_id=state.get("thread_id", ""),
@@ -147,12 +164,16 @@ def make_agent_node(runtime: AgenticRuntime):
             llm=runtime.llm, registry=runtime.registry, policy=runtime.policy,
             store=runtime.ctx.store, run_id=state.get("run_id", ""),
             thread_id=state.get("thread_id", ""),
-            environment=runtime.ctx.environment)
+            environment=runtime.ctx.environment, on_event=runtime.on_event,
+            redact=getattr(runtime.ctx.settings, "redact_for_model", True))
 
         subjects = sorted(runtime.board.users) + sorted(runtime.board.work_items)
         brief = await runtime.memory.brief(subjects, tags=[name])
         context = context_for(runtime.board, brief)
 
+        # results is an append-only channel: return only what this hop added,
+        # or every earlier result is counted again on each hop.
+        results_before = len(runtime.board.results)
         result = await runner.run(agent, state.get("next_task", ""), context)
         log.info("agent_finished", agent=name, iterations=result.iterations,
                  calls=len(result.calls), handoff=result.handoff_to,
@@ -176,12 +197,20 @@ def make_agent_node(runtime: AgenticRuntime):
             else Outcome.SKIPPED,
             message=result.output[:500], detail=entry))
 
+        if result.stopped_because.startswith("model unavailable") and not result.calls:
+            # The supervisor would route to the next agent, which would fail the
+            # same way. Stop once, with the reason, instead of spending every hop.
+            return {**halt(f"the agent model is unavailable - {result.stopped_because}. "
+                           "Fix it (check the key and model with --check), then run "
+                           "again."),
+                    "agent_history": [entry], "board": runtime.board.to_state()}
+
         handoff = honour_handoff(result)
         update = PipelineState(
             agent_history=[entry],
             board=runtime.board.to_state(),
             policy=runtime.policy.summary(),
-            results=list(runtime.board.results),
+            results=list(runtime.board.results[results_before:]),
             verified_userids=sorted(runtime.board.verified),
             statuses=dict(runtime.board.statuses),
             users=list(runtime.board.users.values()),
@@ -215,16 +244,21 @@ def make_agentic_approval_node(runtime: AgenticRuntime):
             environment=runtime.ctx.environment,
             expires_at=utcnow() + timedelta(minutes=settings.approval_ttl_minutes),
             plan_hash=plan_hash(items), items=items)
-        await runtime.ctx.store.save_approval_request(request)
+        # This node runs twice - once to pause, once on resume. Only the first
+        # pass may save the request and send the card.
+        request, is_new = await open_request(runtime.ctx.store, request)
 
-        if runtime.notifier is not None:
-            try:
-                await runtime.notifier(request)
-            except Exception as err:  # noqa: BLE001 - a card that fails to send
-                log.warning("approval_notification_failed", error=str(err))
-
-        log.info("awaiting_approval", thread_id=request.thread_id,
-                 users=request.user_count, reason=runtime.board.approval_reason[:160])
+        if is_new:
+            if runtime.notifier is not None:
+                try:
+                    await runtime.notifier(request)
+                except Exception as err:  # noqa: BLE001 - a card that fails to send
+                    log.warning("approval_notification_failed", error=str(err))
+            log.info("awaiting_approval", thread_id=request.thread_id,
+                     users=request.user_count,
+                     reason=runtime.board.approval_reason[:160])
+            runtime.emit("approval_required", request=request,
+                         reason=runtime.board.approval_reason)
 
         from langgraph.types import interrupt
 

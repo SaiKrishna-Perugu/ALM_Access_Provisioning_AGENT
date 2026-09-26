@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import html
 import json
+import re
 
 from ..errors import DataError, NotFoundError, TransportError
 from ..logging import get_logger
@@ -198,13 +199,28 @@ def _existing_comments(ctx: ToolContext, work_item_id: str) -> list[str] | None:
         return None
 
 
+def normalize_comment(text: str) -> str:
+    """A comment reduced to comparable text: no tags, entities, case or spacing.
+
+    EWM stores the body as HTML (<br/>, &amp;), so the text we posted and the
+    text we read back differ in form but not in content.
+    """
+    text = re.sub(r"<br\s*/?>", " ", str(text), flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", " ", text)
+    return " ".join(html.unescape(text).split()).casefold()
+
+
 def _post_comment(ctx: ToolContext, work_item_id: str, text: str,
-                  marker: str) -> tuple[bool, str, dict]:
+                  marker: str = "") -> tuple[bool, str, dict]:
     server = _server(ctx)
 
+    # Duplicate check by content: the comment carries no signature. A marker is
+    # still honoured when a caller supplies one.
+    needle = normalize_comment(marker or text)
     existing = _existing_comments(ctx, work_item_id)
-    if existing is not None and any(marker in " ".join(str(c).split()) for c in existing):
-        return True, f"identical comment already present {marker}", {"replayed": True}
+    if existing is not None and needle and \
+            any(needle in normalize_comment(c) for c in existing):
+        return True, "an identical comment is already present", {"replayed": True}
     if existing is None:
         log.warning("comment_idempotency_unverified", work_item=work_item_id)
 
@@ -224,8 +240,12 @@ def _post_comment(ctx: ToolContext, work_item_id: str, text: str,
 
 
 async def post_comment(ctx: ToolContext, *, work_item_id: str, userid: str, text: str,
-                       marker: str) -> ProvisionResult:
-    """Comment on a work item, once. The marker makes a re-run a no-op."""
+                       marker: str = "") -> ProvisionResult:
+    """Comment on a work item, once.
+
+    Twice-protected against a duplicate: the idempotency ledger in
+    ``guarded_write``, and a content check against the comments already there.
+    """
     return await guarded_write(
         ctx, userid=userid, work_item_id=work_item_id,
         operation=Operation.WORKITEM_COMMENT, step="closure",

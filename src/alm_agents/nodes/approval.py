@@ -92,6 +92,26 @@ def _auto_approvable(request: ApprovalRequest, ctx: ToolContext) -> bool:
                and not item.risk_reasons for item in request.items)
 
 
+async def open_request(store, request: ApprovalRequest) -> tuple[ApprovalRequest, bool]:
+    """Save the request, or return the one already pending for this exact plan.
+
+    LangGraph re-executes an interrupted node from its first line when the run
+    resumes. Without this, every resume would write a fresh request (moving the
+    expiry forward, so an approval could never expire) and send the approver a
+    second card for a decision they had already made.
+
+    Returns ``(request, is_new)``; only a new request should be announced.
+    """
+    existing, decision = await store.get_approval(request.thread_id)
+    if (existing is not None
+            and existing.plan_hash == request.plan_hash
+            and utcnow() <= existing.expires_at
+            and (decision is None or decision.plan_hash != existing.plan_hash)):
+        return existing, False
+    await store.save_approval_request(request)
+    return request, True
+
+
 def make_approval_node(ctx: ToolContext, notifier=None):
     """``notifier(request)`` delivers the card; None means "record only"."""
 
@@ -100,7 +120,7 @@ def make_approval_node(ctx: ToolContext, notifier=None):
         if not request.items:
             return halt("nothing to approve - no user survived validation")
 
-        await ctx.store.save_approval_request(request)
+        request, is_new = await open_request(ctx.store, request)
 
         if _auto_approvable(request, ctx):
             decision = ApprovalDecision(
@@ -113,7 +133,7 @@ def make_approval_node(ctx: ToolContext, notifier=None):
             return PipelineState(approval_request=request, approval=decision,
                                  plan_hash=request.plan_hash)
 
-        if notifier is not None:
+        if notifier is not None and is_new:
             try:
                 await notifier(request)
             except Exception as err:  # noqa: BLE001 - a card that fails to send
@@ -121,11 +141,13 @@ def make_approval_node(ctx: ToolContext, notifier=None):
                 log.warning("approval_notification_failed", error=str(err),
                             thread_id=request.thread_id)
 
-        log.info("awaiting_approval", thread_id=request.thread_id,
-                 users=request.user_count, work_items=request.work_item_count,
-                 plan_hash=request.plan_hash[:12])
+        if is_new:
+            log.info("awaiting_approval", thread_id=request.thread_id,
+                     users=request.user_count, work_items=request.work_item_count,
+                     plan_hash=request.plan_hash[:12])
 
-        # Everything above has been checkpointed; the graph suspends here.
+        # The graph suspends here. On resume this node runs again from the top;
+        # open_request() is what makes that second pass side-effect free.
         from langgraph.types import interrupt
 
         payload = interrupt({

@@ -129,8 +129,16 @@ def _auth_failed(response) -> bool:
 
 def form_login(session: requests.Session, server: str, user: str, password: str,
                verify_session, *, timeout) -> None:
-    """Authenticate, or raise AuthenticationError. Never logs the password."""
+    """Authenticate, or raise. Never logs the password.
+
+    Raises ``TransportError`` when the server never answered (DNS, proxy, VPN,
+    TLS) and ``AuthenticationError`` when it answered and refused - the two
+    need opposite fixes, and "authentication failed" for an unreachable host
+    sends the operator to reset a password that was never the problem.
+    """
     attempted: list[str] = []
+    transport_error: Exception | None = None
+    answered = rejected = False
     for login_url in _login_endpoints(session, server, timeout):
         attempted.append(login_url)
         try:
@@ -139,9 +147,14 @@ def form_login(session: requests.Session, server: str, user: str, password: str,
                                     allow_redirects=True, timeout=timeout)
         except requests.RequestException as err:
             log.warning("login_post_failed", endpoint=login_url, error=str(err))
+            transport_error = err
             continue
+        answered = True
         if _auth_failed(response):
-            continue
+            # The server has judged the password. Trying the next endpoint would
+            # only add a failed attempt towards an account lockout.
+            rejected = True
+            break
         try:
             if verify_session(session):
                 log.info("authenticated", server=server, user=user)
@@ -149,9 +162,19 @@ def form_login(session: requests.Session, server: str, user: str, password: str,
         except requests.RequestException as err:
             log.warning("login_verification_failed", endpoint=login_url, error=str(err))
 
+    context = {"server": server, "user": user, "endpoints_tried": attempted}
+    if not answered:
+        cause = type(transport_error).__name__ if transport_error else "no login endpoint"
+        raise TransportError(
+            f"cannot reach {server} ({cause}). Check DNS, the VPN, and that the host "
+            "is in NO_PROXY - the corporate proxy cannot reach intranet servers.",
+            context=context)
     raise AuthenticationError(
-        "Jazz form authentication failed",
-        context={"server": server, "user": user, "endpoints_tried": attempted})
+        "Jazz form authentication failed: " + (
+            "the server rejected the user ID or password" if rejected else
+            "the login was accepted but the session did not verify - check that the "
+            "account can open this server in a browser"),
+        context=context)
 
 
 def ewm_session_is_live(server: str, timeout):

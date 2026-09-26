@@ -149,7 +149,11 @@ def _risk(user: RequestedUser, state: UserState, ldap_email: str) -> tuple[RiskL
     """Flag the things a human approver should actually look at."""
     reasons: list[str] = []
     if user.extracted_by_llm:
-        reasons.append("user ID was recovered by the LLM fallback, not the structured field")
+        reason = "user ID was recovered by the LLM fallback, not the structured field"
+        if user.extraction_confidence < 1.0:
+            # The approver sees how sure the selector was, not just that it guessed.
+            reason += f" (probability {user.extraction_confidence:.2f})"
+        reasons.append(reason)
     if state in (UserState.MISSING, UserState.INVALID):
         reasons.append(f"LDAP state is {state.value} - provisioning cannot succeed")
     if state == UserState.ARCHIVED:

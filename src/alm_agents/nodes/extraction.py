@@ -10,6 +10,8 @@ approval card, so a human always knows which user IDs a machine guessed.
 """
 from __future__ import annotations
 
+import asyncio
+
 from alm_core.logging import get_logger
 from alm_core.oslc import merge_users, parse_new_users
 from alm_core.tools.base import ToolContext
@@ -36,8 +38,10 @@ def make_extraction_node(ctx: ToolContext):
             unparsed.extend(f"{item.work_item_id}: {row}" for row in rejected)
             log.info("attempting_llm_extraction", work_item=item.work_item_id,
                      rejected_rows=len(rejected))
-            proposed = llm.extract_users(
-                ctx.settings, "; ".join(rejected), item.work_item_id, item.summary)
+            # A network call to a model; off the event loop.
+            proposed = await asyncio.to_thread(
+                llm.extract_users, ctx.settings, "; ".join(rejected),
+                item.work_item_id, item.summary)
             # Never let the fallback re-propose a user the parser already read
             # correctly - that would downgrade a clean record to "LLM guessed".
             known = {u.userid for u in item.users}

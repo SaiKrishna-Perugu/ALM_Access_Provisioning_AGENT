@@ -144,6 +144,28 @@ resource "google_compute_route" "restricted_vip" {
   priority         = 100
 }
 
+// The Gemini Developer API is not served on the restricted VIP (only VPC
+// Service Controls-supported APIs are), so the wildcard above would send it
+// nowhere. When the keyed API is in use, that one hostname goes to the private
+// VIP instead, which serves all Google APIs. Vertex AI needs none of this.
+resource "google_dns_record_set" "gemini_api_private" {
+  count        = local.gemini_api ? 1 : 0
+  name         = "generativelanguage.googleapis.com."
+  managed_zone = google_dns_managed_zone.google_apis.name
+  type         = "A"
+  ttl          = 300
+  rrdatas      = ["199.36.153.8", "199.36.153.9", "199.36.153.10", "199.36.153.11"]
+}
+
+resource "google_compute_route" "private_vip" {
+  count            = local.gemini_api ? 1 : 0
+  name             = "${local.prefix}-private-googleapis"
+  network          = google_compute_network.vpc.name
+  dest_range       = "199.36.153.8/30"
+  next_hop_gateway = "default-internet-gateway"
+  priority         = 100
+}
+
 // ---------------------------------------------------------------- firewall
 // Default-deny egress, with the two destinations this workload legitimately
 // needs. An autonomous agent with unrestricted egress is a data-exfiltration
@@ -165,7 +187,8 @@ resource "google_compute_firewall" "allow_google_apis" {
   network            = google_compute_network.vpc.name
   direction          = "EGRESS"
   priority           = 1000
-  destination_ranges = ["199.36.153.4/30"]
+  destination_ranges = compact(["199.36.153.4/30",
+                                 local.gemini_api ? "199.36.153.8/30" : ""])
 
   allow {
     protocol = "tcp"

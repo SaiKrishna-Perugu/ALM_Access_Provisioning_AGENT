@@ -1,42 +1,55 @@
-﻿# Dependencies for the autonomous (Google Cloud) deployment described in
-# docs/Autonoums Agent Plan.md. NOT needed to run the local CLI pipeline -
-# src/*.py continues to work with requirements.txt alone.
+﻿# Dependencies for the autonomous multi-agent system (src/alm_core, alm_agents,
+# alm_api, alm_worker). NOT needed to run the local CLI pipeline - src/*.py still
+# works with requirements.txt alone.
 #
-#   .\.venv\Scripts\python.exe -m pip install -r requirements-cloud.txt
+#   python -m pip install -r requirements-cloud.txt
+#
+# Pinned to a set verified to resolve together on Python 3.13.
 -r requirements.txt
 
 # --- Orchestration ---------------------------------------------------------
-langgraph==0.2.62
-langgraph-checkpoint-postgres==2.0.9
-langchain-core==0.3.29
-# Vertex AI chat models. Also exposes ChatAnthropicVertex, so Claude on Vertex
-# Model Garden is a one-line change from Gemini - see alm_agents/llm.py.
-langchain-google-vertexai==2.0.7
+langgraph==1.2.11
+langgraph-checkpoint-postgres==3.1.2
+# Local runs: the checkpointer and ledger in one SQLite file (ALM_LEDGER_PATH).
+langgraph-checkpoint-sqlite==3.1.1
+aiosqlite==0.22.1
+langchain-core==1.6.0
+
+# --- Models: Gemini, two ways in (see src/alm_agents/llm.py) ----------------
+# Gemini Developer API - authenticates with an API key from Google AI Studio.
+# The default provider (ALM_LLM_PROVIDER=gemini_api).
+langchain-google-genai==4.3.5
+# Vertex AI - authenticates with a service account, no key. Also serves Claude
+# through Model Garden. Selected with ALM_LLM_PROVIDER=vertex.
+langchain-google-vertexai==3.2.4
+google-cloud-aiplatform==1.165.1
+
+# --- User-ID recovery: TypeSafe (optional; see recover_userids in llm.py) ----
+# Judges which user-ID-shaped tokens in a malformed row are people being
+# requested. Used only when TYPESAFE_API_KEY resolves; Gemini otherwise.
+typesafe-sdk==0.7.1
 
 # --- Contracts and configuration -------------------------------------------
-pydantic==2.10.4
-pydantic-settings==2.7.1
+# [email] brings email-validator, which pydantic's EmailStr needs at import time.
+pydantic[email]==2.13.4
+pydantic-settings==2.15.0
 
 # --- API / approval surface -------------------------------------------------
 fastapi==0.115.6
-uvicorn[standard]==0.34.0
+uvicorn[standard]==0.52.4
 python-multipart==0.0.20
 
 # --- Google Cloud -----------------------------------------------------------
-google-auth==2.37.0
+google-auth==2.57.0
 google-cloud-secret-manager==2.21.1
 google-cloud-pubsub==2.27.1
 google-cloud-logging==3.11.3
-google-cloud-aiplatform==1.75.0
 
 # --- Persistence ------------------------------------------------------------
-# Cloud SQL is reached on its private IP over Direct VPC egress, with an IAM
-# access token as the password. psycopg keeps LangGraph's AsyncPostgresSaver
-# working unchanged - it only wants a DSN.
-psycopg[binary,pool]==3.2.3
+# Cloud SQL is reached on its private IP with an IAM access token as the
+# password. psycopg keeps LangGraph's AsyncPostgresSaver working - it only
+# wants a DSN.
+psycopg[binary,pool]==3.3.6
 
 # --- Observability ----------------------------------------------------------
-structlog==24.4.0
-opentelemetry-sdk==1.29.0
-opentelemetry-instrumentation-fastapi==0.50b0
-opentelemetry-exporter-gcp-trace==1.7.0
+structlog==25.5.0

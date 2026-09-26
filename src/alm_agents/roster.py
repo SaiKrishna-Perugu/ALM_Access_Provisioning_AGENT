@@ -75,22 +75,23 @@ separated entries with newlines.
 Always call parse_new_users_field first. It is exact, and whatever it parses is
 correct. Only reason about the rows it rejected.
 
-For rejected rows:
-- Recover a user ID only if it appears verbatim in the text. A Jazz user ID
-  looks like SF58083, T0195G3 or MWPDOO01: one to three letters, a digit, then
-  alphanumerics.
+For rejected rows, call recover_user_ids. It lists every token in the text that
+could be a user ID and judges which of them are people being requested, with a
+probability for each. Use its result; do not add IDs of your own.
 - Never complete a partial ID, correct a typo, or derive an ID from a person's
   name. Provisioning the wrong person is worse than provisioning nobody.
+- A candidate it judged not requested stays out, unless the text plainly shows
+  otherwise - then say why in your finish summary; the approver will see it.
 - If a row names a person but contains no user ID, say so explicitly and leave
   it for a human. That is a successful outcome for you, not a failure.
-- Call fetch_work_item and read the Justification field if New Users is empty;
+- If New Users is empty, recover_user_ids reads the Justification field;
   requesters sometimes put the list there.
 
 Record anything reusable with remember - for example, if a particular
 requester's work items consistently use a different format, that saves the next
 run the same work. Then hand off to the validator.""",
-    tools=["fetch_work_item", "parse_new_users_field", "recall_memory", "remember",
-           "handoff", "finish"],
+    tools=["fetch_work_item", "parse_new_users_field", "recover_user_ids",
+           "recall_memory", "remember", "handoff", "finish"],
     max_iterations=14,
 )
 
@@ -152,9 +153,11 @@ You may call classify_user yourself to check a claim you doubt. Do not take
 another agent's summary as evidence when the underlying tool is one call away.
 
 Then call request_human_approval with a reason that tells the approver what to
-look at, not just how many users there are. If you believe the batch should not
-proceed at all, say so and finish without requesting approval - stopping is a
-legitimate outcome.
+look at, not just how many users there are. Every write needs that approval -
+including a work-item comment for a batch where nobody needs provisioning - so
+if anything will be written, request it now rather than letting a later agent
+be refused. If you believe the batch should not proceed at all, say so and
+finish without requesting approval - stopping is a legitimate outcome.
 
 You cannot write anything. That is deliberate.""",
     tools=["classify_user", "check_jazz_permission", "recall_memory", "remember",
@@ -202,8 +205,9 @@ VERIFIER = Agent(
           "confirmed outcomes are reported to anyone."),
     system_prompt=f"""{SHARED_PREAMBLE}
 
-Call check_jazz_permission for each user that was provisioned. A user who has
-the JazzUsers role and is not archived is verified. Anyone else is not, and the
+Call check_jazz_permission for each user in this run whose account should now
+be active - provisioned by this run, or already present before it. A user who
+has the JazzUsers role and is not archived is verified. Anyone else is not, and the
 distinction governs everything downstream: unverified users get no comment and
 no evidence.
 
@@ -224,7 +228,13 @@ EVIDENCE_OFFICER = Agent(
     system_prompt=f"""{SHARED_PREAMBLE}
 
 Capture profile screenshots only for VERIFIED users - a screenshot of a profile
-whose permission has not propagated proves nothing.
+whose permission has not propagated proves nothing. That includes users who
+already had access before this run: their profile screenshot is the record, on
+this request, that the access exists.
+
+Call capture_evidence once, with every verified user ID. Then call
+attach_workitem_evidence for each (work item, user) pair: a user requested on
+two work items gets the screenshot on both.
 
 capture_evidence validates the batch before returning: every artifact must be a
 confirmed profile page, and no two users may produce the same file. If it

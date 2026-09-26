@@ -371,7 +371,52 @@ This repository now holds two ways to run the same provisioning work.
 | Safety | Guards in each script | A policy engine checks every tool call, plus the same guards underneath |
 | State | `out/*.json` on the operator's disk | Postgres: ledger, audit, agent memory, graph checkpoints |
 | AD group step | Debug Chrome on the operator's machine | A job on Pub/Sub for a domain-joined Windows worker |
-| Status | **In production use** | **Code complete, never executed** |
+| Status | **In production use** | **Code complete; agents tested offline, never run against the live estate** |
+
+### Where the AI is, and how to try it
+
+The models are Gemini, called from one place: `src/alm_agents/llm.py`. They
+drive the supervisor (who acts next) and the nine agents (which tools to call,
+with what, and when to stop). With a Gemini API key from
+[Google AI Studio](https://aistudio.google.com/apikey) you can watch them work
+on a laptop, against a simulated estate:
+
+```powershell
+python -m pip install -r requirements-cloud.txt
+# add GEMINI_API_KEY=... to .env - the file is gitignored; never commit the key
+python src/agent_sandbox.py --check
+python src/agent_sandbox.py
+```
+
+Details, including why production should use Vertex AI instead of a key, are in
+[section 2a of the architecture](docs/AUTONOMOUS_ARCHITECTURE.md).
+
+When a New Users row is malformed, user IDs are *selected* from the row, never
+generated: code lists the tokens that look like user IDs, and a model judges
+which are requested. With a `TYPESAFE_API_KEY` in `.env` the judge is TypeSafe's
+Jev model, giving a probability per candidate that the approver sees; without
+one, Gemini judges the same candidates.
+
+### Run the agents locally, against the real EWM and JTS
+
+No cloud needed. OSLC over your network, Gemini for the reasoning, GPT through
+the same debug Chrome the CLI uses, and every record in one SQLite file under
+`out/local/`. Your existing `.env` works as is; add `GEMINI_API_KEY`.
+
+```powershell
+.\scripts\start-gpt.ps1                                 # then sign in to GPT in that window
+python src/agent_local.py --check                       # Gemini, EWM/JTS login, OSLC, GPT, ledger
+python src/agent_local.py --work-item 123456            # dry run: the agents plan, nothing is written
+python src/agent_local.py --work-item 123456 --commit   # writes, after your y/N at the approval prompt
+python src/agent_local.py --resume local-1a2b3c4d       # continue a paused or interrupted run
+```
+
+It keeps the CLI's safety model - dry run unless `--commit`, TEST/PROD detected
+from the server names, typed `PROD` confirmation, the same TLS settings - and
+adds the agents' guards on top: every tool call checked by the policy engine,
+a human approval before any write, the run limited to the work items named, and
+an idempotency ledger so a re-run reports earlier writes instead of repeating
+them. E-mail addresses are stripped before Gemini sees anything.
 
 The CLI is unchanged and remains the supported path. The autonomous stack is
 additive - it shares no state with the CLI and cannot interfere with it - and is

@@ -52,17 +52,21 @@ locals {
 
   // Secret ids the application resolves by name. Keep in step with
   // alm_core/config.py - the names are the contract between the two.
-  secret_ids = {
-    password  = "alm-service-account-password"
+  secret_ids = merge({
+    password  = "alm-service-account-password"  # pragma: allowlist secret
     approval  = "alm-approval-signing-key"
     webhook   = "alm-webhook-hmac-key"
-  }
+  }, { for k, v in { gemini = "alm-gemini-api-key" } : k => v if local.gemini_api })
+
+  // The Gemini Developer API is keyed; Vertex AI is not. Everything the key
+  // needs - its secret, its API, its network path - exists only in this mode.
+  gemini_api = var.llm_provider == "gemini_api"
 }
 
 // APIs are enabled explicitly rather than assumed. A first apply into a fresh
 // project otherwise fails halfway through with an opaque permission error.
 resource "google_project_service" "required" {
-  for_each = toset([
+  for_each = toset(concat([
     "run.googleapis.com",
     "sqladmin.googleapis.com",
     "pubsub.googleapis.com",
@@ -79,7 +83,7 @@ resource "google_project_service" "required" {
     "logging.googleapis.com",
     "monitoring.googleapis.com",
     "certificatemanager.googleapis.com",
-  ])
+  ], compact([local.gemini_api ? "generativelanguage.googleapis.com" : ""])))
 
   project = var.project_id
   service = each.key

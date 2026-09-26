@@ -23,9 +23,9 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
-from alm_core.logging import get_logger
+from alm_core.logging import get_logger, scrub_secrets
 
-from .agent import AgentResult
+from .agent import AgentResult, _text
 from .roster import NOMINAL_SEQUENCE, ROSTER, describe_roster
 
 log = get_logger("alm.supervisor")
@@ -48,9 +48,16 @@ that judgement is why you exist rather than a fixed pipeline:
 - If nobody was verified, there is nothing to attach or comment on. Do not send
   the evidence_officer or the closer to produce reports about users who do not
   have access.
+- Every verified user gets a profile screenshot attached to their work item
+  before the closer comments - including a user who already had access, where
+  the screenshot is the proof for this request. So after approval the order is
+  verifier (if anyone is unverified), then evidence_officer, then closer.
 - If a policy denial is blocking progress, read the reason. If it says approval
   is required, the risk_officer requests it - nobody else can, and no agent can
   route around it.
+- A write DENIED because shadow mode is on is the expected result of a dry
+  run, not a failure. Do not send the remediator for it. Once the plan is
+  complete, the run is DONE.
 - Never send an agent to redo work another has already completed successfully.
 
 Reply with JSON only, no prose around it:
@@ -132,9 +139,10 @@ Who acts next?"""
 
         response = await llm.ainvoke([SystemMessage(content=prompt),
                                       HumanMessage(content=context)])
-        text = getattr(response, "content", "") or ""
+        # Gemini may answer with a list of content parts, not a string.
+        text = _text(response) or ""
     except Exception as err:  # noqa: BLE001 - a model outage must not stop the run
-        log.warning("supervisor_model_failed", error=str(err))
+        log.warning("supervisor_model_failed", error=scrub_secrets(str(err))[:300])
         return fallback
 
     start, end = text.find("{"), text.rfind("}")

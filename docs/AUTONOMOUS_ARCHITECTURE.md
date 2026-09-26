@@ -1,10 +1,12 @@
 # Autonomous ALM Provisioning — Architecture
 
 > Implements [docs/Autonoums Agent Plan.md](Autonoums%20Agent%20Plan.md).
-> Status: **code complete, never executed.** Written without access to the
-> intranet, the Google Cloud project, Cloud DNS or an Vertex AI deployment.
-> Nothing here has run against EWM, JTS, GPT, Postgres, Pub/Sub or a model.
-> Treat every claim below as a design statement, not a test result.
+> Status: **code complete; never run against the live estate.** Written without
+> access to the intranet, the Google Cloud project or Cloud DNS. Nothing here has
+> run against EWM, JTS, GPT, Postgres or Pub/Sub. The agent layer *is* exercised
+> end to end offline - a scripted model against a simulated estate, in CI - and
+> can be run with a real Gemini model on a laptop (section 2a). Treat every claim
+> about the corporate integration as a design statement, not a test result.
 >
 > This is a genuine multi-agent system: an LLM supervisor routes nine agents,
 > each of which runs its own tool-calling loop and decides its own actions.
@@ -142,6 +144,84 @@ The supervisor falls back to the nominal sequence, so a routing-model outage
 degrades the system to the deterministic workflow rather than stopping it. The
 agents themselves need a model; if none can be built, `ALM_ORCHESTRATION=deterministic`
 runs the fixed graph with identical tools and guarantees.
+
+---
+
+## 2a. Where the AI is
+
+Every model call in the system goes through one file, `alm_agents/llm.py`. Three
+clients come out of it:
+
+| Client | Used by | What it does |
+|---|---|---|
+| `get_agent_llm` | all nine agents (`agent.py`) | Reads the task, calls tools, reads the results, decides the next call, stops with `finish` or `handoff` |
+| `get_supervisor_llm` | the supervisor (`supervisor.py`) | Reads the run state and picks which agent acts next. One small JSON answer per hop |
+| `get_client` | extraction fallback and comment drafting | Narrow helpers whose output is validated and discarded if it overreaches |
+
+### User IDs are selected, never generated
+
+When a New Users row cannot be parsed, `recover_userids` (in `llm.py`) does not
+ask a model to write the user IDs out. Code lists every token in the row shaped
+like a user ID, and a model only judges which of those tokens are people being
+requested. The ID that comes back is the token copied from the row, so an
+invented ID cannot come out, whichever model judged it. The deterministic graph
+uses this through `extract_users`; the extractor agent through its
+`recover_user_ids` tool.
+
+The judge is [TypeSafe](https://docs.typesafe.ai)'s Jev model when
+`TYPESAFE_API_KEY` is set: one yes/no question (a Noul) per candidate, each
+answered with a probability. Otherwise Gemini judges, held to the same list of
+candidates. Every recovered user is HIGH risk and reaches the approver with its
+probability on the card. `ALM_EXTRACTION_MIN_PROBABILITY` (default 0.5) is a
+placeholder until it is tuned on real malformed rows.
+
+TypeSafe is an external internet API. The Cloud Run network as deployed has no
+internet egress, so in the cloud recovery uses Gemini unless an egress path to
+`api.typesafe.ai` is deliberately added - a network-policy decision, not a
+default.
+
+The models are Gemini, reached one of two ways (`ALM_LLM_PROVIDER`):
+
+| Provider | Authenticates with | Use it for |
+|---|---|---|
+| `gemini_api` | An API key from Google AI Studio (`GEMINI_API_KEY`, or the `alm-gemini-api-key` secret) | A laptop, the sandbox, a first try. Free tier is heavily rate limited |
+| `vertex` | The Cloud Run service account - no key exists | Production. Same Gemini models; project quotas; data stays under the project's terms. Also the only route to Claude models |
+
+Both use the same client class (`ChatGoogleGenerativeAI`), so switching is a
+setting. Three details matter in practice:
+
+- **One rate limiter for the process** (`ALM_LLM_REQUESTS_PER_MINUTE`). The quota
+  belongs to the key, not to an agent; nine agents each pacing themselves would
+  together exceed it nine times over.
+- **Thinking is kept low** (`ALM_LLM_THINKING_LEVEL`). Gemini 3 reasons before it
+  answers by default; tool routing needs little of that, and on the free tier
+  the extra latency and tokens are the difference between a run finishing or not.
+- **Tool schemas are reduced to what Gemini accepts** (`agent.portable_schema`).
+  Pydantic emits `$ref`, `anyOf` and `title`; Gemini's function declarations
+  reject some of those. The constraints are not lost - pydantic still validates
+  every argument before a tool runs.
+
+### Running the agents on a laptop
+
+The real tools need the corporate network. `alm_agents/sandbox.py` swaps only
+the systems behind them for a simulated estate - five users in known states,
+including an archived account, one already active, one missing from LDAP and one
+buried in a malformed row - and keeps everything that decides or guards real:
+the Gemini model, the agents, the supervisor, the policy engine, the approval
+interrupt, `guarded_write` and the evidence gate.
+
+```powershell
+# once: put GEMINI_API_KEY=... in .env (gitignored)
+python src/agent_sandbox.py --check          # key valid? model available? tool calling works?
+python src/agent_sandbox.py                  # full run; you approve at the gate
+python src/agent_sandbox.py --auto-approve   # unattended
+python src/agent_sandbox.py --shadow         # plan only
+```
+
+The run prints each routing decision and tool call as it happens, pauses at the
+approval gate for a `y/N`, and writes the full report and audit trail to
+`out/sandbox/`. A sandbox run says whether the agents behave; it says nothing
+about whether the corporate endpoints are reachable - that is `alm_core.smoke`.
 
 ---
 
@@ -285,15 +365,39 @@ Nothing in memory can authorise a write.
 
 ---
 
-## 8a. What runs where
+## 8a. Local mode (no cloud)
+
+`python src/agent_local.py` runs the same graph, agents, policy and guards on one
+machine. What changes is only where things live:
+
+| Concern | Cloud design | Local mode |
+|---|---|---|
+| EWM / JTS | OSLC from Cloud Run over the interconnect | OSLC from your laptop, your network |
+| Credentials | Secret Manager | `.env` + password prompt, as the CLI |
+| Ledger, audit, approvals | Cloud SQL | SQLite `out/local/alm.db` (`alm_core/store/sqlite.py`) |
+| Checkpoints (pause/resume) | Postgres checkpointer | SQLite, beside the ledger |
+| AD group | Pub/Sub job for a Windows worker | GPT in the debug Chrome from `start-gpt.ps1`, attached over CDP |
+| Approval | Google Chat card + IAP | `y/N` at the terminal |
+| Trigger | webhook / 15-minute sweep | you run the command |
+
+Two local-only protections: a run is **scoped** to the `--work-item` ids given
+(reads and writes outside them are refused as DENIED observations), and it is a
+**dry run** unless `--commit` is passed. A run paused at approval or killed
+mid-way resumes from the SQLite checkpoint with `--resume <thread-id>`.
+
+The SQLite ledger does not share state with the CLI's `out/audit/`; do not run
+both against the same work items.
+
+## 8b. What runs where (cloud design - optional)
 
 | Service | Configuration | Why this one |
 |---|---|---|
 | **Cloud Run** | Direct VPC egress, `INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER`, min 1 instance, `cpu_idle = false` | Serverless containers with VPC attachment; no cluster to operate. Two settings are load-bearing: min 1 because the reconciliation sweep is an in-process timer, and CPU-always-allocated because Cloud Run otherwise throttles CPU between requests and would freeze both that timer and any run waiting on a 30-minute permission poll |
 | **Cloud SQL for PostgreSQL 16** | Private IP only, IAM database auth, PITR, 35 backups | Ledger, audit, approvals, agent memory and the LangGraph checkpointer — one store, transactional. IAM auth means there is no database password to store or rotate |
 | **Pub/Sub** | 600s ack deadline, dead-letter topic, 5 delivery attempts | Bridge to the Windows worker. The long deadline is because the consumer drives a browser; the worker extends the lease while a job runs |
-| **Secret Manager** | Three secrets, per-secret IAM, mounted as a file | The password is mounted rather than injected as an environment variable — a process listing exposes an environment |
-| **Vertex AI** | Gemini by default; Claude via Model Garden | The agent and supervisor models. Application Default Credentials, so no API key exists |
+| **Secret Manager** | Three secrets (four with the Gemini API key), per-secret IAM | The password is mounted rather than injected as an environment variable — a process listing exposes an environment. The Gemini key is read through the API by name |
+| **Vertex AI** | Gemini by default; Claude via Model Garden (`llm_provider = "vertex"`) | The agent and supervisor models. Application Default Credentials, so no API key exists. The recommended production provider |
+| **Gemini API** | Only with `llm_provider = "gemini_api"` | The keyed alternative. Enables `generativelanguage.googleapis.com`, the key's secret and a private-VIP route for that one hostname |
 | **Artifact Registry** | Immutable tags, keep 20 versions | Immutable tags stop a tag moving under a running revision |
 | **Cloud DNS** | Forwarding zone for the corporate domain + private `googleapis.com` zone | Both directions are needed; getting one right and not the other is the classic silent failure |
 | **Cloud Interconnect / HA VPN** | Consumed, never created | The circuit is a network-team asset with its own lifecycle. Terraform names the Cloud Router; it cannot destroy the attachment |
@@ -310,6 +414,11 @@ is different for each:
    the interconnect rather than the internet.
 2. `*.googleapis.com` → a **private zone** CNAMEd to `restricted.googleapis.com`,
    plus Private Google Access on the subnet and a route to `199.36.153.4/30`.
+3. With the keyed Gemini API only: `generativelanguage.googleapis.com` is not
+   served on the restricted VIP, so it gets its own record pointing at
+   `private.googleapis.com` (`199.36.153.8/30`), with a route and an egress rule.
+   Terraform adds all three when `llm_provider = "gemini_api"`. This path is
+   the least verified part of the network design; Vertex AI avoids it entirely.
 
 Configure one and not the other and you get a service that works from the
 console and times out from the application.
@@ -326,12 +435,19 @@ All settings are `ALM_`-prefixed and validated once at startup
 | `ALM_ENVIRONMENT` | `TEST` | `TEST` or `PROD`. Never inferred in the cloud |
 | `ALM_SHADOW_MODE` | `true` | Read and plan, write nothing |
 | `ALM_CA_BUNDLE` | `/etc/ssl/certs/corporate-ca.pem` | Corporate CA; TLS verifies when present |
-| `GOOGLE_CLOUD_PROJECT` | — | Project id. Cloud Run sets it; required for agentic mode |
+| `GOOGLE_CLOUD_PROJECT` | — | Project id. Cloud Run sets it; required for the vertex provider |
 | `ALM_REGION` | `europe-west1` | Cloud Run, Cloud SQL and Vertex AI |
 | `ALM_POSTGRES_DSN` | — | Cloud SQL private IP. Required to write |
 | `ALM_POSTGRES_IAM_AUTH` | `true` | IAM token as the password; no stored secret |
 | `ALM_PUBSUB_TOPIC` | `alm-ad-provisioning` | AD jobs for the Windows worker |
-| `ALM_AGENT_MODEL` | `gemini-2.0-flash` | A `claude-*` id switches to Model Garden |
+| `ALM_LLM_PROVIDER` | `gemini_api` | `gemini_api` (API key) or `vertex` (service account). Section 2a |
+| `GEMINI_API_KEY` | — | The Gemini API key. `.env` locally, Secret Manager in the cloud. Never committed |
+| `ALM_AGENT_MODEL` | `gemini-3.5-flash` | With the vertex provider, a `claude-*` id switches to Model Garden |
+| `ALM_LLM_REQUESTS_PER_MINUTE` | `10` | One limiter shared by every agent in the process |
+| `ALM_LLM_THINKING_LEVEL` | `low` | `default`, `minimal`, `low`, `medium` or `high` |
+| `ALM_EXTRACTION_PROVIDER` | `auto` | Who judges recovered user IDs: `auto`, `typesafe` or `gemini` |
+| `TYPESAFE_API_KEY` | — | Enables TypeSafe for user-ID recovery. `.env` or Secret Manager; never committed |
+| `ALM_EXTRACTION_MIN_PROBABILITY` | `0.5` | Candidates below it are not proposed. Tune before relying on it |
 | `ALM_LLM_ENABLED` | `true` | False disables extraction fallback and drafting |
 | `ALM_APPROVAL_TTL_MINUTES` | `240` | How long an approval stays valid |
 | `ALM_AUTO_APPROVE_LOW_RISK` | `false` | Phase 9 step 3; never covers provisioning |
@@ -415,11 +531,14 @@ export JTS_SERVER=https://prssetst.intra.chrysler.com/jts
 export CID=<service account> EWM_PASSWORD=<prompted or injected>
 python -m alm_core.smoke
 
+# The agents alone, on a laptop, against the simulated estate (section 2a).
+python src/agent_sandbox.py --check && python src/agent_sandbox.py
+
 # Agentic, shadow mode: the agents run and plan, and write nothing.
 export ALM_ORCHESTRATION=agentic ALM_SHADOW_MODE=true
-export GOOGLE_CLOUD_PROJECT=<project-id>
+export ALM_LLM_PROVIDER=vertex GOOGLE_CLOUD_PROJECT=<project-id>
 export ALM_REGION=europe-west1
-export ALM_AGENT_MODEL=gemini-2.0-flash
+export ALM_AGENT_MODEL=gemini-3.5-flash
 uvicorn alm_api.main:app --port 8080
 
 python -m alm_worker.main             # on the Windows host
@@ -427,6 +546,9 @@ python -m alm_worker.main             # on the Windows host
 
 Bring it up in this order, and do not skip a step:
 
+0. **The sandbox, with the model you will deploy.** If the agents do not route,
+   call tools and stop sensibly against the simulated estate, nothing later in
+   this list will make them.
 1. `python -m alm_core.smoke` from inside the deployed container. If DNS or TLS
    fails there, the Cloud DNS private zones or the Interconnect attachment are missing and
    nothing else will work.

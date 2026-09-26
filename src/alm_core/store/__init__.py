@@ -63,6 +63,14 @@ async def get_store(settings=None) -> Store:
         await store.migrate()
         return store
 
+    if getattr(settings, "ledger_path", ""):
+        from .sqlite import SqliteStore
+
+        store = SqliteStore(settings.ledger_path)
+        await store.start()
+        await store.migrate()
+        return store
+
     if not settings.shadow_mode:
         raise ConfigError(
             "no ALM_POSTGRES_DSN configured but shadow mode is off. Writes require the "

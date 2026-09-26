@@ -86,8 +86,28 @@ def require_valid(artifacts: dict[str, str]) -> None:
                                        "users": sorted(artifacts)})
 
 
+def browser_channel() -> str:
+    """The browser to capture with.
+
+    ``ALM_BROWSER_CHANNEL`` wins. Otherwise the installed Microsoft Edge on
+    Windows - what the CLI's jts_profile_attach.py uses in production, and what
+    an operator laptop is sure to have - and Playwright's bundled Chromium
+    elsewhere (the Linux container).
+    """
+    configured = os.getenv("ALM_BROWSER_CHANNEL", "").strip()
+    if configured:
+        return "" if configured.lower() == "chromium" else configured
+    return "msedge" if os.name == "nt" else ""
+
+
+def browser_headed() -> bool:
+    """``ALM_BROWSER_HEADED=true`` shows the capture window, for troubleshooting."""
+    return os.getenv("ALM_BROWSER_HEADED", "").strip().lower() in {"1", "true", "yes"}
+
+
 def _capture(jts_server: str, user: str, password: str, userids: list[str],
-             out_dir: str, *, channel: str, verify_tls: bool) -> dict[str, str]:
+             out_dir: str, *, channel: str, verify_tls: bool,
+             headless: bool = True) -> dict[str, str]:
     """Log in to JTS in a headless browser and screenshot each profile.
 
     A user whose profile cannot be confirmed is skipped, never captured. The
@@ -100,7 +120,7 @@ def _capture(jts_server: str, user: str, password: str, userids: list[str],
     captured: dict[str, str] = {}
 
     with sync_playwright() as playwright:
-        launch_kwargs = {"headless": True}
+        launch_kwargs = {"headless": headless}
         if channel:
             launch_kwargs["channel"] = channel
         browser = playwright.chromium.launch(**launch_kwargs)
@@ -155,8 +175,8 @@ async def capture_profiles(ctx: ToolContext, userids: list[str], out_dir: str,
     artifacts = await to_thread(
         _capture, ctx.settings.jts_server, ctx.settings.service_account, password,
         userids, out_dir,
-        channel=channel or os.getenv("ALM_BROWSER_CHANNEL", ""),
-        verify_tls=bool(ctx.settings.verify))
+        channel=channel or browser_channel(),
+        verify_tls=bool(ctx.settings.verify), headless=not browser_headed())
 
     missing = [u for u in userids if u not in artifacts]
     if missing:
