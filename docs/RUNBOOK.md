@@ -267,10 +267,20 @@ change, reviewed like any other code.
 | `ALM_TLS_INSECURE cannot be set when ... PROD` | Production requires verified TLS: set `ALM_CA_BUNDLE` |
 | AD step failed: `no debug Chrome at ...` | Run `scripts\start-gpt.ps1`, sign in to GPT, then `--resume` the run |
 | `the agent model is unavailable` | Key or model problem: `python src/agent_local.py --check` |
-| Closed the terminal at the approval prompt | Nothing was written. `--resume <thread-id>` brings the prompt back |
+| Closed the terminal at the approval prompt | Nothing was written. `--resume last --commit` (or `--resume <thread-id> --commit`) brings the prompt back |
 | A second run reports `(replay)` | Correct: the ledger recorded the first write. Nothing was repeated |
 | AD step: `GPT may or may not have accepted` | The page failed after Modify, or GPT's reply was unreadable. It is **not** retried. Check GPT Pending Requests: if the request is there, do nothing; if it is not, clear the ledger entry and re-run: `UPDATE alm_idempotency SET status='failed' WHERE userid='<ID>' AND operation='ad_group_add' AND status='completed';` in `out/local/alm.db` |
 | `the local ledger is locked by another process` | Two local runs at once. Let the other finish; the write was not attempted |
+| `setup: Python package '...' is not installed` | The agent packages are missing from that Python. Run `.\scripts\setup.ps1 -Agents`, then use `.\.venv\Scripts\python.exe` (or activate the venv) |
+| `the agent model is unavailable` with `429` or `RESOURCE_EXHAUSTED` | Gemini quota. Lower `ALM_LLM_REQUESTS_PER_MINUTE` (or pass `--rpm`), wait for the daily quota to reset, or use a paid key. Then `--resume last` (add `--commit` if the run had it) |
+| `--check`: `the certificate Google presented is not trusted` | A proxy is inspecting HTTPS. Set `REQUESTS_CA_BUNDLE` and `SSL_CERT_FILE` in `.env` to the company root CA bundle (`.pem`) |
+| `--check`: `Set HTTPS_PROXY` / `the proxy ... refused the connection` | Gemini is on the internet: name the corporate proxy in `HTTPS_PROXY` (intranet hosts stay in `NO_PROXY`) |
+| EWM/JTS: `answered but its TLS certificate is not trusted` | Set `ALM_CA_BUNDLE` to the company CA `.pem`, as for the CLI |
+| `--check`: `Microsoft Edge did not start` | Edge is missing or blocked. Run `python -m playwright install chromium` and set `ALM_BROWSER_CHANNEL=chromium` in `.env` |
+| AD step: `GPT returned 401: Kerberos did not flow` | The debug Chrome's GPT session expired or was never signed in. Sign in again in that window (or close it and re-run `scripts\start-gpt.ps1`), then `--resume last --commit`. The request was not submitted, so it is retried |
+| `resume: no saved run with thread id ...` / `no previous run recorded for --resume last` | The thread id is wrong, or its data was purged. The id is printed when a run starts and is in `out/local/run-*.json`; otherwise start a new run - the ledger still prevents repeated writes |
+| `resume refused: run ... was started as a commit` (or `dry run`) | A run resumes in the mode it started in. Use the command the message gives |
+| `--commit needs --work-item <id>` | A run that writes must name its work items (at most 5). Dry runs may scan the queue |
 
 Everything a local run did is in `out/local/run-<run_id>.json` and in the
 `alm_audit` table of `out/local/alm.db` (the SQL in section 1 works unchanged in
