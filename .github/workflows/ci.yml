@@ -101,15 +101,18 @@ jobs:
           python-version: "3.13"
           cache: pip
       - name: Install security audit tools
+        # Pinned in requirements-dev.txt, so CI audits with the same versions as
+        # the developer's pre-commit hooks (ruff 0.6.9, not "latest").
         run: |
           python -m pip install --upgrade pip
-          pip install pip-audit detect-secrets ruff
+          pip install -r requirements-dev.txt
       - name: Audit dependencies for known vulnerabilities
         run: pip-audit -r requirements.txt -r requirements-cloud.txt
       - name: Check static security rules
         run: ruff check --select S src
-      - name: Detect secrets against baseline
-        run: detect-secrets scan --baseline .secrets.baseline
+      # Secrets are checked by the `secrets` job below: pre-commit runs
+      # detect-secrets-hook, which fails on a new secret. `detect-secrets scan
+      # --baseline` does not - it exits 0 and adds the secret to the baseline.
 
   secrets:
     runs-on: ubuntu-latest
@@ -119,7 +122,7 @@ jobs:
         with:
           python-version: "3.13"
       - name: Install pre-commit
-        run: pip install pre-commit
+        run: pip install pre-commit==4.6.2  # same pin as requirements-dev.txt
       - name: Run the hygiene and secret-detection hooks
         env:
           # The PII guard's denylist is personal data, so it lives in a
