@@ -100,7 +100,9 @@ jobs:
         # A downloaded key is the credential most likely to end up committed.
         # Every principal in this system federates instead.
         run: |
-          if grep -rn "google_service_account_key" infra/ ; then
+          # A resource or data declaration, not any mention: iam.tf's comment
+          # explaining that no key exists would otherwise fail this check.
+          if grep -rnE '^\s*(resource|data)\s+"google_service_account_key"' infra/ ; then
             echo "::error::use Workload Identity Federation, not a downloaded key"
             exit 1
           fi
