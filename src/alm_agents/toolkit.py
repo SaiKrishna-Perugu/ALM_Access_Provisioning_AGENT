@@ -492,6 +492,36 @@ def build_registry(ctx: ToolContext, board: Blackboard, memory: MemoryStore,
                 + ("" if has else ". Propagation can take up to 30 minutes after "
                                   "provisioning; this is not necessarily a failure."))
 
+    async def verify_all_users() -> str:
+        # Code, not the model, decides who needs checking: everyone this run
+        # created or reactivated, and everyone already present. A live eval
+        # showed the model sometimes skipping one user, who then got neither
+        # evidence nor a comment line.
+        wrote = {r.userid for r in board.results
+                 if getattr(r.operation, "value", r.operation) in ("jts_create", "jts_unarchive")
+                 and getattr(r.outcome, "value", r.outcome) == "ok"}
+        present = {u for u, s in board.statuses.items() if s.state == UserState.EXISTS}
+        targets = sorted((wrote | present) & set(board.users))
+        if not targets:
+            return ("nobody in this run should hold access yet: no account was created or "
+                    "reactivated, and nobody was already present")
+        verified, pending = [], []
+        for userid in targets:
+            has = await backend.check_role(ctx, userid)
+            status = board.statuses.get(userid)
+            if status is not None and status.has_role != has:
+                fresh.discard(userid)
+            if has:
+                board.verified.add(userid)
+                verified.append(userid)
+            else:
+                pending.append(userid)
+        return json.dumps({
+            "verified": verified, "not_yet_verified": pending,
+            "note": ("Only verified users get evidence and a comment line. A user not yet "
+                     "verified shortly after provisioning is expected: propagation takes up "
+                     "to 30 minutes. Say 'not yet verified', never 'failed'.")}, indent=2)
+
     async def existing_work_item_comments(work_item_id: str) -> str:
         comments = await backend.existing_comments(ctx, work_item_id)
         if comments is None:
@@ -727,6 +757,11 @@ def build_registry(ctx: ToolContext, board: Blackboard, memory: MemoryStore,
                  "Check whether a user currently holds the JazzUsers repository role. "
                  "This is the only confirmation that access actually landed.",
                  UserArgs, check_jazz_permission),
+        ToolSpec("verify_all_users",
+                 "Check the JazzUsers role for every user whose account should now be "
+                 "active (created or reactivated by this run, or already present). "
+                 "Returns who is verified and who is not yet.",
+                 NoArgs, verify_all_users),
         ToolSpec("existing_work_item_comments",
                  "Read the comments already on a work item, to avoid duplicating one.",
                  WorkItemArgs, existing_work_item_comments),

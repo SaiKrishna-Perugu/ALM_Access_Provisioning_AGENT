@@ -1072,6 +1072,40 @@ def test_evidence_goes_only_to_the_work_items_that_requested_the_user(tmp_path):
     assert "EF11111.png" not in estate.attachments.get("1001", [])
 
 
+def test_verify_all_users_checks_everyone_who_should_have_access(tmp_path):
+    """Live eval: the verifier once skipped CD67890, who then got no evidence."""
+    from alm_agents.memory import MemoryStore as AgentMemory
+    from alm_agents.toolkit import Blackboard, build_registry
+    from alm_core.models import Operation, Outcome, ProvisionResult
+    from alm_core.store.memory import MemoryStore
+    from alm_core.tools.base import ToolContext
+
+    estate = SandboxEstate.default()
+    board = Blackboard()
+    ctx = ToolContext(settings=local_settings(tmp_path, commit=False), client=None,
+                      store=MemoryStore(), run_id="t")
+    registry = build_registry(ctx, board, AgentMemory(None), backend=SandboxBackend(estate))
+
+    async def scenario():
+        for work_item_id in ("1001", "1002"):
+            await registry.get("fetch_work_item").run(work_item_id=work_item_id)
+        for userid in ("AB12345", "CD67890", "EF11111", "GH22222"):
+            await registry.get("classify_user").run(userid=userid)
+        # This run reactivated CD67890 (done in the estate, recorded on the board).
+        estate.people["CD67890"].archived = False
+        board.results.append(ProvisionResult(
+            userid="CD67890", operation=Operation.JTS_UNARCHIVE, outcome=Outcome.OK,
+            work_item_id="1001", message="reactivated"))
+        return json.loads(await registry.get("verify_all_users").run())
+
+    result = asyncio.run(scenario())
+    # EF11111 was already present; CD67890 was reactivated. AB12345 was never
+    # provisioned and GH22222 is missing from LDAP, so neither is checked.
+    assert result["verified"] == ["CD67890", "EF11111"]
+    assert result["not_yet_verified"] == []
+    assert board.verified == {"CD67890", "EF11111"}
+
+
 def test_a_recovered_user_is_named_from_ldap_in_the_comment(tmp_path):
     """Sandbox run: a user recovered from free text was written 'TB22322: TB22322'."""
     from alm_agents.memory import MemoryStore as AgentMemory

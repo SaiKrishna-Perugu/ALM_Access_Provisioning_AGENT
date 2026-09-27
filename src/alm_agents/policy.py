@@ -49,6 +49,7 @@ READ_TOOLS = {
     "recover_user_ids",
     "classify_user",
     "check_jazz_permission",
+    "verify_all_users",
     "existing_work_item_comments",
     "capture_evidence",
     "recall_memory",
