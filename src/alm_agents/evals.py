@@ -494,12 +494,20 @@ def main(argv: list[str] | None = None) -> int:
 
     console.line(f"ALM agent eval - {settings.llm_provider}:{settings.agent_model}, "
                  f"{args.orchestration}, {len(scenarios)} scenario(s)")
-    results = []
-    for scenario in scenarios:
-        console.line(f"running {scenario.name} ...")
-        results.append(asyncio.run(run_scenario(
-            scenario, settings, llm=agent_llm,
-            supervisor_llm=llm_module.get_supervisor_llm(settings), console=quiet)))
+    supervisor_llm = llm_module.get_supervisor_llm(settings)
+
+    async def run_all() -> list[dict]:
+        # One event loop for every scenario: the model client keeps its HTTP
+        # connection on the loop it first ran in, and a second asyncio.run()
+        # fails with "Event loop is closed".
+        results = []
+        for scenario in scenarios:
+            console.line(f"running {scenario.name} ...")
+            results.append(await run_scenario(scenario, settings, llm=agent_llm,
+                                              supervisor_llm=supervisor_llm, console=quiet))
+        return results
+
+    results = asyncio.run(run_all())
     print_summary(results, console)
 
     EVAL_DIR.mkdir(parents=True, exist_ok=True)
