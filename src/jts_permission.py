@@ -11,8 +11,8 @@ propagation can take up to ~30 minutes after import).
 Exit codes: 0 all verified, 3 some users unverified, 1/2 setup or auth errors.
 
 Usage:
-  python src/jts_permission.py SF58083 T0195G3            # single check
-  python src/jts_permission.py SF58083 --wait 30 --interval 5   # poll
+  python src/jts_permission.py AB12345 CD67890            # single check
+  python src/jts_permission.py AB12345 --wait 30 --interval 5   # poll
 """
 from __future__ import annotations
 
@@ -22,14 +22,10 @@ import os
 import sys
 import time
 
-import urllib3
-
 import alm_config
 import alm_log
 import jazz_client
 import jts_import_users as jimp
-
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 DETAILS_PATH = "/service/com.ibm.team.repository.service.internal.IAdminRestService/contributorByUserId"
 DEFAULT_ROLE = "JazzUsers"

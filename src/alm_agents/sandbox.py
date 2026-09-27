@@ -299,7 +299,7 @@ class SandboxBackend:
 
 def _profile_png(userid: str, width: int = 240, height: int = 80) -> bytes:
     """A real, viewable PNG that is unique per user and above the size floor."""
-    rng = random.Random(userid)
+    rng = random.Random(userid)  # noqa: S311 - pseudo-random generation for deterministic test mock PNG image bytes
     base = [rng.randrange(40, 200) for _ in range(3)]
     rows = bytearray()
     for _y in range(height):
@@ -358,11 +358,12 @@ def load_env() -> None:
         return
 
 
-def build_settings(*, shadow: bool, model: str = "", rpm: float = 0.0):
-    """Sandbox settings: agentic, in-memory, TEST, and never production."""
+def build_settings(*, shadow: bool, model: str = "", rpm: float = 0.0,
+                   orchestration: str = "agentic"):
+    """Sandbox settings: in-memory, TEST, and never production."""
     from alm_core.config import Settings
 
-    overrides: dict = {"environment": "TEST", "orchestration": "agentic",
+    overrides: dict = {"environment": "TEST", "orchestration": orchestration,
                        "llm_enabled": True, "postgres_dsn": "",
                        # Validation insists on a ledger DSN outside shadow mode;
                        # the sandbox's ledger is in memory, so shadow is switched

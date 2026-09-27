@@ -178,7 +178,7 @@ class Worker:
         try:
             if self.session is not None:
                 self.session.close()
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: S110, BLE001 - ignore errors closing crashed session
             pass
         self.session = GptSession(headless=True)
         self.session.start()

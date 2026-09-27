@@ -77,8 +77,8 @@ def without_key(monkeypatch):
 # ------------------------------------------------------------------ candidates
 
 def test_candidates_are_every_userid_shaped_token_upper_cased_and_deduplicated():
-    assert llm.userid_candidates("add tb22322; TB22322 again; Q3 plan; SF58083.") == [
-        "TB22322", "SF58083"]
+    assert llm.userid_candidates("add tb22322; TB22322 again; Q3 plan; AB12345.") == [
+        "TB22322", "AB12345"]
 
 
 def test_a_row_without_candidates_never_reaches_a_model(with_key, monkeypatch):

@@ -3,7 +3,7 @@
 // The single most common failure after a clean deploy is DNS, in one of two
 // directions, and both are configured here:
 //
-//   1. The container must resolve *.intra.chrysler.com through the corporate
+//   1. The container must resolve *.example.intra through the corporate
 //      resolvers reached over the interconnect - that is the forwarding zone.
 //   2. It must also resolve googleapis.com to restricted VIPs without leaving
 //      the VPC - that is Private Google Access plus the private-googleapis zone.
@@ -183,12 +183,12 @@ resource "google_compute_firewall" "deny_egress" {
 }
 
 resource "google_compute_firewall" "allow_google_apis" {
-  name               = "${local.prefix}-allow-googleapis"
-  network            = google_compute_network.vpc.name
-  direction          = "EGRESS"
-  priority           = 1000
+  name      = "${local.prefix}-allow-googleapis"
+  network   = google_compute_network.vpc.name
+  direction = "EGRESS"
+  priority  = 1000
   destination_ranges = compact(["199.36.153.4/30",
-                                 local.gemini_api ? "199.36.153.8/30" : ""])
+  local.gemini_api ? "199.36.153.8/30" : ""])
 
   allow {
     protocol = "tcp"
@@ -197,10 +197,10 @@ resource "google_compute_firewall" "allow_google_apis" {
 }
 
 resource "google_compute_firewall" "allow_corporate" {
-  name               = "${local.prefix}-allow-corporate"
-  network            = google_compute_network.vpc.name
-  direction          = "EGRESS"
-  priority           = 1000
+  name      = "${local.prefix}-allow-corporate"
+  network   = google_compute_network.vpc.name
+  direction = "EGRESS"
+  priority  = 1000
   // RFC1918 covers the corporate estate reached over the interconnect and the
   // Cloud SQL private IP. Narrow this to the actual EWM/JTS/LDAP prefixes once
   // the network team confirms them.

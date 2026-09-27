@@ -212,10 +212,10 @@ def env(monkeypatch, tmp_path):
     return set_servers
 
 
-TEST_EWM = "https://prssetst.intra.chrysler.com/ccm"
-TEST_JTS = "https://prssetst.intra.chrysler.com/jts"
-PROD_EWM = "https://prsse.intra.chrysler.com/ccm"
-PROD_JTS = "https://prsse.intra.chrysler.com/jts"
+TEST_EWM = "https://prssetst.example.intra/ccm"
+TEST_JTS = "https://prssetst.example.intra/jts"
+PROD_EWM = "https://prsse.example.intra/ccm"
+PROD_JTS = "https://prsse.example.intra/jts"
 
 
 def test_test_servers_give_a_dry_run_by_default(env, tmp_path):
@@ -238,7 +238,7 @@ def test_unknown_environment_is_refused(env):
 
 def test_production_refuses_unverified_tls(env):
     env(PROD_EWM, PROD_JTS)
-    with pytest.raises(local.SetupError, match="ALM_TLS_INSECURE"):
+    with pytest.raises(local.SetupError, match=r"unverified TLS \(PROD\)"):
         local.build_settings(commit=True)
 
 
@@ -499,6 +499,18 @@ def test_check_warns_but_passes_without_the_gpt_chrome(tmp_path, monkeypatch):
     assert any("1 warning(s)" in line for line in lines)
 
 
+def test_the_gpt_target_ignores_blank_template_values(monkeypatch):
+    """.env.example ships CDP_URL= / GPT_URL= / AD_LABEL=; blank means default."""
+    from alm_agents.local import DEFAULT_GPT_URL, gpt_target
+
+    for key in ("CDP_URL", "GPT_URL", "AD_LABEL"):
+        monkeypatch.setenv(key, "")
+    target = gpt_target()
+    assert target["gpt_url"] == DEFAULT_GPT_URL
+    assert target["cdp_url"] == "http://127.0.0.1:9222"
+    assert target["ad_label"]
+
+
 def test_the_clis_workitem_spelling_works_too():
     from alm_agents.local import parse_args
 
@@ -613,7 +625,7 @@ def test_both_google_key_formats_are_redacted():
 # ------------------------------------------------------- lessons from first run
 
 def test_the_parser_reads_the_stored_field_not_the_models_redacted_copy(tmp_path):
-    """First live run: the model passed back 'SOROBERTO,ANDREA,[email],SF58083;'
+    """First live run: the model passed back 'DOE,JANE,[email],AB12345;'
     and the parser rejected a perfectly good row because redaction removed '@'."""
     from alm_agents.memory import MemoryStore as AgentMemory
     from alm_agents.toolkit import Blackboard, build_registry
@@ -753,9 +765,14 @@ def test_purge_removes_old_personal_data_and_keeps_the_ledger(tmp_path):
     old = (later - timedelta(days=40)).timestamp()
     for path in [out / "run-old.json", out / "evidence" / "old" / "AB12345.png"]:
         os.utime(path, (old, old))
+    preview = asyncio.run(purge(settings, Events(), 30, out_dir=out, now=later,
+                                dry_run=True))
+    assert (out / "run-old.json").exists() and (out / "evidence" / "old").exists()
     purged = asyncio.run(purge(settings, Events(), 30, out_dir=out, now=later))
-    assert purged == {"runs": 1, "approvals": 1, "memories": 1,
-                      "reports": 1, "evidence": 1}
+    assert purged == preview == {
+        "runs": 1, "approvals": 1, "memories": 1, "reports": 1, "evidence": 1,
+        "cli_screenshots": 0, "cli_users": 0, "cli_comments": 0, "recordings": 0,
+    }
     assert not (out / "run-old.json").exists()
     assert not (out / "evidence" / "old").exists()
 
@@ -769,6 +786,9 @@ def test_purge_removes_old_personal_data_and_keeps_the_ledger(tmp_path):
     assert asyncio.run(audit_rows()) == audit_before
     with pytest.raises(SystemExit):
         parse_args(["--purge-older-than", "0"])
+    with pytest.raises(SystemExit):
+        parse_args(["--dry-run"])  # only meaningful with --purge-older-than
+    assert parse_args(["--purge-older-than", "7", "--dry-run"]).dry_run
 
 
 def test_a_cut_observation_says_how_much_was_cut():
@@ -1020,6 +1040,100 @@ def test_the_closer_cannot_make_the_comment_claim_an_unrecorded_action(tmp_path)
     assert "EF11111: BAO NGUYEN: User already present in JTS" in posted[0]
 
 
+def test_evidence_goes_only_to_the_work_items_that_requested_the_user(tmp_path):
+    """Sandbox run: 1001 received the profile screenshots of 1002's users."""
+    from alm_agents.memory import MemoryStore as AgentMemory
+    from alm_agents.toolkit import Blackboard, build_registry
+    from alm_core.store.memory import MemoryStore
+    from alm_core.tools.base import ToolContext
+
+    estate = SandboxEstate.default()
+    ctx = ToolContext(settings=local_settings(tmp_path, commit=False), client=None,
+                      store=MemoryStore(), run_id="t")
+    registry = build_registry(ctx, Blackboard(), AgentMemory(None),
+                              backend=SandboxBackend(estate),
+                              shots_dir=str(tmp_path / "shots"))
+
+    async def scenario():
+        for work_item_id in ("1001", "1002"):
+            await registry.get("fetch_work_item").run(work_item_id=work_item_id)
+        captured = json.loads(await registry.get("capture_evidence").run(
+            userids=["EF11111"]))
+        wrong = await registry.get("attach_workitem_evidence").run(
+            work_item_id="1001", userid="EF11111")
+        unknown = await registry.get("attach_workitem_evidence").run(
+            work_item_id="1001", userid="ZZ99999")
+        return captured, wrong, unknown
+
+    captured, wrong, unknown = asyncio.run(scenario())
+    assert captured["attach_to"] == {"EF11111": ["1002"]}
+    assert wrong.startswith("DENIED") and "requested on: 1002" in wrong
+    assert unknown.startswith("DENIED")
+    assert "EF11111.png" not in estate.attachments.get("1001", [])
+
+
+def test_verify_all_users_checks_everyone_who_should_have_access(tmp_path):
+    """Live eval: the verifier once skipped CD67890, who then got no evidence."""
+    from alm_agents.memory import MemoryStore as AgentMemory
+    from alm_agents.toolkit import Blackboard, build_registry
+    from alm_core.models import Operation, Outcome, ProvisionResult
+    from alm_core.store.memory import MemoryStore
+    from alm_core.tools.base import ToolContext
+
+    estate = SandboxEstate.default()
+    board = Blackboard()
+    ctx = ToolContext(settings=local_settings(tmp_path, commit=False), client=None,
+                      store=MemoryStore(), run_id="t")
+    registry = build_registry(ctx, board, AgentMemory(None), backend=SandboxBackend(estate))
+
+    async def scenario():
+        for work_item_id in ("1001", "1002"):
+            await registry.get("fetch_work_item").run(work_item_id=work_item_id)
+        for userid in ("AB12345", "CD67890", "EF11111", "GH22222"):
+            await registry.get("classify_user").run(userid=userid)
+        # This run reactivated CD67890 (done in the estate, recorded on the board).
+        estate.people["CD67890"].archived = False
+        board.results.append(ProvisionResult(
+            userid="CD67890", operation=Operation.JTS_UNARCHIVE, outcome=Outcome.OK,
+            work_item_id="1001", message="reactivated"))
+        return json.loads(await registry.get("verify_all_users").run())
+
+    result = asyncio.run(scenario())
+    # EF11111 was already present; CD67890 was reactivated. AB12345 was never
+    # provisioned and GH22222 is missing from LDAP, so neither is checked.
+    assert result["verified"] == ["CD67890", "EF11111"]
+    assert result["not_yet_verified"] == []
+    assert board.verified == {"CD67890", "EF11111"}
+
+
+def test_a_recovered_user_is_named_from_ldap_in_the_comment(tmp_path):
+    """Sandbox run: a user recovered from free text was written 'TB22322: TB22322'."""
+    from alm_agents.memory import MemoryStore as AgentMemory
+    from alm_agents.toolkit import Blackboard, build_registry
+    from alm_core.models import RequestedUser, SourceWorkItem
+    from alm_core.store.memory import MemoryStore
+    from alm_core.tools.base import ToolContext
+
+    board = Blackboard()
+    board.users["TB22322"] = RequestedUser(
+        userid="TB22322", extracted_by_llm=True, extraction_confidence=0.9,
+        source_work_items=[SourceWorkItem(work_item_id="1002", summary="")])
+    ctx = ToolContext(settings=local_settings(tmp_path, commit=False), client=None,
+                      store=MemoryStore(), run_id="t")
+    registry = build_registry(ctx, board, AgentMemory(None),
+                              backend=SandboxBackend(SandboxEstate.default()))
+
+    async def scenario():
+        await registry.get("classify_user").run(userid="TB22322")
+        board.verified.add("TB22322")
+        return json.loads(await registry.get("post_workitem_comment").run(
+            work_item_id="1002"))
+
+    posted = asyncio.run(scenario())["posted_text"]
+    assert "TB22322: TB22322" not in posted
+    assert "TOM BAKER" in posted.upper()
+
+
 def test_no_comment_is_posted_before_anyone_is_verified(tmp_path):
     llm = ScriptedLLM(
         ["triage", "validator", "risk_officer", "closer", "DONE"], {
@@ -1055,7 +1169,7 @@ def test_agent_and_cli_comment_lines_have_the_same_format():
 def test_a_commit_run_must_name_its_work_items():
     with pytest.raises(local.SetupError, match="--commit needs --work-item"):
         local.check_commit_scope(local.parse_args(["--commit"]))
-    local.check_commit_scope(local.parse_args(["--commit", "--work-item", "2781796"]))
+    local.check_commit_scope(local.parse_args(["--commit", "--work-item", "100001"]))
     local.check_commit_scope(local.parse_args([]))          # a dry run may scan
     local.check_commit_scope(local.parse_args(["--commit", "--resume", "local-1"]))
 

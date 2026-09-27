@@ -29,14 +29,14 @@ import alm_log
 import audit
 
 load_dotenv()
-GPT_URL = os.getenv("GPT_URL", "https://gpt.fiatspa.com/GlobalProvisioningTool/home.jsf")
-GROUP_NAME = os.getenv("GROUP_NAME", "GR_D-JazzUser-NA")
-DOMAIN = os.getenv("DOMAIN", "INETPSA")
-AD_LABEL = os.getenv("AD_LABEL", "inetpsa.com")
+GPT_URL = alm_config.env_or("GPT_URL", "https://gpt.example.intra/GlobalProvisioningTool/home.jsf")
+GROUP_NAME = alm_config.env_or("GROUP_NAME", "GR_D-JazzUser-NA")
+DOMAIN = alm_config.env_or("DOMAIN", "INETPSA")
+AD_LABEL = alm_config.env_or("AD_LABEL", "inetpsa.com")
 USER_IDS = [s.strip() for s in os.getenv("USER_IDS", "").split(",") if s.strip()]
 USERS_IN_DEFAULT = os.getenv("ALM_USERS_OUT", "out/alm_users.json")
 # 127.0.0.1, not localhost: localhost resolves to ::1 first and Chrome listens on IPv4.
-CDP = os.getenv("CDP_URL", "http://127.0.0.1:9222")
+CDP = alm_config.env_or("CDP_URL", "http://127.0.0.1:9222")
 COMMIT_ENV = os.getenv("COMMIT", "false").lower() == "true"
 
 

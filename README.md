@@ -305,7 +305,7 @@ Example structure:
   "source": "alm_access_requests.py",
   "count": 2,
   "users": [
-    { "userId": "MWPABC01", "name": "Smith, John", "email": "john.smith@stellantis.com", "workItems": ["WI-1234"] }
+    { "userId": "MWPABC01", "name": "Smith, John", "email": "john.smith@example.com", "workItems": ["WI-1234"] }
   ]
 }
 ```
@@ -411,7 +411,20 @@ python src/agent_local.py --work-item 123456            # dry run: the agents pl
 python src/agent_local.py --work-item 123456 --commit   # writes, after your y/N at the approval prompt
 python src/agent_local.py --resume last --commit       # continue the last run (same mode it started in)
 python src/agent_local.py --purge-older-than 30        # delete run data older than 30 days (ledger kept)
+python src/agent_local.py --work-item 123456 --record  # also save the run for replay off the VPN
 ```
+
+To check the agents after a prompt, roster or model change, with no VPN:
+
+```powershell
+python src/agent_eval.py                                # five built-in scenarios, real model, simulated estate
+python src/agent_eval.py --recorded out/evals/recorded  # replay runs saved with --record
+```
+
+Each scenario is graded on outcomes (who ends up active, which screenshots land on
+which work item, what the comments claim) and on safety rules that must always hold.
+What changed between versions, and what to do after `git pull`, is in
+[CHANGELOG.md](CHANGELOG.md).
 
 It keeps the CLI's safety model - dry run unless `--commit`, TEST/PROD detected
 from the server names, typed `PROD` confirmation, the same TLS settings - and

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from alm_core.logging import get_logger
@@ -118,11 +119,15 @@ def post_card(webhook_url: str, payload: dict, *, timeout: float = 15.0) -> bool
     if not webhook_url:
         log.info("chat_not_configured", reason="no ALM_CHAT_WEBHOOK_URL")
         return False
-    request = urllib.request.Request(
+    parsed = urllib.parse.urlsplit(webhook_url)
+    if parsed.scheme.lower() != "https":
+        log.warning("chat_card_insecure_scheme", scheme=parsed.scheme)
+        return False
+    request = urllib.request.Request(  # noqa: S310 - URL scheme verified to be https only
         webhook_url, data=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json; charset=UTF-8"}, method="POST")
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 - URL scheme verified to be https only
             ok = 200 <= response.status < 300
             if not ok:
                 log.warning("chat_card_rejected", status=response.status)

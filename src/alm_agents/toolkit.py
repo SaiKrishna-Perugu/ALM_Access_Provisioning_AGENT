@@ -214,7 +214,7 @@ class RecoverArgs(BaseModel):
 
 
 class UserArgs(BaseModel):
-    userid: str = Field(description="The Jazz user ID, e.g. SF58083.")
+    userid: str = Field(description="The Jazz user ID, e.g. AB12345.")
 
 
 class CommentArgs(BaseModel):
@@ -492,6 +492,36 @@ def build_registry(ctx: ToolContext, board: Blackboard, memory: MemoryStore,
                 + ("" if has else ". Propagation can take up to 30 minutes after "
                                   "provisioning; this is not necessarily a failure."))
 
+    async def verify_all_users() -> str:
+        # Code, not the model, decides who needs checking: everyone this run
+        # created or reactivated, and everyone already present. A live eval
+        # showed the model sometimes skipping one user, who then got neither
+        # evidence nor a comment line.
+        wrote = {r.userid for r in board.results
+                 if getattr(r.operation, "value", r.operation) in ("jts_create", "jts_unarchive")
+                 and getattr(r.outcome, "value", r.outcome) == "ok"}
+        present = {u for u, s in board.statuses.items() if s.state == UserState.EXISTS}
+        targets = sorted((wrote | present) & set(board.users))
+        if not targets:
+            return ("nobody in this run should hold access yet: no account was created or "
+                    "reactivated, and nobody was already present")
+        verified, pending = [], []
+        for userid in targets:
+            has = await backend.check_role(ctx, userid)
+            status = board.statuses.get(userid)
+            if status is not None and status.has_role != has:
+                fresh.discard(userid)
+            if has:
+                board.verified.add(userid)
+                verified.append(userid)
+            else:
+                pending.append(userid)
+        return json.dumps({
+            "verified": verified, "not_yet_verified": pending,
+            "note": ("Only verified users get evidence and a comment line. A user not yet "
+                     "verified shortly after provisioning is expected: propagation takes up "
+                     "to 30 minutes. Say 'not yet verified', never 'failed'.")}, indent=2)
+
     async def existing_work_item_comments(work_item_id: str) -> str:
         comments = await backend.existing_comments(ctx, work_item_id)
         if comments is None:
@@ -510,11 +540,15 @@ def build_registry(ctx: ToolContext, board: Blackboard, memory: MemoryStore,
                     + "; ".join(problems))
         board.evidence.update(artifacts)
         missing = [u for u in userids if u not in artifacts]
+        attach_to = {u: board.users[u].work_item_ids for u in sorted(artifacts)
+                     if u in board.users}
         return json.dumps({"captured": sorted(artifacts),
                            "not_confirmed": missing,
                            "saved_in": os.path.abspath(shots_dir),
-                           "note": ("Only captured users may be attached. Attach each to "
-                                    "every work item that requested that user.")}, indent=2)
+                           "attach_to": attach_to,
+                           "note": ("Only captured users may be attached, and only to the "
+                                    "work items listed for them in attach_to - never to "
+                                    "another work item.")}, indent=2)
 
     # ----------------------------------------------------------- write tools
 
@@ -604,8 +638,17 @@ def build_registry(ctx: ToolContext, board: Blackboard, memory: MemoryStore,
         # its words come from the records, never from the model: an agent (or
         # text a requester planted in the work item) can decide *whether* to
         # comment, but cannot make the comment claim anything unrecorded.
+        def name_for(userid: str, user: RequestedUser) -> str:
+            # A user recovered from free text has no requester-given name, so
+            # display_name falls back to the ID ("TB22322: TB22322"). LDAP knows
+            # the name; use it before repeating the ID.
+            if user.first_name or user.last_name:
+                return user.display_name
+            status = board.statuses.get(userid)
+            return (status.ldap_name if status and status.ldap_name else userid)
+
         entries = [
-            (userid, user.display_name,
+            (userid, name_for(userid, user),
              action_from_records(userid, board.results, board.statuses))
             for userid, user in sorted(board.users.items())
             if userid in board.verified and work_item_id in user.work_item_ids]
@@ -638,6 +681,14 @@ def build_registry(ctx: ToolContext, board: Blackboard, memory: MemoryStore,
     async def attach_workitem_evidence(work_item_id: str, userid: str) -> str:
         if denial := _scope_denial(work_item_id=work_item_id):
             return denial
+        # A profile screenshot is personal data: it belongs only on the work
+        # items that asked for that person, never on another team's request.
+        user = board.users.get(userid)
+        if user is None or work_item_id not in user.work_item_ids:
+            requested_on = ", ".join(user.work_item_ids) if user else "no work item in this run"
+            return (f"DENIED: {userid} was not requested on work item {work_item_id} "
+                    f"(requested on: {requested_on}). Attach evidence only to the work "
+                    "items that requested that user.")
         path = board.evidence.get(userid)
         if not path:
             return (f"ERROR: no validated evidence for {userid}. Call capture_evidence "
@@ -706,6 +757,11 @@ def build_registry(ctx: ToolContext, board: Blackboard, memory: MemoryStore,
                  "Check whether a user currently holds the JazzUsers repository role. "
                  "This is the only confirmation that access actually landed.",
                  UserArgs, check_jazz_permission),
+        ToolSpec("verify_all_users",
+                 "Check the JazzUsers role for every user whose account should now be "
+                 "active (created or reactivated by this run, or already present). "
+                 "Returns who is verified and who is not yet.",
+                 NoArgs, verify_all_users),
         ToolSpec("existing_work_item_comments",
                  "Read the comments already on a work item, to avoid duplicating one.",
                  WorkItemArgs, existing_work_item_comments),

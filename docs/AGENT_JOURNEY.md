@@ -1,4 +1,4 @@
-﻿# Building the ALM Access Retrieval + GPT Provisioning Agent
+# Building the ALM Access Retrieval + GPT Provisioning Agent
 
 *A complete build journal - from the first idea to a team-ready agent that talks to
 IBM EWM/ELM over the OSLC REST API and provisions users into GPT.*
@@ -118,7 +118,7 @@ The **New Users** field looks like `LASTNAME,FIRSTNAME,email,USERID;` - the **US
 token is what we report and feed to GPT:
 
 ```
-LASTNAME,FIRSTNAME,firstname.lastname@external.stellantis.com,AB12345;
+LASTNAME,FIRSTNAME,firstname.lastname@example.com,AB12345;
 ```
 
 The first successful PROD run returned **9 work items** and **16 unique user IDs**.

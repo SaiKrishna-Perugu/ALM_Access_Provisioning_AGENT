@@ -1,4 +1,4 @@
-﻿"""Unarchive (reactivate) a JTS contributor via the Jazz Foundation user REST API.
+"""Unarchive (reactivate) a JTS contributor via the Jazz Foundation user REST API.
 
 Read-only by default: it fetches the contributor RDF, shows the current archived
 state, and prints what WOULD change. Use --commit to actually flip
@@ -14,13 +14,9 @@ import os
 import re
 import sys
 
-import urllib3
-
 import alm_config
 import jazz_client
 import jts_import_users as j
-
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 RDF = "application/rdf+xml"
 _ARCHIVED_RE = re.compile(

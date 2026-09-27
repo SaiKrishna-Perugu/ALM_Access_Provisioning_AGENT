@@ -53,9 +53,9 @@ locals {
   // Secret ids the application resolves by name. Keep in step with
   // alm_core/config.py - the names are the contract between the two.
   secret_ids = merge({
-    password  = "alm-service-account-password"  # pragma: allowlist secret
-    approval  = "alm-approval-signing-key"
-    webhook   = "alm-webhook-hmac-key"
+    password = "alm-service-account-password" # pragma: allowlist secret
+    approval = "alm-approval-signing-key"
+    webhook  = "alm-webhook-hmac-key"
   }, { for k, v in { gemini = "alm-gemini-api-key" } : k => v if local.gemini_api })
 
   // The Gemini Developer API is keyed; Vertex AI is not. Everything the key

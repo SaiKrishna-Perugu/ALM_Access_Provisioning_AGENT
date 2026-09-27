@@ -30,7 +30,6 @@ import os
 import sys
 
 import requests
-import urllib3
 
 import alm_access_requests as aar
 import alm_config
@@ -40,8 +39,6 @@ import idempotency
 import jazz_client
 import jts_import_users as jimp
 import jts_unarchive_user as unarch
-
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # The old header asserted "User added to JTS" for every user on the work item,
 # including the ones the import had reported as "already a JTS user (active)" and
@@ -401,7 +398,7 @@ def main() -> int:
             urls = []
             try:
                 urls.append(fetch_comments_url(esession, aar.SERVER, uuid, wid))
-            except Exception:  # noqa: BLE001 - fall back to the numeric-id form
+            except Exception:  # noqa: S110, BLE001 - fall back to the numeric-id form
                 pass
             urls.append(comments_collection_url(aar.SERVER, wid))
 

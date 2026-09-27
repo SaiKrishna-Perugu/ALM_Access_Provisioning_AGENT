@@ -10,6 +10,13 @@ name: Deploy
 # The environment gates matter: `test` deploys on a push to main, `prod` needs a
 # GitHub environment approval. Turning shadow mode off is not done here at all -
 # it is a deliberate configuration change, made once, with a change record.
+#
+# Each GitHub environment (test, prod) needs these variables (Settings >
+# Environments > Variables). They are the real intranet names, so they are
+# kept out of the repository; Terraform refuses to apply without them:
+#   EWM_SERVER            https://<ewm host>/ccm
+#   JTS_SERVER            https://<jts host>/jts
+#   CORPORATE_DNS_SUFFIX  <intranet domain>.   (trailing dot)
 
 on:
   push:
@@ -45,8 +52,8 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
         with:
           python-version: '3.13'
           cache: pip
@@ -54,8 +61,7 @@ jobs:
         # The cloud set, so the agent tests run rather than skip before a deploy.
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements-cloud.txt
-          pip install pytest ruff
+          pip install -r requirements-cloud.txt -r requirements-dev.txt
       - name: Lint
         run: ruff check src tests .github/hooks/scripts
       - name: Test
@@ -100,7 +106,7 @@ jobs:
           fi
           echo "no service account keys in the Terraform"
 
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
         with:
           terraform_version: 1.9.8
       - name: Validate Terraform
@@ -116,15 +122,15 @@ jobs:
     outputs:
       image: ${{ steps.push.outputs.image }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - id: auth
-        uses: google-github-actions/auth@v2
+        uses: google-github-actions/auth@71f986410dfbc7added4569d411d040a91dc6935 # v2.1.8
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
           service_account: ${{ secrets.GCP_DEPLOY_SERVICE_ACCOUNT }}
 
-      - uses: google-github-actions/setup-gcloud@v2
+      - uses: google-github-actions/setup-gcloud@6189d56e4096ee891640bb02ac264be376592d6a # v2.1.2
 
       - name: Write the corporate CA bundle
         # Held as a repository secret rather than committed: it is not secret in
@@ -157,15 +163,15 @@ jobs:
     runs-on: ubuntu-latest
     environment: ${{ github.event.inputs.target || 'test' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - uses: google-github-actions/auth@v2
+      - uses: google-github-actions/auth@71f986410dfbc7added4569d411d040a91dc6935 # v2.1.8
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
           service_account: ${{ secrets.GCP_DEPLOY_SERVICE_ACCOUNT }}
 
-      - uses: google-github-actions/setup-gcloud@v2
-      - uses: hashicorp/setup-terraform@v3
+      - uses: google-github-actions/setup-gcloud@6189d56e4096ee891640bb02ac264be376592d6a # v2.1.2
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
         with:
           terraform_version: 1.9.8
 
@@ -175,10 +181,15 @@ jobs:
           terraform -chdir=infra init \
             -backend-config="bucket=${{ secrets.GCP_TF_STATE_BUCKET }}" \
             -backend-config="prefix=alm/$TARGET"
-          terraform -chdir=infra apply -auto-approve \
+          # Intranet host names are GitHub environment variables, not committed:
+          # the variables' validation fails the apply if one is missing.
+          terraform -chdir=infra apply -auto-approve -input=false \
             -var-file="envs/$TARGET.tfvars" \
             -var="project_id=${{ secrets.GCP_PROJECT_ID }}" \
-            -var="container_image=${{ needs.build.outputs.image }}"
+            -var="container_image=${{ needs.build.outputs.image }}" \
+            -var="ewm_server=${{ vars.EWM_SERVER }}" \
+            -var="jts_server=${{ vars.JTS_SERVER }}" \
+            -var="corporate_dns_suffix=${{ vars.CORPORATE_DNS_SUFFIX }}"
 
       - name: Connectivity smoke test
         # A green apply proves the resources exist. It proves nothing about

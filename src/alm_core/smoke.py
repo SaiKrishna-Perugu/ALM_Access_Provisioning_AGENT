@@ -1,7 +1,7 @@
 """Connectivity smoke test. Read-only, runs on every deployment.
 
 A successful deployment proves the resources exist. It proves nothing about
-whether the container can resolve ``*.intra.chrysler.com``, whether the
+whether the container can resolve ``*.example.intra``, whether the
 ExpressRoute peering carries the traffic, or whether the corporate CA in the
 image actually validates the intranet certificates. Those are the things that
 break, and they break silently until the first real run.

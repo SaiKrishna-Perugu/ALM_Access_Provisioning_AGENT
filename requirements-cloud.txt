@@ -1,4 +1,4 @@
-﻿# Dependencies for the autonomous multi-agent system (src/alm_core, alm_agents,
+# Dependencies for the autonomous multi-agent system (src/alm_core, alm_agents,
 # alm_api, alm_worker). NOT needed to run the local CLI pipeline - src/*.py still
 # works with requirements.txt alone.
 #
@@ -33,11 +33,12 @@ typesafe-sdk==0.7.1
 # [email] brings email-validator, which pydantic's EmailStr needs at import time.
 pydantic[email]==2.13.4
 pydantic-settings==2.15.0
+defusedxml==0.7.1
 
 # --- API / approval surface -------------------------------------------------
-fastapi==0.115.6
+fastapi==0.141.1
 uvicorn[standard]==0.52.4
-python-multipart==0.0.20
+python-multipart==0.0.32
 
 # --- Google Cloud -----------------------------------------------------------
 google-auth==2.57.0

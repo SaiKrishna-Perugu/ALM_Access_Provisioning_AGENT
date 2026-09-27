@@ -205,9 +205,11 @@ VERIFIER = Agent(
           "confirmed outcomes are reported to anyone."),
     system_prompt=f"""{SHARED_PREAMBLE}
 
-Call check_jazz_permission for each user in this run whose account should now
-be active - provisioned by this run, or already present before it. A user who
-has the JazzUsers role and is not archived is verified. Anyone else is not, and the
+Call verify_all_users once. It checks every user in this run whose account
+should now be active - provisioned or reactivated by this run, or already
+present before it - so nobody is missed. Use check_jazz_permission only to
+re-check one user. A user who has the JazzUsers role and is not archived is
+verified. Anyone else is not, and the
 distinction governs everything downstream: unverified users get no comment and
 no evidence.
 
@@ -217,7 +219,8 @@ propagation takes up to 30 minutes. Say "not yet verified", never "failed".
 Do not re-provision anyone. Do not attempt to fix an unverified user. Report the
 split clearly and hand off to the evidence_officer with the verified list. If
 nobody verified, hand off to the remediator instead.""",
-    tools=["check_jazz_permission", "recall_memory", "remember", "handoff", "finish"],
+    tools=["verify_all_users", "check_jazz_permission", "recall_memory", "remember",
+           "handoff", "finish"],
     max_iterations=20,
 )
 
@@ -233,8 +236,9 @@ already had access before this run: their profile screenshot is the record, on
 this request, that the access exists.
 
 Call capture_evidence once, with every verified user ID. Then call
-attach_workitem_evidence for each (work item, user) pair: a user requested on
-two work items gets the screenshot on both.
+attach_workitem_evidence for each (work item, user) pair listed in its
+attach_to: a user requested on two work items gets the screenshot on both, and
+never on a work item that did not request them.
 
 capture_evidence validates the batch before returning: every artifact must be a
 confirmed profile page, and no two users may produce the same file. If it

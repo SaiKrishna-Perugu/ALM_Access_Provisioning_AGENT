@@ -41,9 +41,9 @@ output "artifact_registry" {
 output "next_steps" {
   value = join(" ", concat([
     "1. Add secret versions: gcloud secrets versions add alm-service-account-password --data-file=-",
-    "2. Confirm *.intra.chrysler.com resolves from the Cloud Run subnet.",
+    "2. Confirm *.example.intra resolves from the Cloud Run subnet.",
     "3. Run the connectivity smoke job before turning shadow mode off.",
-  ], compact([local.gemini_api ?
-    "4. Add the Gemini API key: gcloud secrets versions add alm-gemini-api-key --data-file=-"
+    ], compact([local.gemini_api ?
+      "4. Add the Gemini API key: gcloud secrets versions add alm-gemini-api-key --data-file=-"
   : ""])))
 }

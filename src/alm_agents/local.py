@@ -34,7 +34,7 @@ from urllib.parse import urlparse
 ROOT = Path(__file__).resolve().parents[2]
 OUT_DIR = ROOT / "out" / "local"
 DEFAULT_LEDGER = OUT_DIR / "alm.db"
-DEFAULT_GPT_URL = "https://gpt.fiatspa.com/GlobalProvisioningTool/home.jsf"
+DEFAULT_GPT_URL = "https://gpt.example.intra/GlobalProvisioningTool/home.jsf"
 
 
 class SetupError(Exception):
@@ -85,7 +85,7 @@ def make_local_backend(*, cdp_url: str, gpt_url: str, ad_label: str):
             if session is not None:
                 try:
                     session.close()
-                except Exception:  # noqa: BLE001 - it is already broken
+                except Exception:  # noqa: S110, BLE001 - it is already broken
                     pass
 
         def _add_member(self, userid: str, group: str, domain: str) -> tuple[bool, str]:
@@ -145,7 +145,7 @@ def make_local_backend(*, cdp_url: str, gpt_url: str, ad_label: str):
             if self._session is not None:
                 try:
                     self._executor.submit(self._session.close).result(timeout=30)
-                except Exception:  # noqa: BLE001 - closing must not mask the run result
+                except Exception:  # noqa: S110, BLE001 - closing must not mask the run result
                     pass
                 self._session = None
             self._executor.shutdown(wait=False)
@@ -204,9 +204,11 @@ def build_settings(*, commit: bool, model: str = "", rpm: float = 0.0,
 
 def gpt_target() -> dict:
     """GPT settings, read from the names the CLI's .env already uses."""
-    return {"cdp_url": os.getenv("CDP_URL", "http://127.0.0.1:9222"),
-            "gpt_url": os.getenv("GPT_URL", DEFAULT_GPT_URL),
-            "ad_label": os.getenv("AD_LABEL", "inetpsa.com")}
+    import alm_config
+
+    return {"cdp_url": alm_config.env_or("CDP_URL", "http://127.0.0.1:9222"),
+            "gpt_url": alm_config.env_or("GPT_URL", DEFAULT_GPT_URL),
+            "ad_label": alm_config.env_or("AD_LABEL", "inetpsa.com")}
 
 
 # --------------------------------------------------------------------- check
@@ -419,6 +421,13 @@ async def run(settings, args, console) -> dict:
     memory = AgentMemory(store)
     await memory.migrate()
     backend = make_local_backend(**gpt_target())
+    recorder = None
+    if getattr(args, "record", False):
+        # Keeps the real reads and this run's outcome, for replay off the VPN
+        # with agent_eval.py --recorded. Writes pass through unchanged.
+        from .evals import RecordingBackend
+
+        backend = recorder = RecordingBackend(backend, role=settings.jazz_role)
     ctx = ToolContext(settings=settings, client=client, store=store, run_id="")
     thread_id = args.resume or f"local-{uuid.uuid4().hex[:8]}"
     # Shown - and remembered - before anything can fail, so an interrupted or
@@ -429,6 +438,8 @@ async def run(settings, args, console) -> dict:
                  f"{commit_flag}, or --resume last{commit_flag})")
 
     def decide(payload):
+        if recorder is not None:
+            recorder.note_approval(payload)
         if settings.shadow_mode:
             # A dry run cannot write, so there is nothing to decide: show the card
             # as a preview of what --commit will ask, and let the plan continue.
@@ -451,6 +462,10 @@ async def run(settings, args, console) -> dict:
             report["policy"] = runtime.policy.summary()
             report["shadow"] = settings.shadow_mode
             report["environment"] = settings.environment
+            if recorder is not None:
+                path = recorder.save(report, dry_run=settings.shadow_mode)
+                report["recorded_scenario"] = str(path)
+                console.line(f"recorded for replay: {path}")
             return report
     finally:
         backend.close()
@@ -493,14 +508,19 @@ def last_thread(settings) -> str:
 
 
 async def purge(settings, console, days: int, *, out_dir: Path = OUT_DIR,
-                now=None) -> dict:
+                now=None, dry_run: bool = False) -> dict:
     """Delete the personal data local runs leave behind, older than ``days``.
 
-    Removed: run checkpoints (the whole state of a run, names included), approval
-    cards, agent memory, run reports and evidence screenshots. Kept: the
-    idempotency ledger and the append-only audit trail - the record of what was
-    written, which holds user IDs, not names or e-mail addresses, and without
-    which a re-run could not tell what was already done.
+    Removed - the agents': run checkpoints (the whole state of a run, names
+    included), approval cards, agent memory, run reports and evidence
+    screenshots; the CLI's: profile screenshots, the user caches
+    (``alm_users*.json``) and ``comment_capture.json``.
+
+    Kept: the agents' idempotency ledger and append-only audit trail, and the
+    CLI's ``out/audit`` records - the record of what was written and approved.
+    Deleting those would erase the compliance trail, not just personal data.
+
+    ``dry_run`` counts what would go and deletes nothing.
     """
     import shutil
     from datetime import datetime, timedelta, timezone
@@ -513,7 +533,10 @@ async def purge(settings, console, days: int, *, out_dir: Path = OUT_DIR,
     from .memory import MemoryStore as AgentMemory
 
     cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=days)
-    counts = {"runs": 0, "approvals": 0, "memories": 0, "reports": 0, "evidence": 0}
+    counts = {
+        "runs": 0, "approvals": 0, "memories": 0, "reports": 0, "evidence": 0,
+        "cli_screenshots": 0, "cli_users": 0, "cli_comments": 0, "recordings": 0,
+    }
 
     checkpoints = checkpoint_db_path(settings.ledger_path)
     if os.path.exists(checkpoints):
@@ -524,10 +547,12 @@ async def purge(settings, console, days: int, *, out_dir: Path = OUT_DIR,
                 newest[thread] = max(newest.get(thread, ""), item.checkpoint["ts"])
             for thread, ts in newest.items():
                 if datetime.fromisoformat(ts) < cutoff:
-                    await saver.adelete_thread(thread)
+                    if not dry_run:
+                        await saver.adelete_thread(thread)
                     counts["runs"] += 1
-        async with aiosqlite.connect(checkpoints) as conn:
-            await conn.execute("VACUUM")  # deleted rows otherwise stay in the file
+        if not dry_run:
+            async with aiosqlite.connect(checkpoints) as conn:
+                await conn.execute("VACUUM")  # deleted rows otherwise stay in the file
 
     if os.path.exists(settings.ledger_path):
         store = SqliteStore(settings.ledger_path)
@@ -538,36 +563,76 @@ async def purge(settings, console, days: int, *, out_dir: Path = OUT_DIR,
             since = cutoff.isoformat()
             async with store._lock:
                 db = store._conn()
+                # Fixed table names, never input; the cutoff is a bound parameter.
                 for table, key in (("alm_approval", "approvals"),
                                    ("alm_agent_memory", "memories")):
+                    verb = "SELECT COUNT(*)" if dry_run else "DELETE"
                     cursor = await db.execute(
-                        f"DELETE FROM {table} WHERE created_at < ?", (since,))
-                    counts[key] = cursor.rowcount or 0
-                await db.execute("VACUUM")
+                        f"{verb} FROM {table} WHERE created_at < ?", (since,))  # noqa: S608
+                    counts[key] = ((await cursor.fetchone())[0] if dry_run
+                                   else cursor.rowcount or 0)
+                if not dry_run:
+                    await db.execute("VACUUM")
         finally:
             await store.close()
 
     stamp = cutoff.timestamp()
+
+    def remove(path: Path, key: str) -> None:
+        if dry_run:
+            pass
+        elif path.is_dir():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+        counts[key] += 1
+
     for report in out_dir.glob("run-*.json"):
         if report.stat().st_mtime < stamp:
-            report.unlink()
-            counts["reports"] += 1
+            remove(report, "reports")
     evidence = out_dir / "evidence"
     if evidence.is_dir():
         for folder in (p for p in evidence.iterdir() if p.is_dir()):
             touched = [f.stat().st_mtime for f in folder.rglob("*")] or [
                 folder.stat().st_mtime]
             if max(touched) < stamp:
-                shutil.rmtree(folder)
-                counts["evidence"] += 1
+                remove(folder, "evidence")
 
-    console.line(f"purged local data older than {days} day(s): "
+    # The CLI's working files under out/. Its out/audit records are kept.
+    cli_out = out_dir.parent if out_dir.name == "local" else out_dir
+    screenshots = cli_out / "screenshots"
+    if screenshots.is_dir():
+        for shot in screenshots.glob("*.png"):
+            if shot.stat().st_mtime < stamp:
+                remove(shot, "cli_screenshots")
+    for cache in cli_out.glob("alm_users*.json"):
+        if cache.is_file() and cache.stat().st_mtime < stamp:
+            remove(cache, "cli_users")
+    capture = cli_out / "comment_capture.json"
+    if capture.is_file() and capture.stat().st_mtime < stamp:
+        remove(capture, "cli_comments")
+    # Runs recorded for replay (agent_local.py --record) hold requester names.
+    recorded = cli_out / "evals" / "recorded"
+    if recorded.is_dir():
+        for scenario in recorded.glob("*.json"):
+            if scenario.stat().st_mtime < stamp:
+                remove(scenario, "recordings")
+
+    verb = "would purge" if dry_run else "purged"
+    console.line(f"{verb} local data older than {days} day(s): "
                  f"{counts['runs']} run checkpoint(s), {counts['approvals']} approval "
                  f"card(s), {counts['memories']} agent memor(y/ies), {counts['reports']} "
-                 f"report(s), {counts['evidence']} evidence folder(s)")
-    console.line("kept: the ledger and audit trail (user IDs only) - they record what "
-                 "was written and stop a re-run from repeating it")
+                 f"report(s), {counts['evidence']} evidence folder(s), "
+                 f"{counts['cli_screenshots']} CLI screenshot(s), "
+                 f"{counts['cli_users']} CLI user cache(s), "
+                 f"{counts['cli_comments']} CLI comment capture(s), "
+                 f"{counts['recordings']} recorded run(s)")
+    console.line("kept: the agents' ledger and audit trail and the CLI's out/audit "
+                 "records - they record what was written and approved")
+    if dry_run:
+        console.line("dry run: nothing was deleted")
     return counts
+
 
 
 def _days(value: str) -> int:
@@ -629,9 +694,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="full tool observations and the service logs")
     parser.add_argument("--purge-older-than", type=_days, metavar="DAYS", default=0,
                         help="delete local run data (checkpoints, approval cards, agent "
-                             "memory, reports, evidence) older than DAYS, then exit; the "
-                             "ledger and audit trail are kept")
-    return parser.parse_args(argv)
+                             "memory, reports, evidence, the CLI's screenshots and user "
+                             "caches) older than DAYS, then exit; the ledgers and audit "
+                             "records are kept")
+    parser.add_argument("--record", action="store_true",
+                        help="save this run's real reads and outcome to out/evals/recorded/, "
+                             "to replay later with agent_eval.py --recorded (no VPN needed)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="with --purge-older-than: list the counts, delete nothing")
+    args = parser.parse_args(argv)
+    if args.dry_run and not args.purge_older_than:
+        parser.error("--dry-run only applies to --purge-older-than")
+    return args
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -680,7 +754,8 @@ def _main(args, console) -> int:
         if args.check:
             return asyncio.run(check(settings, console, list(args.work_item or [])))
         if args.purge_older_than:
-            asyncio.run(purge(settings, console, args.purge_older_than))
+            asyncio.run(purge(settings, console, args.purge_older_than,
+                              dry_run=args.dry_run))
             return 0
 
         check_commit_scope(args)

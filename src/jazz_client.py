@@ -1,7 +1,7 @@
 """Shared Jazz/HTTP plumbing: one session factory, one form-auth POST.
 
-Before this module every script built its own ``requests.Session``, hardcoded
-``verify=False``, and re-implemented the Jazz ``j_security_check`` handshake.
+Before this module every script built its own ``requests.Session``, switched off
+certificate verification, and re-implemented the Jazz ``j_security_check`` handshake.
 A fix had to be applied in six places, which is how the TEST/PROD login
 divergence went unnoticed for so long.
 

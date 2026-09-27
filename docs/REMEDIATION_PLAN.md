@@ -186,7 +186,7 @@ Defects.
 
 Silent exception swallowing at alm_access_requests.py L289 and L304 — broad except Exception returning fallbacks, hiding network and parse failures.
 jts_import_users.py exits 0 even when every user fails. Deliberate (so the pipeline continues), but it means exit codes cannot be trusted by any external scheduler.
-Error attribution was wrong until I fixed it: when attach aborted on F29949C, the audit recorded F29949C's error message against SDT2806, SF00522, SF58083, SF60181 — users never attempted. Misleading forensics.
+Error attribution was wrong until I fixed it: when attach aborted on AB10001, the audit recorded AB10001's error message against CD20002, EF30003, GH40004, IJ50005 — users never attempted. Misleading forensics.
 Recovery from a 30-minute poll timeout is manual.
 
 Recommend. Replace the two broad excepts with typed handling + logging. Distinguish "not attempted" from "failed" in the audit schema.

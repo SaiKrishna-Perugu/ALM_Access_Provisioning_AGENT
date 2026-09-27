@@ -38,6 +38,16 @@ _TRUE = {"1", "true", "yes", "on"}
 _warned = False
 
 
+def env_or(name: str, default: str) -> str:
+    """The environment value, or ``default`` when it is unset OR blank.
+
+    ``os.getenv(name, default)`` returns "" for ``NAME=`` - the shape every key
+    in .env.example has - so a copied template would silently set, say, the AD
+    group to an empty string instead of falling back to the default.
+    """
+    return os.getenv(name, "").strip() or default
+
+
 def _server_hosts() -> list[str]:
     return [
         os.getenv("EWM_SERVER", ""),
@@ -105,11 +115,26 @@ def tls_verify():
             "[STOP] ALM_TLS_VERIFY=strict but no ALM_CA_BUNDLE is configured. "
             "Point ALM_CA_BUNDLE at the corporate CA bundle to run verified.")
 
+    # Unverified TLS is tolerated only where we know it is TEST. PROD refuses,
+    # and so does UNKNOWN: with no servers configured we cannot tell which
+    # estate the credentials are about to be sent to.
+    env = alm_env()
+    if env != "TEST":
+        raise SystemExit(
+            f"[STOP] Refusing to send credentials over unverified TLS ({env}). Set "
+            "ALM_CA_BUNDLE to the corporate CA bundle (.pem), or ALM_TLS_VERIFY=true "
+            "if the corporate CA is in the system trust store.")
+
     if not _warned:
         _warned = True
         print("[warn] TLS certificate verification is DISABLED (corporate self-signed "
               "certs). Set ALM_CA_BUNDLE=<path to corporate CA .pem> to verify.",
               file=sys.stderr, flush=True)
+        try:
+            import urllib3
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        except Exception:  # noqa: S110 - best-effort urllib3 warning suppression
+            pass
     return False
 
 

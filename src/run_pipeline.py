@@ -42,8 +42,6 @@ import subprocess
 import sys
 import time
 
-import urllib3
-
 import alm_config
 import alm_log
 import audit
@@ -51,8 +49,6 @@ import jazz_client
 import jts_import_users as jimp
 import jts_permission as perm
 import plan_lock
-
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 SRC = os.path.dirname(os.path.abspath(__file__))
 STATE_PATH = "out/pipeline_state.json"
@@ -111,7 +107,7 @@ def run_step(name: str, cmd: list[str], state: dict, ok_codes: tuple[int, ...] =
     """Run one step as a subprocess. ``ok_codes`` are the codes that let the run continue."""
     print(f"\n{'=' * 70}\nSTEP {name}: {' '.join(os.path.basename(c) for c in cmd[:2])} "
           f"{' '.join(cmd[2:])}\n{'-' * 70}", flush=True)
-    rc = subprocess.call(cmd)
+    rc = subprocess.call(cmd)  # noqa: S603 - pipeline orchestrator executes fixed internal step commands
     ok = rc in ok_codes
     state["steps"][name] = {"done": ok, "rc": rc, "ts": time.strftime("%Y-%m-%dT%H:%M:%S")}
     save_state(state)

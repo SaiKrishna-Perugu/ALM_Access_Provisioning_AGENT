@@ -1,6 +1,8 @@
-﻿# --- Secrets / local configuration -------------------------------------------
+# --- Secrets / local configuration -------------------------------------------
 # .env holds the CID and server URLs; never commit it. .env.example is the template.
 .env
+# Real names and IDs the PII guard blocks; the list itself is personal data.
+.pii-denylist
 .env.*
 !.env.example
 
@@ -18,6 +20,9 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
 
 # --- Browser debug profile (holds live session cookies / Kerberos state) ------
 chrome-debug/

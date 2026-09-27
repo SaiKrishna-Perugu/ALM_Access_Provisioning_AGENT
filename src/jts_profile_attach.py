@@ -23,7 +23,6 @@ import os
 import sys
 
 import requests
-import urllib3
 
 import alm_access_requests as aar
 import alm_config
@@ -34,8 +33,6 @@ import idempotency
 import jazz_client
 import jts_import_users as jimp
 from ewm_comment_workitems import group_by_workitem
-
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 SHOTS_DIR_DEFAULT = "out/screenshots"
 LOGIN_USER_SEL = "input[name='j_username']"
@@ -71,7 +68,7 @@ def take_screenshots(jts: str, user: str, password: str, userids: list[str],
             # The login widget is rendered by Dojo, so it is absent at domcontentloaded.
             try:
                 pg.wait_for_selector(LOGIN_USER_SEL, timeout=15000)
-            except Exception:  # noqa: BLE001 - no form means the session is already valid
+            except Exception:  # noqa: S110, BLE001 - no form means the session is already valid
                 pass
             if pg.locator(LOGIN_USER_SEL).count():
                 pg.fill(LOGIN_USER_SEL, user)
@@ -334,7 +331,7 @@ def main() -> int:
         uuid = aar.project_uuid(esession)
     except Exception as err:  # noqa: BLE001
         print(f"\n[ERROR] {err}")
-        if isinstance(err, (requests.exceptions.ConnectionError, requests.exceptions.Timeout)):
+        if isinstance(err, requests.exceptions.ConnectionError | requests.exceptions.Timeout):
             print("Ensure you are on the Chrysler intranet / VPN.")
         return 1
 

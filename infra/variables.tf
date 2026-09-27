@@ -33,15 +33,19 @@ variable "psa_cidr" {
 }
 
 variable "corporate_dns_servers" {
-  description = "On-premises DNS servers that resolve *.intra.chrysler.com. Without these the container cannot find EWM or JTS, whatever the interconnect says."
+  description = "On-premises DNS servers that resolve *.example.intra. Without these the container cannot find EWM or JTS, whatever the interconnect says."
   type        = list(string)
   default     = []
 }
 
 variable "corporate_dns_suffix" {
-  description = "Domain forwarded to the corporate resolvers."
+  description = "Domain forwarded to the corporate resolvers, with a trailing dot. Supplied at deploy time (GitHub environment variable CORPORATE_DNS_SUFFIX), never committed."
   type        = string
-  default     = "intra.chrysler.com."
+
+  validation {
+    condition     = endswith(var.corporate_dns_suffix, ".") && !strcontains(var.corporate_dns_suffix, "example.intra")
+    error_message = "corporate_dns_suffix must be the real intranet domain with a trailing dot, not the example.intra placeholder."
+  }
 }
 
 variable "interconnect_router_name" {
@@ -97,15 +101,29 @@ variable "supervisor_model" {
 }
 
 variable "ewm_server" {
-  description = "EWM base URL, e.g. https://prssetst.intra.chrysler.com/ccm"
+  description = "EWM base URL (https://<host>/ccm). Supplied at deploy time (GitHub environment variable EWM_SERVER), never committed."
+  type        = string
+
+  validation {
+    condition     = startswith(var.ewm_server, "https://") && !strcontains(var.ewm_server, "example.intra")
+    error_message = "ewm_server must be the real https:// EWM URL, not empty or the example.intra placeholder."
+  }
+}
+
+variable "iap_audience" {
+  description = "IAP JWT audience, /projects/<project number>/global/backendServices/<backend service id>. When set, the approval API trusts only a verified IAP JWT for the approver's identity. Set it once the load balancer exists."
   type        = string
   default     = ""
 }
 
 variable "jts_server" {
-  description = "JTS base URL."
+  description = "JTS base URL (https://<host>/jts). Supplied at deploy time (GitHub environment variable JTS_SERVER), never committed."
   type        = string
-  default     = ""
+
+  validation {
+    condition     = startswith(var.jts_server, "https://") && !strcontains(var.jts_server, "example.intra")
+    error_message = "jts_server must be the real https:// JTS URL, not empty or the example.intra placeholder."
+  }
 }
 
 variable "service_account_cid" {

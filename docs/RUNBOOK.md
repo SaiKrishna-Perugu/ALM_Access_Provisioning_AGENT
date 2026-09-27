@@ -264,7 +264,7 @@ change, reviewed like any other code.
 | `the server rejected the user ID or password` | Wrong CID or password. Nothing was written |
 | `the login was accepted but the session did not verify` | The account signs in but cannot open that server - check access in a browser |
 | `ALM_CA_BUNDLE points at ... which does not exist` | Point it at the corporate CA `.pem`, as for the CLI |
-| `ALM_TLS_INSECURE cannot be set when ... PROD` | Production requires verified TLS: set `ALM_CA_BUNDLE` |
+| `ALM_TLS_INSECURE cannot be set when ... PROD` / `Refusing to send credentials over unverified TLS (PROD)` (or `UNKNOWN`) | Only TEST may run unverified. Set `ALM_CA_BUNDLE` (or `ALM_TLS_VERIFY=true`); for UNKNOWN, also set `EWM_SERVER`/`JTS_SERVER` |
 | AD step failed: `no debug Chrome at ...` | Run `scripts\start-gpt.ps1`, sign in to GPT, then `--resume` the run |
 | `the agent model is unavailable` | Key or model problem: `python src/agent_local.py --check` |
 | Closed the terminal at the approval prompt | Nothing was written. `--resume last --commit` (or `--resume <thread-id> --commit`) brings the prompt back |
@@ -318,3 +318,26 @@ Anything involving a production write that should not have happened: capture
 `run_id`, the `alm_audit` rows and the `alm_idempotency` rows **before** changing
 configuration. Restarting the revision does not lose them, but knowing the run id
 is what makes the rest of the investigation possible.
+
+---
+
+## 10. Data Retention and Cleanup (30-Day Policy)
+
+Local runs and CLI executions generate operational files in `out/` and `out/local/` that may contain transient personal data (usernames, screenshots, query responses).
+
+### Retention Policy
+- **Maximum Retention:** 30 days for the agents' checkpoints, approval cards, memory, reports and evidence, and for the CLI's screenshots (`out/screenshots`), user caches (`out/alm_users*.json`) and `comment_capture.json`.
+- **Permanent Records:** the agents' ledger and audit trail (`alm_idempotency`, `alm_audit` in `out/local/alm.db`) and the CLI's audit records (`out/audit/`) are kept. They record what was written and who approved it, and the agents' ledger stops a re-run from repeating a write. They hold user IDs and outcomes, never passwords or session cookies.
+
+### Cleanup Procedures
+One implementation (`agent_local.py --purge-older-than`) does all of it; the script is a wrapper. Run it periodically or schedule it with Windows Task Scheduler:
+```powershell
+# Delete data older than 30 days
+.\scripts\purge-local.ps1 -Days 30
+
+# Show what would be removed; delete nothing
+.\scripts\purge-local.ps1 -Days 30 -DryRun
+
+# The same, directly
+.\.venv\Scripts\python.exe src\agent_local.py --purge-older-than 30 --dry-run
+```

@@ -6,25 +6,6 @@ this file holds only what was deliberately put off.
 
 ## Agents
 
-### Eval suite that replays recorded TEST runs
-
-**What:** Record real TEST work items: the raw OSLC reads plus what the agents
-decided. Replay them against the scripted estate whenever a prompt, the roster
-or the model changes.
-
-**Why:** Prompt and model changes are currently verified only by hand-run dry
-runs. A regression (for example, the closer's wording, or a routing detour)
-reaches a live work item before anyone notices.
-
-**Context:** `tests/test_agentic_sandbox.py` already has a scripted-LLM harness
-and `SandboxEstate`. The missing pieces are capturing real observations from
-`out/local/run-*.json` and comparing outcomes (writes, comments, approval cards)
-rather than exact wording. Start from the three TEST runs of 2026-09-25.
-
-**Effort:** M
-**Priority:** P2
-**Depends on:** T6 (per-run metrics) helps with comparing runs
-
 ### Package the tool and policy layer as an MCP server
 
 **What:** Expose the OSLC tools, the policy engine, the ledger and the evidence
@@ -61,22 +42,6 @@ and a Task Scheduler entry.
 
 ## Infrastructure
 
-### Changelog and SQLite schema versioning
-
-**What:** Add a CHANGELOG and a `schema_version` table with forward
-migrations for `out/local/alm.db`.
-
-**Why:** Schema changes to the ledger are currently silent. An older database
-could misbehave after `git pull`.
-
-**Context:** `alm_core/store/sqlite.py` creates its tables with
-`CREATE TABLE IF NOT EXISTS`. Add a version row and a migration list checked in
-`migrate()`.
-
-**Effort:** S
-**Priority:** P3
-**Depends on:** None
-
 ### Merge or retire one of the two implementations
 
 **What:** Converge the CLI (`src/*.py`, `out/audit/`) and the agents (SQLite
@@ -93,3 +58,15 @@ per-run metrics (T6) against the CLI's timings.
 **Depends on:** T5, T6
 
 ## Completed
+
+### Eval suite that replays recorded TEST runs (2026-09-27)
+
+`python src/agent_eval.py` grades five built-in scenarios, and runs saved with
+`agent_local.py --record`, against the simulated estate with the real model:
+outcomes plus five safety invariants. **Still open:** record real TEST runs
+(needs the client network), then replay them after every prompt or model change.
+
+### Changelog and SQLite schema versioning (2026-09-27)
+
+`CHANGELOG.md`, and an `alm_schema_version` table with forward migrations in
+`alm_core/store/sqlite.py` (`MIGRATIONS`). A ledger from newer code is refused.

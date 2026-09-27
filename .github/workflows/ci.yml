@@ -21,9 +21,9 @@ jobs:
         # 3.13 is what the operators run; 3.12 catches accidental 3.13-only syntax.
         python-version: ["3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -31,8 +31,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pytest ruff
+          pip install -r requirements-dev.txt   # requirements.txt + pinned pytest/ruff
 
       - name: Lint
         run: ruff check src tests .github/hooks/scripts
@@ -76,30 +75,60 @@ jobs:
   agents:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
         with:
           python-version: "3.13"
           cache: pip
       - name: Install the cloud dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements-cloud.txt
-          pip install pytest ruff
+          pip install -r requirements-cloud.txt -r requirements-dev.txt
       - name: Test the multi-agent system end to end
         env:
           # Fail if any checkpointed type is missing from the allowlist.
           LANGGRAPH_STRICT_MSGPACK: "true"
-        run: pytest -q
+        # Coverage was 54% when the floor was set (2026-09-27); the margin
+        # covers Windows-only paths CI does not run. Raise it as tests land.
+        run: pytest -q --cov=src --cov-report=term --cov-fail-under=50
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install security audit tools
+        # Pinned in requirements-dev.txt, so CI audits with the same versions as
+        # the developer's pre-commit hooks (ruff 0.6.9, not "latest").
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+      - name: Audit dependencies for known vulnerabilities
+        run: pip-audit -r requirements.txt -r requirements-cloud.txt
+      - name: Check static security rules
+        run: ruff check --select S src
+      # Secrets are checked by the `secrets` job below: pre-commit runs
+      # detect-secrets-hook, which fails on a new secret. `detect-secrets scan
+      # --baseline` does not - it exits 0 and adds the secret to the baseline.
 
   secrets:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
         with:
           python-version: "3.13"
       - name: Install pre-commit
-        run: pip install pre-commit
+        run: pip install pre-commit==4.6.2  # same pin as requirements-dev.txt
       - name: Run the hygiene and secret-detection hooks
+        env:
+          # The PII guard's denylist is personal data, so it lives in a
+          # repository secret (one token per line), never in the repository.
+          PII_DENYLIST: ${{ secrets.PII_DENYLIST }}
+          # The test jobs above run the suite with its dependencies installed;
+          # this job has only pre-commit, so its pytest hook cannot run here.
+          SKIP: pytest
         run: pre-commit run --all-files --show-diff-on-failure
