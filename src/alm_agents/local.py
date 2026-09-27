@@ -421,6 +421,13 @@ async def run(settings, args, console) -> dict:
     memory = AgentMemory(store)
     await memory.migrate()
     backend = make_local_backend(**gpt_target())
+    recorder = None
+    if getattr(args, "record", False):
+        # Keeps the real reads and this run's outcome, for replay off the VPN
+        # with agent_eval.py --recorded. Writes pass through unchanged.
+        from .evals import RecordingBackend
+
+        backend = recorder = RecordingBackend(backend, role=settings.jazz_role)
     ctx = ToolContext(settings=settings, client=client, store=store, run_id="")
     thread_id = args.resume or f"local-{uuid.uuid4().hex[:8]}"
     # Shown - and remembered - before anything can fail, so an interrupted or
@@ -431,6 +438,8 @@ async def run(settings, args, console) -> dict:
                  f"{commit_flag}, or --resume last{commit_flag})")
 
     def decide(payload):
+        if recorder is not None:
+            recorder.note_approval(payload)
         if settings.shadow_mode:
             # A dry run cannot write, so there is nothing to decide: show the card
             # as a preview of what --commit will ask, and let the plan continue.
@@ -453,6 +462,10 @@ async def run(settings, args, console) -> dict:
             report["policy"] = runtime.policy.summary()
             report["shadow"] = settings.shadow_mode
             report["environment"] = settings.environment
+            if recorder is not None:
+                path = recorder.save(report, dry_run=settings.shadow_mode)
+                report["recorded_scenario"] = str(path)
+                console.line(f"recorded for replay: {path}")
             return report
     finally:
         backend.close()
@@ -522,7 +535,7 @@ async def purge(settings, console, days: int, *, out_dir: Path = OUT_DIR,
     cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=days)
     counts = {
         "runs": 0, "approvals": 0, "memories": 0, "reports": 0, "evidence": 0,
-        "cli_screenshots": 0, "cli_users": 0, "cli_comments": 0,
+        "cli_screenshots": 0, "cli_users": 0, "cli_comments": 0, "recordings": 0,
     }
 
     checkpoints = checkpoint_db_path(settings.ledger_path)
@@ -598,6 +611,12 @@ async def purge(settings, console, days: int, *, out_dir: Path = OUT_DIR,
     capture = cli_out / "comment_capture.json"
     if capture.is_file() and capture.stat().st_mtime < stamp:
         remove(capture, "cli_comments")
+    # Runs recorded for replay (agent_local.py --record) hold requester names.
+    recorded = cli_out / "evals" / "recorded"
+    if recorded.is_dir():
+        for scenario in recorded.glob("*.json"):
+            if scenario.stat().st_mtime < stamp:
+                remove(scenario, "recordings")
 
     verb = "would purge" if dry_run else "purged"
     console.line(f"{verb} local data older than {days} day(s): "
@@ -606,7 +625,8 @@ async def purge(settings, console, days: int, *, out_dir: Path = OUT_DIR,
                  f"report(s), {counts['evidence']} evidence folder(s), "
                  f"{counts['cli_screenshots']} CLI screenshot(s), "
                  f"{counts['cli_users']} CLI user cache(s), "
-                 f"{counts['cli_comments']} CLI comment capture(s)")
+                 f"{counts['cli_comments']} CLI comment capture(s), "
+                 f"{counts['recordings']} recorded run(s)")
     console.line("kept: the agents' ledger and audit trail and the CLI's out/audit "
                  "records - they record what was written and approved")
     if dry_run:
@@ -677,6 +697,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                              "memory, reports, evidence, the CLI's screenshots and user "
                              "caches) older than DAYS, then exit; the ledgers and audit "
                              "records are kept")
+    parser.add_argument("--record", action="store_true",
+                        help="save this run's real reads and outcome to out/evals/recorded/, "
+                             "to replay later with agent_eval.py --recorded (no VPN needed)")
     parser.add_argument("--dry-run", action="store_true",
                         help="with --purge-older-than: list the counts, delete nothing")
     args = parser.parse_args(argv)

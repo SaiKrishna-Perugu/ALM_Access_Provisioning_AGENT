@@ -771,7 +771,7 @@ def test_purge_removes_old_personal_data_and_keeps_the_ledger(tmp_path):
     purged = asyncio.run(purge(settings, Events(), 30, out_dir=out, now=later))
     assert purged == preview == {
         "runs": 1, "approvals": 1, "memories": 1, "reports": 1, "evidence": 1,
-        "cli_screenshots": 0, "cli_users": 0, "cli_comments": 0,
+        "cli_screenshots": 0, "cli_users": 0, "cli_comments": 0, "recordings": 0,
     }
     assert not (out / "run-old.json").exists()
     assert not (out / "evidence" / "old").exists()

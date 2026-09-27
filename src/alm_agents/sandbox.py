@@ -358,11 +358,12 @@ def load_env() -> None:
         return
 
 
-def build_settings(*, shadow: bool, model: str = "", rpm: float = 0.0):
-    """Sandbox settings: agentic, in-memory, TEST, and never production."""
+def build_settings(*, shadow: bool, model: str = "", rpm: float = 0.0,
+                   orchestration: str = "agentic"):
+    """Sandbox settings: in-memory, TEST, and never production."""
     from alm_core.config import Settings
 
-    overrides: dict = {"environment": "TEST", "orchestration": "agentic",
+    overrides: dict = {"environment": "TEST", "orchestration": orchestration,
                        "llm_enabled": True, "postgres_dsn": "",
                        # Validation insists on a ledger DSN outside shadow mode;
                        # the sandbox's ledger is in memory, so shadow is switched
