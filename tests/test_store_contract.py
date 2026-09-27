@@ -225,3 +225,73 @@ def test_writes_without_any_durable_ledger_are_refused():
 
     with pytest.raises(Exception, match="ALM_LEDGER_PATH"):
         Settings(_env_file=None, orchestration="deterministic", shadow_mode=False)
+
+
+# ------------------------------------------------------------ schema version
+
+def _sqlite_or_skip():
+    pytest.importorskip("aiosqlite")
+    from alm_core.store import sqlite
+
+    return sqlite
+
+
+def test_a_new_ledger_records_its_schema_version_once(tmp_path):
+    sqlite = _sqlite_or_skip()
+
+    async def scenario():
+        store = sqlite.SqliteStore(str(tmp_path / "alm.db"))
+        await store.start()
+        await store.migrate()
+        await store.migrate()  # every run migrates; it must stay one row
+        rows = await store._fetchall("SELECT version FROM alm_schema_version")
+        version = await store.schema_version()
+        await store.close()
+        return rows, version
+
+    rows, version = asyncio.run(scenario())
+    assert version == sqlite.SCHEMA_VERSION
+    assert len(rows) == len(sqlite.MIGRATIONS)
+
+
+def test_an_older_ledger_is_upgraded_step_by_step(tmp_path, monkeypatch):
+    sqlite = _sqlite_or_skip()
+    path = str(tmp_path / "alm.db")
+
+    async def open_and_migrate():
+        store = sqlite.SqliteStore(path)
+        await store.start()
+        await store.migrate()
+        return store
+
+    async def scenario():
+        await (await open_and_migrate()).close()  # a ledger at version 1
+        monkeypatch.setattr(sqlite, "MIGRATIONS", sqlite.MIGRATIONS + [
+            (2, "ALTER TABLE alm_approval ADD COLUMN note TEXT NOT NULL DEFAULT '';")])
+        monkeypatch.setattr(sqlite, "SCHEMA_VERSION", 2)
+        store = await open_and_migrate()
+        columns = [r[1] for r in await store._fetchall("PRAGMA table_info(alm_approval)")]
+        version = await store.schema_version()
+        await store.close()
+        return columns, version
+
+    columns, version = asyncio.run(scenario())
+    assert "note" in columns and version == 2
+
+
+def test_a_ledger_from_newer_code_is_refused(tmp_path):
+    sqlite = _sqlite_or_skip()
+    from alm_core.errors import ConfigError
+
+    async def scenario():
+        store = sqlite.SqliteStore(str(tmp_path / "alm.db"))
+        await store.start()
+        await store.migrate()
+        await store._conn().execute("INSERT INTO alm_schema_version VALUES (99)")
+        try:
+            await store.migrate()
+        finally:
+            await store.close()
+
+    with pytest.raises(ConfigError, match="newer version"):
+        asyncio.run(scenario())

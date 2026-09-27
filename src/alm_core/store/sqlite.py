@@ -85,6 +85,14 @@ CREATE TABLE IF NOT EXISTS alm_approval (
 CREATE INDEX IF NOT EXISTS alm_approval_run ON alm_approval (run_id);
 """
 
+# Schema changes are appended here, never edited: (version, SQL to reach it).
+# Version 1 is SCHEMA_SQL itself, which every ledger file already has. A new
+# column, say, becomes (2, "ALTER TABLE alm_audit ADD COLUMN ...;").
+MIGRATIONS: list[tuple[int, str]] = [
+    (1, ""),
+]
+SCHEMA_VERSION = MIGRATIONS[-1][0]
+
 
 def _json(value: Any) -> str:
     return json.dumps(value, default=str, ensure_ascii=False)
@@ -136,7 +144,34 @@ class SqliteStore:
             self._db = None
 
     async def migrate(self) -> None:
-        await self._conn().executescript(SCHEMA_SQL)
+        """Create the tables, then bring the file's schema up to this code's version.
+
+        The version lives in the file, so a ``git pull`` that changes the schema
+        upgrades an existing ledger step by step - and a ledger written by newer
+        code is refused rather than misread.
+        """
+        db = self._conn()
+        await db.executescript(SCHEMA_SQL)
+        await db.execute("CREATE TABLE IF NOT EXISTS alm_schema_version "
+                         "(version INTEGER NOT NULL)")
+        row = await self._fetchone("SELECT MAX(version) FROM alm_schema_version")
+        current = row[0] if row and row[0] is not None else 0
+        if current > SCHEMA_VERSION:
+            raise ConfigError(
+                f"{self.path} was written by a newer version of this tool (schema "
+                f"{current}; this code knows {SCHEMA_VERSION}). Update the code "
+                "(git pull) before using this ledger.")
+        for version, statements in MIGRATIONS:
+            if version > current:
+                if statements:
+                    await db.executescript(statements)
+                await db.execute("INSERT INTO alm_schema_version (version) VALUES (?)",
+                                 (version,))
+                log.info("ledger_schema_migrated", path=self.path, version=version)
+
+    async def schema_version(self) -> int:
+        row = await self._fetchone("SELECT MAX(version) FROM alm_schema_version")
+        return row[0] if row and row[0] is not None else 0
 
     def _conn(self):
         if self._db is None:
