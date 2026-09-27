@@ -4,9 +4,9 @@ version = "1.1.0"
 description = "Retrieve ALM Access Requests from EWM and provision the requested users into JTS and the GPT AD group."
 requires-python = ">=3.10"
 dependencies = [
-    "requests==2.32.3",
-    "python-dotenv==1.2.2",
-    "playwright==1.61.0",
+    "requests==2.34.2",
+    "python-dotenv==1.2.3",
+    "playwright==1.63.0",
 ]
 
 [project.optional-dependencies]
