@@ -1,3 +1,8 @@
+# `pre-commit install` installs both hook types. Hooks run at commit time
+# unless they name another stage (no-push-to-main runs only on push).
+default_install_hook_types: [pre-commit, pre-push]
+default_stages: [pre-commit]
+
 repos:
   # 1. Standard Built-in Git Safety Checks
   - repo: https://github.com/pre-commit/pre-commit-hooks
@@ -44,6 +49,14 @@ repos:
         entry: python .github/hooks/scripts/guard-pii.py
         language: system
         stages: [pre-commit]
+
+      - id: no-push-to-main
+        name: no direct push to main (use a pull request)
+        entry: python .github/hooks/scripts/no-push-to-main.py
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
 
       - id: pytest
         name: pytest (offline suite)
