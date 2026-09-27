@@ -2,8 +2,14 @@
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
-from alm_api.chat import build_card, post_card
-from alm_core.models import (
+import pytest
+
+# alm_core needs pydantic: these run in the agents CI job, and skip in the
+# CLI-only test job that installs requirements.txt alone.
+pytest.importorskip("pydantic")
+
+from alm_api.chat import build_card, post_card  # noqa: E402
+from alm_core.models import (  # noqa: E402
     ApprovalItem,
     ApprovalRequest,
     RiskLevel,

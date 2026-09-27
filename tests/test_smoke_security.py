@@ -4,7 +4,13 @@ from __future__ import annotations
 import ssl
 from unittest.mock import MagicMock, patch
 
-from alm_core.smoke import check_dns, check_tls
+import pytest
+
+# alm_core needs pydantic: these run in the agents CI job, and skip in the
+# CLI-only test job that installs requirements.txt alone.
+pytest.importorskip("pydantic")
+
+from alm_core.smoke import check_dns, check_tls  # noqa: E402
 
 
 def test_check_tls_uses_cert_none_only_when_ca_bundle_is_false():

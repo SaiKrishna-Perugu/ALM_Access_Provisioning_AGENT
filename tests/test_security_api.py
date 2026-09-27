@@ -3,7 +3,12 @@ from __future__ import annotations
 
 import time
 
-from alm_api.security import (
+import pytest
+
+# alm_api needs alm_core, which needs pydantic: skipped in the CLI-only job.
+pytest.importorskip("pydantic")
+
+from alm_api.security import (  # noqa: E402
     ReplayGuard,
     caller_identity,
     issue_approval_token,

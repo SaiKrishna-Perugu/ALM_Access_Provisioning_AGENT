@@ -69,7 +69,10 @@ def _is_commit(cmd: str) -> bool:
 def _script(cmd: str) -> str:
     """The stem of the first *.py that looks like one of our entry points."""
     for token in _tokens(cmd):
-        stem = os.path.splitext(os.path.basename(token.strip('"\'')))[0]
+        # Windows paths ("src\jts_import_users.py") on any OS: posix basename
+        # does not split on a backslash, which let the command through unguarded.
+        path = token.strip('"\'').replace("\\", "/")
+        stem = os.path.splitext(os.path.basename(path))[0]
         if stem in USER_FILE_SCRIPTS or stem in ALWAYS_ALLOWED or stem == "run_pipeline":
             return stem
     return ""

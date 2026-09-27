@@ -128,4 +128,7 @@ jobs:
           # The PII guard's denylist is personal data, so it lives in a
           # repository secret (one token per line), never in the repository.
           PII_DENYLIST: ${{ secrets.PII_DENYLIST }}
+          # The test jobs above run the suite with its dependencies installed;
+          # this job has only pre-commit, so its pytest hook cannot run here.
+          SKIP: pytest
         run: pre-commit run --all-files --show-diff-on-failure

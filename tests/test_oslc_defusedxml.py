@@ -3,8 +3,12 @@ from __future__ import annotations
 
 import pytest
 
-from alm_core.errors import AuthorizationError, ParseError
-from alm_core.oslc import parse_xml
+# alm_core needs pydantic: these run in the agents CI job, and skip in the
+# CLI-only test job that installs requirements.txt alone.
+pytest.importorskip("pydantic")
+
+from alm_core.errors import AuthorizationError, ParseError  # noqa: E402
+from alm_core.oslc import parse_xml  # noqa: E402
 
 
 def test_parse_xml_valid():

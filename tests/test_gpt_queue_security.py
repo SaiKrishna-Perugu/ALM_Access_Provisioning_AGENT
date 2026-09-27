@@ -3,8 +3,14 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from alm_core.models import Operation, idempotency_key
-from alm_core.tools.gpt_queue import PubSubPublisher, build_job
+import pytest
+
+# alm_core needs pydantic: these run in the agents CI job, and skip in the
+# CLI-only test job that installs requirements.txt alone.
+pytest.importorskip("pydantic")
+
+from alm_core.models import Operation, idempotency_key  # noqa: E402
+from alm_core.tools.gpt_queue import PubSubPublisher, build_job  # noqa: E402
 
 
 def test_build_job_payload_contains_no_personal_data_beyond_userid():
