@@ -1,7 +1,7 @@
 # PRODUCTION.
 # diffed against the manual outcome.
 
-project_id  = ""            # required
+project_id  = "" # required
 region      = "europe-west1"
 environment = "prod"
 
@@ -18,7 +18,7 @@ interconnect_router_name = ""
 # (EWM_SERVER, JTS_SERVER, CORPORATE_DNS_SUFFIX) and are never committed.
 service_account_cid = ""
 
-container_image = ""        # set by CI to an image digest
+container_image = "" # set by CI to an image digest
 
 # Google group whose members may open the approval UI through IAP.
 approver_group = ""
@@ -28,7 +28,7 @@ github_repository  = ""
 onprem_wif_issuer  = ""
 onprem_wif_subject = ""
 
-orchestration    = "agentic"
+orchestration = "agentic"
 # vertex: the service account calls Gemini on Vertex AI - no API key exists.
 # gemini_api: a Gemini Developer API key, read from Secret Manager.
 llm_provider     = "vertex"

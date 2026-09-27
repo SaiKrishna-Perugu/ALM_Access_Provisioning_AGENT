@@ -120,7 +120,7 @@ resource "google_cloud_run_v2_service" "api" {
       env {
         // IAM database authentication: no password in the DSN. The application
         // appends a short-lived access token at connect time.
-        name  = "ALM_POSTGRES_DSN"
+        name = "ALM_POSTGRES_DSN"
         value = join("", [
           "postgresql://",
           trimsuffix(google_service_account.run.email, ".gserviceaccount.com"),

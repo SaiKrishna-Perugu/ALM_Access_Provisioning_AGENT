@@ -28,10 +28,10 @@ resource "google_service_account" "deploy" {
 // ------------------------------------------------------------------ runtime
 locals {
   run_roles = [
-    "roles/cloudsql.client",         // connect to the instance
-    "roles/cloudsql.instanceUser",   // authenticate as an IAM database user
-    "roles/pubsub.publisher",        // publish AD jobs
-    "roles/aiplatform.user",         // call Vertex AI models
+    "roles/cloudsql.client",       // connect to the instance
+    "roles/cloudsql.instanceUser", // authenticate as an IAM database user
+    "roles/pubsub.publisher",      // publish AD jobs
+    "roles/aiplatform.user",       // call Vertex AI models
     "roles/logging.logWriter",
     "roles/cloudtrace.agent",
     "roles/monitoring.metricWriter",
