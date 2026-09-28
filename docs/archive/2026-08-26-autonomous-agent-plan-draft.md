@@ -1,5 +1,8 @@
 # Plan: Autonomous Multi-Agent ALM Provisioning on Google Cloud
 
+> **Archived.** The first draft (2026-08-26), kept for history. It was implemented,
+> and the current design is [AUTONOMOUS_ARCHITECTURE.md](../AUTONOMOUS_ARCHITECTURE.md).
+
 > Status: Draft for review — 2026-08-26
 > Scope: Convert the ALM Access Retrieval toolkit from human-driven Copilot chat modes
 > into an autonomous multi-agent system deployed on Google Cloud.

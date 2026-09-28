@@ -99,3 +99,44 @@ def test_purge_cli_artifacts(tmp_path):
     # Recent files still present
     assert new_audit.exists()
     assert new_shot.exists()
+
+
+def test_purge_covers_backups_stale_cli_state_and_test_output(tmp_path):
+    """Found in the clean-up: screenshots.bad-*/.stale-* backups (real profiles),
+    dryrun.log, pipeline_state.json and sandbox/eval output were never purged."""
+    out = tmp_path / "out"
+    local_dir = out / "local"
+    local_dir.mkdir(parents=True)
+    backup = out / "screenshots.bad-20260827T184732"
+    backup.mkdir()
+    (backup / "AB12345.png").write_bytes(b"png")
+    (out / "dryrun.log").write_text("log", encoding="utf-8")
+    (out / "pipeline_state.json").write_text("{}", encoding="utf-8")
+    sandbox_report = out / "sandbox" / "run-1.json"
+    sandbox_report.parent.mkdir()
+    sandbox_report.write_text("{}", encoding="utf-8")
+    recorded = out / "evals" / "recorded" / "run-x.json"
+    recorded.parent.mkdir(parents=True)
+    recorded.write_text("{}", encoding="utf-8")
+    fresh_backup = out / "screenshots.stale-20260926"
+    fresh_backup.mkdir()
+    (fresh_backup / "CD67890.png").write_bytes(b"png")
+
+    now = datetime.now(timezone.utc)
+    old = (now - timedelta(days=45)).timestamp()
+    for path in (backup / "AB12345.png", backup, out / "dryrun.log",
+                 out / "pipeline_state.json", sandbox_report, sandbox_report.parent,
+                 recorded, recorded.parent):
+        os.utime(path, (old, old))
+
+    settings = Settings(_env_file=None, environment="TEST",
+                        ledger_path=str(local_dir / "alm.db"))
+    purged = asyncio.run(purge(settings, Events(), 30, out_dir=local_dir, now=now))
+
+    assert purged["cli_backups"] == 1 and not backup.exists()
+    assert purged["cli_state"] == 2
+    assert not (out / "dryrun.log").exists() and not (out / "pipeline_state.json").exists()
+    assert purged["test_runs"] == 1 and not sandbox_report.exists()
+    assert purged["recordings"] == 1 and not recorded.exists()
+    assert recorded.parent.exists()  # the recordings folder itself is left in place
+    assert fresh_backup.exists()  # a recent backup is kept

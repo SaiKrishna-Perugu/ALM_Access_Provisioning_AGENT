@@ -33,7 +33,6 @@ typesafe-sdk==0.7.1
 # [email] brings email-validator, which pydantic's EmailStr needs at import time.
 pydantic[email]==2.13.4
 pydantic-settings==2.15.0
-defusedxml==0.7.1
 
 # --- API / approval surface -------------------------------------------------
 fastapi==0.141.1

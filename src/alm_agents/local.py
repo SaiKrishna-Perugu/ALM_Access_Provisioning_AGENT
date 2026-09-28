@@ -513,8 +513,10 @@ async def purge(settings, console, days: int, *, out_dir: Path = OUT_DIR,
 
     Removed - the agents': run checkpoints (the whole state of a run, names
     included), approval cards, agent memory, run reports and evidence
-    screenshots; the CLI's: profile screenshots, the user caches
-    (``alm_users*.json``) and ``comment_capture.json``.
+    screenshots; the CLI's: profile screenshots and any ``screenshots.*`` backup
+    folders, the user caches (``alm_users*.json``), ``comment_capture.json``,
+    ``dryrun.log`` and ``pipeline_state.json``; runs recorded for replay; and
+    sandbox and eval output.
 
     Kept: the agents' idempotency ledger and append-only audit trail, and the
     CLI's ``out/audit`` records - the record of what was written and approved.
@@ -536,6 +538,7 @@ async def purge(settings, console, days: int, *, out_dir: Path = OUT_DIR,
     counts = {
         "runs": 0, "approvals": 0, "memories": 0, "reports": 0, "evidence": 0,
         "cli_screenshots": 0, "cli_users": 0, "cli_comments": 0, "recordings": 0,
+        "cli_backups": 0, "cli_state": 0, "test_runs": 0,
     }
 
     checkpoints = checkpoint_db_path(settings.ledger_path)
@@ -618,6 +621,27 @@ async def purge(settings, console, days: int, *, out_dir: Path = OUT_DIR,
             if scenario.stat().st_mtime < stamp:
                 remove(scenario, "recordings")
 
+    def newest(path: Path) -> float:
+        times = [f.stat().st_mtime for f in path.rglob("*")] if path.is_dir() else []
+        return max(times + [path.stat().st_mtime])
+
+    # Debug backups of the CLI's screenshots (screenshots.bad-*, .stale-*): real
+    # users' profile pages, kept by hand and never cleaned up.
+    for backup in cli_out.glob("screenshots.*"):
+        if backup.is_dir() and newest(backup) < stamp:
+            remove(backup, "cli_backups")
+    # The CLI's dry-run log and resume state: stale once the run is long over.
+    for name in ("dryrun.log", "pipeline_state.json"):
+        leftover = cli_out / name
+        if leftover.is_file() and leftover.stat().st_mtime < stamp:
+            remove(leftover, "cli_state")
+    # Sandbox and eval output (synthetic estate). Recorded runs are handled above.
+    for folder in (cli_out / "sandbox", cli_out / "evals"):
+        if folder.is_dir():
+            for item in folder.iterdir():
+                if item.name != "recorded" and newest(item) < stamp:
+                    remove(item, "test_runs")
+
     verb = "would purge" if dry_run else "purged"
     console.line(f"{verb} local data older than {days} day(s): "
                  f"{counts['runs']} run checkpoint(s), {counts['approvals']} approval "
@@ -626,7 +650,10 @@ async def purge(settings, console, days: int, *, out_dir: Path = OUT_DIR,
                  f"{counts['cli_screenshots']} CLI screenshot(s), "
                  f"{counts['cli_users']} CLI user cache(s), "
                  f"{counts['cli_comments']} CLI comment capture(s), "
-                 f"{counts['recordings']} recorded run(s)")
+                 f"{counts['recordings']} recorded run(s), "
+                 f"{counts['cli_backups']} old screenshot backup folder(s), "
+                 f"{counts['cli_state']} old CLI log/state file(s), "
+                 f"{counts['test_runs']} sandbox/eval output(s)")
     console.line("kept: the agents' ledger and audit trail and the CLI's out/audit "
                  "records - they record what was written and approved")
     if dry_run:

@@ -7,6 +7,23 @@ The local ledger (`out/local/alm.db`) has a schema version. A newer version of
 the code upgrades an older file automatically the next time it runs; a file
 written by newer code is refused until you update.
 
+## 2026-09-28: clean-up
+
+**Do after pulling:** `.\scripts\setup.ps1` (the CLI now declares `defusedxml` in `pyproject.toml`).
+
+- **Purge coverage.** `--purge-older-than` also removes:
+  - old `out/screenshots.*` backup folders (real users' profile pages);
+  - the CLI's stale `dryrun.log` and `pipeline_state.json`;
+  - sandbox and eval output.
+- **Dependencies aligned.** `pyproject.toml` matches the requirements files: `requests` 2.34.2 (the patched version), `defusedxml`, and a `fastapi` floor of 0.141. A duplicate line in `requirements-cloud.txt` is gone.
+- **Archived draft.** The first design draft moved to `docs/archive/2026-08-26-autonomous-agent-plan-draft.md`, renamed from its misspelled file name. The current design is `docs/AUTONOMOUS_ARCHITECTURE.md`.
+- **Workspace.** About 4 MB of stale local files were removed from the workspace (none were tracked by git).
+- **Kept on purpose:**
+  - the CLI scripts, which are the production path;
+  - `ewm_workitems.py`, a documented diagnostic tool;
+  - the `.github` chat modes and prompts, which drive the CLI;
+  - the shared `idempotency.already_reported` import, which is what lets the CLI and the agents recognise each other's comments.
+
 ## 2026-09-27: evaluation suite, schema versioning, security hardening
 
 **Do after pulling:**
