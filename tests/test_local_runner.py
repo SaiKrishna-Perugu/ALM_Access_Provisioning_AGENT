@@ -772,6 +772,7 @@ def test_purge_removes_old_personal_data_and_keeps_the_ledger(tmp_path):
     assert purged == preview == {
         "runs": 1, "approvals": 1, "memories": 1, "reports": 1, "evidence": 1,
         "cli_screenshots": 0, "cli_users": 0, "cli_comments": 0, "recordings": 0,
+        "cli_backups": 0, "cli_state": 0, "test_runs": 0,
     }
     assert not (out / "run-old.json").exists()
     assert not (out / "evidence" / "old").exists()

@@ -4,7 +4,8 @@ version = "1.1.0"
 description = "Retrieve ALM Access Requests from EWM and provision the requested users into JTS and the GPT AD group."
 requires-python = ">=3.10"
 dependencies = [
-    "requests==2.32.3",
+    "requests==2.34.2",
+    "defusedxml==0.7.1",
     "python-dotenv==1.2.2",
     "playwright==1.61.0",
 ]
@@ -22,7 +23,7 @@ cloud = [
     "langchain-google-genai>=4.3",
     "langchain-google-vertexai>=3.2",
     "typesafe-sdk>=0.7.1",
-    "fastapi>=0.115",
+    "fastapi>=0.141",
     "uvicorn[standard]>=0.34",
     "pydantic[email]>=2.10",
     "pydantic-settings>=2.7",

@@ -1,6 +1,6 @@
 # Autonomous ALM Provisioning — Architecture
 
-> Implements [docs/Autonoums Agent Plan.md](Autonoums%20Agent%20Plan.md).
+> Implements the first plan, now archived as [docs/archive/2026-08-26-autonomous-agent-plan-draft.md](archive/2026-08-26-autonomous-agent-plan-draft.md).
 > Status: **code complete; never run against the live estate.** Written without
 > access to the intranet, the Google Cloud project or Cloud DNS. Nothing here has
 > run against EWM, JTS, GPT, Postgres or Pub/Sub. The agent layer *is* exercised
