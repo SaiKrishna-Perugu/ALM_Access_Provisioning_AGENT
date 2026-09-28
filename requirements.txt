@@ -3,5 +3,5 @@
 # idna, urllib3) are resolved automatically.
 requests==2.34.2
 defusedxml==0.7.1
-python-dotenv==1.2.2
-playwright==1.61.0
+python-dotenv==1.2.3
+playwright==1.63.0
