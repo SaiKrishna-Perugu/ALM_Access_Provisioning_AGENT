@@ -282,6 +282,19 @@ change, reviewed like any other code.
 | `resume refused: run ... was started as a commit` (or `dry run`) | A run resumes in the mode it started in. Use the command the message gives |
 | `--commit needs --work-item <id>` | A run that writes must name its work items (at most 5). Dry runs may scan the queue |
 
+**Web console (`python src/agent_web.py`)**
+
+| Symptom | Cause and fix |
+|---|---|
+| "Sign in from the terminal" page | Opened without the link, or the console was restarted. Use the link the terminal printed last |
+| `unexpected Host header` | The page was opened by a name other than `127.0.0.1` or `localhost`. Use the printed link |
+| `request did not come from this console` / `CSRF token` | A stale tab from an earlier console. Reload it with the new link |
+| `A run is already in progress` | One run at a time. Decide or wait for the current one (the list on the left) |
+| `A run that writes must name its work items` / `Type COMMIT` | By design: name 1-5 work items by number and type the word shown |
+| `setup: sign-in failed` at start-up | As for `agent_local.py`: CID, password, VPN, `ALM_CA_BUNDLE`. Nothing was written |
+| A writing run waits at the card and nobody decides | After 4 hours the batch is rejected and the run stops. Nothing was written after the gate |
+| Port in use | Another console is running. Stop it, or pass `--port 8766` |
+
 Everything a local run did is in `out/local/run-<run_id>.json` and in the
 `alm_audit` table of `out/local/alm.db` (the SQL in section 1 works unchanged in
 any SQLite client).

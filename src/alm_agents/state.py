@@ -49,6 +49,9 @@ class PipelineState(TypedDict, total=False):
     # otherwise a dry run's preview approval could authorise real writes, or a
     # paused real run could silently become a dry run.
     run_mode: str
+    # What the operator typed, when a run is started from the web console. It
+    # informs the supervisor; it never sets scope or mode - the server does.
+    operator_request: str
     # How many routing decisions needed the supervisor model (guided mode asks
     # it only on exceptions). Kept in state so metrics survive a resume.
     supervisor_model_calls: int
@@ -95,12 +98,13 @@ class PipelineState(TypedDict, total=False):
 
 def new_state(run_id: str, thread_id: str, environment: str,
               trigger: str = "manual", work_item_ids: list[str] | None = None,
-              run_mode: str = "") -> PipelineState:
+              run_mode: str = "", operator_request: str = "") -> PipelineState:
     return PipelineState(
         run_id=run_id,
         thread_id=thread_id,
         environment=environment,
         run_mode=run_mode,
+        operator_request=operator_request,
         trigger=trigger,
         work_item_ids=work_item_ids or [],
         work_items=[],

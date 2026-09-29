@@ -299,7 +299,7 @@ def run_mode_of(ctx: ToolContext) -> str:
 
 async def start_run(graph, ctx: ToolContext, *, thread_id: str,
                     work_item_ids: list[str] | None = None,
-                    trigger: str = "manual") -> dict:
+                    trigger: str = "manual", operator_request: str = "") -> dict:
     """Begin a run. Returns the graph result, which may be an interrupt."""
     run_id = new_run_id()
     ctx.run_id = run_id
@@ -310,7 +310,7 @@ async def start_run(graph, ctx: ToolContext, *, thread_id: str,
 
     bind_run(run_id=run_id, thread_id=thread_id)
     state = new_state(run_id, thread_id, ctx.environment, trigger, work_item_ids,
-                      run_mode=run_mode_of(ctx))
+                      run_mode=run_mode_of(ctx), operator_request=operator_request)
     log.info("run_started", trigger=trigger, work_items=work_item_ids or "queue",
              shadow=ctx.shadow)
     return await graph.ainvoke(state, config=run_config(thread_id))

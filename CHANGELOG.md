@@ -7,6 +7,24 @@ The local ledger (`out/local/alm.db`) has a schema version. A newer version of
 the code upgrades an older file automatically the next time it runs; a file
 written by newer code is refused until you update.
 
+## 2026-09-30: web console
+
+**Do after pulling:** `.\scripts\setup.ps1 -Agents` (FastAPI and uvicorn, already in `requirements-cloud.txt`).
+
+- **New: `python src/agent_web.py`.** A browser console for the agents.
+  - Type a request and watch every routing decision and tool call as it happens.
+  - Approve the card by ticking users.
+  - `--sandbox` runs against the simulated estate from anywhere.
+  - Without `--sandbox` it uses the real EWM/JTS: the Jazz password is asked once, in the terminal.
+- **Security.**
+  - Listens on 127.0.0.1 only and checks the Host header.
+  - Sign-in is through the one-time link, which becomes an HttpOnly, SameSite=Strict cookie.
+  - Every POST needs the page's Origin and CSRF token.
+  - Strict CSP; no third-party requests.
+  - A writing run needs the Write switch, 1–5 work items named by number, and a typed `COMMIT`/`PROD`.
+- **Approving some of the users.** The approval gate no longer re-opens for users who were on the card and left unticked: they are declined, and the policy refuses writes for them. It still re-opens for users added after the decision.
+- **Runs remember what was asked.** The operator's request is stored with the run and shown to the main agent as context. It never sets the mode or the scope.
+
 ## 2026-09-28: clean-up
 
 **Do after pulling:** `.\scripts\setup.ps1` (the CLI now declares `defusedxml` in `pyproject.toml`).
