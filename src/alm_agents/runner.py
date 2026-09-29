@@ -135,7 +135,7 @@ class RunModeMismatch(Exception):
 
 async def drive(graph, ctx, *, thread_id: str, decide, console: Console,
                 resume: bool = False, work_item_ids: list[str] | None = None,
-                trigger: str = "manual") -> dict:
+                trigger: str = "manual", operator_request: str = "") -> dict:
     """Start (or resume) a run and see it through every approval pause.
 
     ``decide(payload) -> ApprovalDecision`` answers each pause. On ``resume`` the
@@ -167,7 +167,7 @@ async def drive(graph, ctx, *, thread_id: str, decide, console: Console,
             await graph.ainvoke(None, config=config)
     else:
         await start_run(graph, ctx, thread_id=thread_id, work_item_ids=work_item_ids,
-                        trigger=trigger)
+                        trigger=trigger, operator_request=operator_request)
 
     approvals = 0
     while True:

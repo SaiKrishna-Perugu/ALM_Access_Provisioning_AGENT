@@ -414,6 +414,36 @@ python src/agent_local.py --purge-older-than 30        # delete run data older t
 python src/agent_local.py --work-item 123456 --record  # also save the run for replay off the VPN
 ```
 
+### The web console
+
+The same agents, driven from a page in your browser: type what you want, watch
+the main agent route the specialists live, and approve the card with checkboxes.
+
+```powershell
+python src/agent_web.py --sandbox     # simulated estate, real Gemini - works anywhere
+python src/agent_web.py               # real EWM/JTS: asks the Jazz password once, in the terminal
+```
+
+It prints a one-time link (and opens it). What keeps it safe:
+
+- **This computer only.** The console listens on `127.0.0.1` and refuses any
+  other Host header.
+- **The link is the key.** It signs the browser in with an HttpOnly,
+  SameSite=Strict cookie. A restart makes a new link.
+- **Your words can't widen a run.** Work items are the numbers in your request.
+  Writing needs the **Write** switch and 1–5 named work items, and you must type
+  `COMMIT` (`PROD` on production).
+- **You pick who is written.** A writing run pauses at the card. Only the users
+  you tick are written; everyone left unticked is declined. High-risk users
+  start unticked.
+- **The password stays in the terminal.** The page never sees it.
+- **The page is locked down.** No third-party requests, a strict
+  Content-Security-Policy, and all agent output is shown as text.
+
+One run at a time. The page lists this session's runs. A real run keeps the same
+records as `agent_local.py` (`out/local/`), so the ledger stops either tool from
+repeating the other's writes.
+
 To check the agents after a prompt, roster or model change, with no VPN:
 
 ```powershell

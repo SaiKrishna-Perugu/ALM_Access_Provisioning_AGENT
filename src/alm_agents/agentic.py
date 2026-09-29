@@ -120,6 +120,9 @@ class AgenticRuntime:
             "scope": sorted(self.board.scope) or "the whole active queue",
             "hops_used": state.get("hops", 0),
             "hops_remaining": self.max_hops - state.get("hops", 0),
+            # The operator's own words, for context only: scope and write mode
+            # were fixed by the console before the run started.
+            "operator_request": state.get("operator_request") or "",
         }
 
 
@@ -383,7 +386,9 @@ def needs_approval(state: PipelineState) -> bool:
     """Whether the gate must open before anything else happens.
 
     Either an agent asked for a human and nobody has decided, or the run now
-    holds users the existing approval never showed to anyone.
+    holds users the existing approval never showed to anyone. A user the
+    human saw and left unticked is decided (declined), not new: asking again
+    would loop, and the policy already refuses writes for them.
     """
     board = state.get("board") or {}
     approval = state.get("approval")
@@ -392,7 +397,16 @@ def needs_approval(state: PipelineState) -> bool:
     approved = {u.upper() for u in (getattr(approval, "approved_userids", None) or [])}
     if not approved or not getattr(approval, "approved", False):
         return False  # a legacy decision, or a rejection that already halted the run
-    return bool({u.upper() for u in (board.get("users") or {})} - approved)
+    shown = {_field(i, "userid").upper()
+             for i in _field(state.get("approval_request"), "items") or []}
+    return bool({u.upper() for u in (board.get("users") or {})} - approved - shown)
+
+
+def _field(obj, name: str):
+    """A field of a model, or of the dict a checkpoint may hold instead."""
+    if isinstance(obj, dict):
+        return obj.get(name) or ""
+    return getattr(obj, name, "") or ""
 
 
 def route_from_supervisor(state: PipelineState) -> str:

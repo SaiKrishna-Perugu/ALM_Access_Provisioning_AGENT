@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<link rel="icon" href="data:,">
+<title>ALM Access Console</title>
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/app.js" defer></script>
+</head>
+<body>
+<header class="topbar">
+  <div class="wordmark"><b>ALM Access Console</b><span>multi-agent provisioning</span></div>
+  <span id="env" class="pill"><span class="dot"></span><span id="env-text">…</span></span>
+  <span id="model" class="pill"></span>
+  <span id="operator" class="pill"></span>
+  <button id="theme" class="iconbtn" type="button" aria-label="Switch light or dark theme">Theme</button>
+</header>
+
+<div class="layout">
+  <nav class="panel runs" aria-label="Runs">
+    <p class="label">Runs this session</p>
+    <ol id="runs"></ol>
+    <p id="no-runs" class="empty-runs">No runs yet. Start one with a request.</p>
+  </nav>
+
+  <main class="center">
+    <section class="panel composer" aria-labelledby="ask">
+      <h1 id="ask">What should the agents do?</h1>
+      <p class="sub">Name the work items by number. The main agent routes the nine specialists;
+        nothing is written unless you switch to <b>Write</b>, confirm, and approve the card.</p>
+      <form id="request">
+        <label for="prompt" class="label">Request</label>
+        <textarea id="prompt" name="prompt" maxlength="2000"
+          placeholder="e.g. Provision the users on work item 1001 and report back"></textarea>
+        <div id="examples" class="examples" aria-label="Example requests"></div>
+
+        <div class="controls">
+          <div class="segmented" role="group" aria-label="Run mode">
+            <button type="button" data-mode="dry" aria-pressed="true">Dry run</button>
+            <button type="button" data-mode="commit" aria-pressed="false">Write</button>
+          </div>
+          <div class="scope-preview" aria-live="polite">
+            <span class="muted">Scope:</span><span id="scope"></span>
+          </div>
+          <button id="start" class="primary" type="submit">Start run</button>
+        </div>
+
+        <div id="confirm-row" class="confirm" hidden>
+          <label for="confirm">This run writes to <span id="confirm-env"></span>. Type
+            <b class="mono" id="confirm-word">COMMIT</b> to confirm:</label>
+          <input id="confirm" name="confirm" autocomplete="off" spellcheck="false" maxlength="20">
+        </div>
+        <p id="form-error" class="form-error" role="alert" hidden></p>
+      </form>
+    </section>
+
+    <section class="panel" aria-labelledby="tl-title">
+      <div class="timeline-head">
+        <h2 id="tl-title">Live activity</h2>
+        <span id="tl-status"></span>
+        <span id="tl-mode"></span>
+        <span id="tl-thread" class="thread"></span>
+      </div>
+      <ol id="timeline" class="timeline" aria-live="polite"></ol>
+      <p id="tl-empty" class="placeholder">When a run starts, every routing decision, tool call
+        and approval appears here as it happens.</p>
+    </section>
+  </main>
+
+  <aside class="inspector" aria-label="Run details">
+    <section id="approval" class="panel section approval" hidden aria-live="assertive"></section>
+
+    <section class="panel section">
+      <p class="label">Route</p>
+      <ol id="route" class="route"></ol>
+    </section>
+
+    <section id="outcome" class="panel section" hidden>
+      <p class="label">Outcome</p>
+      <div id="outcome-body"></div>
+    </section>
+
+    <section class="panel section">
+      <p class="label">This run</p>
+      <dl id="facts" class="facts"><dt>Status</dt><dd class="muted">No run selected</dd></dl>
+    </section>
+
+    <section class="panel section guard">
+      <p class="label">Safeguards</p>
+      <ul>
+        <li>This console answers only on this computer, and only to the link printed in the terminal.</li>
+        <li>Work items come from the numbers in your request; the words cannot widen a run.</li>
+        <li>Writing needs the Write switch, a typed confirmation and your approval of each user.</li>
+        <li>Your Jazz password stays in the terminal; it never reaches this page.</li>
+      </ul>
+    </section>
+  </aside>
+</div>
+</body>
+</html>

@@ -379,8 +379,14 @@ def pin_password(resolver, key: str, value: str) -> None:
 
 # ----------------------------------------------------------------------- run
 
-async def run(settings, args, console) -> dict:
-    """One real run, start to finish, including every approval pause."""
+async def run(settings, args, console, *, resolver=None, decide=None,
+              thread_id: str = "", operator_request: str = "") -> dict:
+    """One real run, start to finish, including every approval pause.
+
+    The web console passes ``resolver`` (the password, asked once when the
+    server started), ``decide`` (the approval, answered in the browser) and the
+    operator's ``operator_request``. The terminal passes none of them.
+    """
     from alm_core.auth import JazzClient
     from alm_core.store import get_store
     from alm_core.tools.base import ToolContext
@@ -395,13 +401,14 @@ async def run(settings, args, console) -> dict:
     if agent_llm is None:
         raise SetupError("no Gemini client - run with --check to see why")
 
-    resolver = jazz_password_resolver(settings)
-    # Ask for the password now, not halfway through the first agent's output,
-    # and keep it for the whole run: no re-prompt after the cache TTL or on a
-    # 403, where a mistyped answer from a worker thread would count towards an
-    # account lockout.
-    pin_password(resolver, settings.password_secret_name,
-                 resolver.get(settings.password_secret_name))
+    if resolver is None:
+        resolver = jazz_password_resolver(settings)
+        # Ask for the password now, not halfway through the first agent's
+        # output, and keep it for the whole run: no re-prompt after the cache
+        # TTL or on a 403, where a mistyped answer from a worker thread would
+        # count towards an account lockout.
+        pin_password(resolver, settings.password_secret_name,
+                     resolver.get(settings.password_secret_name))
 
     client = JazzClient(settings, resolver)
     # Sign in to both servers now. A wrong password must stop the run here,
@@ -429,7 +436,7 @@ async def run(settings, args, console) -> dict:
 
         backend = recorder = RecordingBackend(backend, role=settings.jazz_role)
     ctx = ToolContext(settings=settings, client=client, store=store, run_id="")
-    thread_id = args.resume or f"local-{uuid.uuid4().hex[:8]}"
+    thread_id = args.resume or thread_id or f"local-{uuid.uuid4().hex[:8]}"
     # Shown - and remembered - before anything can fail, so an interrupted or
     # crashed run can always be found again.
     remember_last_thread(settings, thread_id)
@@ -437,9 +444,13 @@ async def run(settings, args, console) -> dict:
     console.line(f"thread {thread_id}   (continue later with: --resume {thread_id}"
                  f"{commit_flag}, or --resume last{commit_flag})")
 
+    web_decide = decide
+
     def decide(payload):
         if recorder is not None:
             recorder.note_approval(payload)
+        if web_decide is not None:
+            return web_decide(payload)
         if settings.shadow_mode:
             # A dry run cannot write, so there is nothing to decide: show the card
             # as a preview of what --commit will ask, and let the plan continue.
@@ -458,7 +469,8 @@ async def run(settings, args, console) -> dict:
             graph = build_agentic_graph(runtime, checkpointer=checkpointer)
             report = await drive(graph, ctx, thread_id=thread_id, decide=decide,
                                  console=console, resume=bool(args.resume),
-                                 work_item_ids=list(args.work_item or []), trigger="local")
+                                 work_item_ids=list(args.work_item or []), trigger="local",
+                                 operator_request=operator_request)
             report["policy"] = runtime.policy.summary()
             report["shadow"] = settings.shadow_mode
             report["environment"] = settings.environment

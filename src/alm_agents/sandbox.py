@@ -382,7 +382,8 @@ def build_settings(*, shadow: bool, model: str = "", rpm: float = 0.0,
 
 async def run_sandbox(settings, *, llm, supervisor_llm=None, auto_approve: bool = False,
                       console: Console | None = None, estate: SandboxEstate | None = None,
-                      decide=None, shots_dir: str = "") -> dict:
+                      decide=None, shots_dir: str = "", work_item_ids: list[str] | None = None,
+                      operator_request: str = "", thread_id: str = "") -> dict:
     """One complete agentic run against the simulated estate.
 
     ``decide(payload) -> ApprovalDecision`` overrides the terminal prompt; the
@@ -415,8 +416,10 @@ async def run_sandbox(settings, *, llm, supervisor_llm=None, auto_approve: bool 
     def terminal(payload):
         return ask_for_decision(payload, auto=auto_approve, console=console)
 
-    report = await drive(graph, ctx, thread_id=f"sandbox-{uuid.uuid4().hex[:8]}",
-                         decide=decide or terminal, console=console, trigger="sandbox")
+    report = await drive(graph, ctx, thread_id=thread_id or f"sandbox-{uuid.uuid4().hex[:8]}",
+                         decide=decide or terminal, console=console, trigger="sandbox",
+                         work_item_ids=list(work_item_ids or []),
+                         operator_request=operator_request)
     report.update(
         policy=runtime.policy.summary(),
         notifications_sent=len(notifications),
