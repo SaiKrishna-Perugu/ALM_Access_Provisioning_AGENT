@@ -743,6 +743,8 @@ def test_purge_removes_old_personal_data_and_keeps_the_ledger(tmp_path):
     (out / "evidence" / "old").mkdir(parents=True)
     (out / "evidence" / "old" / "AB12345.png").write_bytes(b"png")
     (out / "run-old.json").write_text("{}", encoding="utf-8")
+    (out / "traces").mkdir()
+    (out / "traces" / "old.jsonl").write_text('{"service": "run"}', encoding="utf-8")
 
     async def audit_rows_and_remember():
         store = SqliteStore(settings.ledger_path)
@@ -763,7 +765,8 @@ def test_purge_removes_old_personal_data_and_keeps_the_ledger(tmp_path):
 
     later = datetime.now(timezone.utc) + timedelta(days=31)
     old = (later - timedelta(days=40)).timestamp()
-    for path in [out / "run-old.json", out / "evidence" / "old" / "AB12345.png"]:
+    for path in [out / "run-old.json", out / "evidence" / "old" / "AB12345.png",
+                 out / "traces" / "old.jsonl"]:
         os.utime(path, (old, old))
     preview = asyncio.run(purge(settings, Events(), 30, out_dir=out, now=later,
                                 dry_run=True))
@@ -772,9 +775,10 @@ def test_purge_removes_old_personal_data_and_keeps_the_ledger(tmp_path):
     assert purged == preview == {
         "runs": 1, "approvals": 1, "memories": 1, "reports": 1, "evidence": 1,
         "cli_screenshots": 0, "cli_users": 0, "cli_comments": 0, "recordings": 0,
-        "cli_backups": 0, "cli_state": 0, "test_runs": 0,
+        "cli_backups": 0, "cli_state": 0, "test_runs": 0, "traces": 1,
     }
     assert not (out / "run-old.json").exists()
+    assert not (out / "traces" / "old.jsonl").exists()
     assert not (out / "evidence" / "old").exists()
 
     async def audit_rows():

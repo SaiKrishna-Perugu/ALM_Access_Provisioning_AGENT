@@ -7,6 +7,32 @@ The local ledger (`out/local/alm.db`) has a schema version. A newer version of
 the code upgrades an older file automatically the next time it runs; a file
 written by newer code is refused until you update.
 
+## 2026-10-01: stop control and full tracing
+
+**Do after pulling:** nothing. On the client network, start the console **without** `--sandbox`.
+
+- **Simulated data is now impossible to miss.** `--sandbox` has always used made-up work items (1001, 1002) and never contacted EWM. That is why a sandbox console on the client network showed dummy data.
+  - A sandbox console now shows a banner, a **SIMULATED DATA** badge, and a terminal warning.
+  - A real console shows **LIVE** and the EWM/JTS host names.
+  - Every run's first line says where its work items come from.
+- **Stop a run from anywhere.**
+  - In the web page: **Stop run**.
+  - In the terminal: Ctrl+C once stops gracefully; a second press aborts.
+  - From another terminal: `python src/agent_local.py --stop [thread-id]`.
+  - Closing the web console with Ctrl+C stops its run the same way.
+  - A stop lets the step in progress finish, so a write is never cut off halfway. It then halts with "stopped by …" and writes the report and audit.
+  - A model call in progress is abandoned at once.
+- **A trace of every call.** Each run writes `out/local/traces/<thread>.jsonl` (sandbox: `out/sandbox/traces/`). It covers:
+  - model calls, with caller, tokens, time and chosen tools;
+  - tool calls;
+  - EWM/JTS/GPT/browser calls;
+  - HTTP requests, including Gemini's;
+  - sign-ins, ledger steps and approvals;
+  - every log line, including ones the console hides.
+- **Reading a trace.** Use `python src/agent_local.py --trace last [--follow]`, or the web console's **Trace** tab (filter, inspect, download).
+- **Secrets.** Bodies, headers and secret-looking URL parameters are never recorded, and API keys are scrubbed.
+- **Purge.** `--purge-older-than` now deletes traces too.
+
 ## 2026-09-30: web console
 
 **Do after pulling:** `.\scripts\setup.ps1 -Agents` (FastAPI and uvicorn, already in `requirements-cloud.txt`).

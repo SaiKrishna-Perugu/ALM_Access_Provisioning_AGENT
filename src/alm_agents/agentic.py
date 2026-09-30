@@ -53,8 +53,10 @@ class AgenticRuntime:
     def __init__(self, ctx: ToolContext, *, llm, supervisor_llm=None,
                  memory: MemoryStore | None = None, max_hops: int = MAX_HOPS,
                  notifier=None, shots_dir: str = "", backend: Backend | None = None,
-                 on_event=None):
+                 on_event=None, control=None):
         self.ctx = ctx
+        # The stop switch (alm_agents.control.RunControl). None: never stopped.
+        self.control = control
         self.llm = llm
         self.supervisor_llm = supervisor_llm or llm
         self.memory = memory or MemoryStore(getattr(ctx, "store", None))
@@ -96,6 +98,16 @@ class AgenticRuntime:
         self.ctx.run_id = state.get("run_id", "") or self.ctx.run_id
         self.ctx.thread_id = state.get("thread_id", "") or self.ctx.thread_id
 
+    def stop_requested(self) -> bool:
+        return self.control is not None and self.control.stop_requested()
+
+    def stopped(self, where: str) -> PipelineState:
+        """Halt the run because the operator asked; nothing more is started."""
+        reason = getattr(self.control, "reason", "") or "stopped by the operator"
+        log.warning("run_stopped", reason=reason, at=where)
+        self.emit("stopped", reason=reason, at=where, by=getattr(self.control, "by", ""))
+        return {**halt(reason), "next_agent": "DONE"}
+
     def emit(self, kind: str, **data) -> None:
         if self.on_event is None:
             return
@@ -133,6 +145,8 @@ def make_supervisor_node(runtime: AgenticRuntime):
         runtime.sync_from(state)
         hops = state.get("hops", 0)
 
+        if runtime.stop_requested():
+            return runtime.stopped("before the next routing decision")
         if hops >= runtime.max_hops:
             log.warning("hop_budget_exhausted", hops=hops)
             return {**halt(f"the run used its {runtime.max_hops} routing hops"),
@@ -145,12 +159,17 @@ def make_supervisor_node(runtime: AgenticRuntime):
         guided = decision is not None
         consulted = not guided and runtime.supervisor_llm is not None
         if decision is None:
-            decision = await decide(
-                runtime.supervisor_llm,
-                history=history,
-                board_snapshot=snapshot,
-                policy_summary=runtime.policy.summary(),
-                hint=state.get("handoff_hint", ""))
+            from .control import StopRequested, unless_stopped
+
+            try:
+                decision = await unless_stopped(runtime.control, decide(
+                    runtime.supervisor_llm,
+                    history=history,
+                    board_snapshot=snapshot,
+                    policy_summary=runtime.policy.summary(),
+                    hint=state.get("handoff_hint", "")))
+            except StopRequested:
+                return runtime.stopped("during a routing decision")
 
         log.info("supervisor_decision", next=decision.next_agent,
                  why=decision.why[:160], fallback=decision.fallback, hop=hops + 1)
@@ -190,7 +209,7 @@ def make_agent_node(runtime: AgenticRuntime):
             thread_id=state.get("thread_id", ""),
             environment=runtime.ctx.environment, on_event=runtime.on_event,
             redact=getattr(runtime.ctx.settings, "redact_for_model", True),
-            known_names=runtime.board.known_names)
+            known_names=runtime.board.known_names, control=runtime.control)
 
         subjects = sorted(runtime.board.users) + sorted(runtime.board.work_items)
         brief = await runtime.memory.brief(subjects, tags=[name])
@@ -223,6 +242,14 @@ def make_agent_node(runtime: AgenticRuntime):
             else Outcome.SKIPPED,
             message=result.output[:500], detail=entry))
 
+        if runtime.stop_requested():
+            # What the agent did before the stop is kept: its writes, if any,
+            # completed and are in the ledger and the results.
+            return {**runtime.stopped(f"after the {name} agent"),
+                    "agent_history": [entry], "board": runtime.board.to_state(),
+                    "policy": runtime.policy.summary(),
+                    "results": list(runtime.board.results[results_before:])}
+
         if result.stopped_because.startswith("model unavailable") and not result.calls:
             # The supervisor would route to the next agent, which would fail the
             # same way. Stop once, with the reason, instead of spending every hop.
@@ -252,6 +279,8 @@ def make_agentic_approval_node(runtime: AgenticRuntime):
 
     async def approval(state: PipelineState) -> PipelineState:
         runtime.sync_from(state)
+        if runtime.stop_requested():
+            return runtime.stopped("at the approval gate")
         items = runtime.board.approval_items()
         if not items:
             runtime.board.approval_requested = False
@@ -297,6 +326,10 @@ def make_agentic_approval_node(runtime: AgenticRuntime):
             "items": [i.model_dump(mode="json") for i in items],
         })
 
+        if runtime.stop_requested():
+            # Stopped while waiting for a human: whatever was decided, nothing
+            # after the gate runs.
+            return runtime.stopped("at the approval gate")
         decision = _coerce(payload, request)
         if decision is None:
             return halt("the approval payload was not a valid decision")

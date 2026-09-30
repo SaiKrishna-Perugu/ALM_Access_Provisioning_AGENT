@@ -13,10 +13,18 @@
 <header class="topbar">
   <div class="wordmark"><b>ALM Access Console</b><span>multi-agent provisioning</span></div>
   <span id="env" class="pill"><span class="dot"></span><span id="env-text">…</span></span>
+  <span id="hosts" class="pill" hidden></span>
   <span id="model" class="pill"></span>
   <span id="operator" class="pill"></span>
   <button id="theme" class="iconbtn" type="button" aria-label="Switch light or dark theme">Theme</button>
 </header>
+
+<div id="source-banner" class="source-banner" role="status" hidden>
+  <b>Simulated data.</b> This console was started with <code>--sandbox</code>: its work
+  items (1001, 1002) and people are made up, and nothing reaches EWM, JTS or GPT. For your
+  real work items, stop it (Ctrl+C in its terminal) and start
+  <code>python src/agent_web.py</code> without <code>--sandbox</code>.
+</div>
 
 <div class="layout">
   <nav class="panel runs" aria-label="Runs">
@@ -58,14 +66,32 @@
 
     <section class="panel" aria-labelledby="tl-title">
       <div class="timeline-head">
-        <h2 id="tl-title">Live activity</h2>
+        <h2 id="tl-title" class="sr-only">Run</h2>
+        <div class="segmented tabs" role="group" aria-label="View">
+          <button type="button" data-view="activity" aria-pressed="true">Activity</button>
+          <button type="button" data-view="trace" aria-pressed="false">Trace</button>
+        </div>
         <span id="tl-status"></span>
         <span id="tl-mode"></span>
         <span id="tl-thread" class="thread"></span>
+        <button id="stop" class="stop-btn" type="button" hidden>Stop run</button>
       </div>
-      <ol id="timeline" class="timeline" aria-live="polite"></ol>
-      <p id="tl-empty" class="placeholder">When a run starts, every routing decision, tool call
-        and approval appears here as it happens.</p>
+      <div id="activity-view">
+        <ol id="timeline" class="timeline" aria-live="polite"></ol>
+        <p id="tl-empty" class="placeholder">When a run starts, every routing decision, tool call
+          and approval appears here as it happens.</p>
+      </div>
+      <div id="trace-view" hidden>
+        <div class="trace-bar">
+          <div id="trace-filters" class="trace-filters" role="group"
+               aria-label="Show calls to"></div>
+          <a id="trace-download" class="trace-download" href="#" hidden>Download .jsonl</a>
+        </div>
+        <p id="trace-path" class="trace-path"></p>
+        <ol id="trace-list" class="trace-list"></ol>
+        <p id="trace-empty" class="placeholder">Select a run to see its trace: every model call,
+          tool call, service call, HTTP request, ledger step and log line, with timings.</p>
+      </div>
     </section>
   </main>
 
@@ -94,6 +120,8 @@
         <li>Work items come from the numbers in your request; the words cannot widen a run.</li>
         <li>Writing needs the Write switch, a typed confirmation and your approval of each user.</li>
         <li>Your Jazz password stays in the terminal; it never reaches this page.</li>
+        <li>Stop ends a run after its current step. A write in progress always finishes, so
+          nothing is left half-done.</li>
       </ul>
     </section>
   </aside>

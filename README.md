@@ -420,9 +420,14 @@ The same agents, driven from a page in your browser: type what you want, watch
 the main agent route the specialists live, and approve the card with checkboxes.
 
 ```powershell
-python src/agent_web.py --sandbox     # simulated estate, real Gemini - works anywhere
-python src/agent_web.py               # real EWM/JTS: asks the Jazz password once, in the terminal
+python src/agent_web.py               # REAL work items from EWM/JTS: asks the Jazz password once
+python src/agent_web.py --sandbox     # SIMULATED data (made-up work items 1001, 1002) - a demo
 ```
+
+`--sandbox` never touches EWM: its work items and people are invented. The page
+says so in a banner across the top and a **SIMULATED DATA** badge. A real
+console shows **LIVE** with the EWM and JTS host names instead. On the client
+network, start it **without** `--sandbox`.
 
 It prints a one-time link (and opens it). What keeps it safe:
 
@@ -443,6 +448,54 @@ It prints a one-time link (and opens it). What keeps it safe:
 One run at a time. The page lists this session's runs. A real run keeps the same
 records as `agent_local.py` (`out/local/`), so the ledger stops either tool from
 repeating the other's writes.
+
+### Stopping a run
+
+A stop always lets the current step finish. A write in progress completes and is
+recorded, so nothing is left half-done. Then no further steps start, the run
+reports "stopped by …", and its audit trail is written. A model call in progress
+is abandoned at once, since it writes nothing.
+
+| From | How |
+|---|---|
+| The web page | **Stop run**, next to the run's status |
+| The terminal running `agent_local.py` | Ctrl+C once stops after the current step; press it again to abort at once |
+| Any other terminal on the same machine | `python src/agent_local.py --stop` (every run) or `--stop <thread-id>` (one run). Works for web runs too |
+| The terminal running `agent_web.py` | Ctrl+C stops the run in progress the same way, then closes the console |
+
+Anything written before the stop is in the ledger. A new run on the same work
+items reports those writes as replays and does not repeat them.
+
+### Traces: every call a run makes
+
+Each run writes a trace. It records every model call (caller, tokens, time,
+the tools it chose), tool call (arguments, result, denials), EWM/JTS/GPT/browser
+call, HTTP request (method, URL, status, time), ledger step, approval and log
+line:
+
+```
+out/local/traces/<thread-id>.jsonl      real runs, from the terminal or the web console
+out/sandbox/traces/<thread-id>.jsonl    sandbox runs
+```
+
+```powershell
+python src/agent_local.py --trace last             # print the last run's trace
+python src/agent_local.py --trace local-1a2b3c4d   # a given run (the id is printed when it starts)
+python src/agent_local.py --trace last --follow    # watch a run as it happens
+```
+
+In the web console, the **Trace** tab shows the same records live. You can filter
+by service (model, tool, ewm, jts, http, gpt, ledger, …), open any record in
+full, and download the `.jsonl`.
+
+Secrets never reach a trace:
+- no request bodies, so no login password;
+- no headers or cookies;
+- secret-looking URL parameters are blanked;
+- API keys are scrubbed.
+
+A trace does hold what the run saw, requesters' names included. It stays on this
+machine, and `--purge-older-than DAYS` deletes it with the other run data.
 
 To check the agents after a prompt, roster or model change, with no VPN:
 

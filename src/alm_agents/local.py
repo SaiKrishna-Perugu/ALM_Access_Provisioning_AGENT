@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import logging
 import os
 import socket
 import sys
@@ -89,30 +88,40 @@ def make_local_backend(*, cdp_url: str, gpt_url: str, ad_label: str):
                     pass
 
         def _add_member(self, userid: str, group: str, domain: str) -> tuple[bool, str]:
+            from alm_core import trace
             from alm_core.errors import OutcomeUnknown
             from alm_worker.gpt import submit_outcome
 
             if self._session is None:
                 if not cdp_reachable(cdp_url):
+                    trace.emit("gpt", "attach", ok=False, cdp_url=cdp_url,
+                               error="no debug Chrome listening")
                     raise WorkerUnavailable(
                         f"no debug Chrome at {cdp_url}. Run scripts\\start-gpt.ps1, sign "
                         "in to GPT in that window, then resume this run.")
                 from alm_worker.gpt import GptSession
 
-                session = GptSession(url=gpt_url, ad_label=ad_label)
-                session.attach(cdp_url)
+                with trace.span("gpt", "attach", cdp_url=cdp_url, gpt_url=gpt_url):
+                    session = GptSession(url=gpt_url, ad_label=ad_label)
+                    session.attach(cdp_url)
                 self._session = session
             session = self._session
             try:
-                session.open_group(group)
-                if not session.stage_user(userid, domain):
+                with trace.span("gpt", "open_group", group=group):
+                    session.open_group(group)
+                with trace.span("gpt", "stage_user", userid=userid, domain=domain) as step:
+                    staged = session.stage_user(userid, domain)
+                    step["ok"] = bool(staged)
+                if not staged:
                     return False, f"{userid} did not appear in the staging grid"
             except Exception:
                 # Nothing was submitted yet, so this failure is safe to retry.
                 self._reset_session()
                 raise
             try:
-                outcome, text = submit_outcome(session.click_modify())
+                with trace.span("gpt", "modify", userid=userid, group=group) as step:
+                    outcome, text = submit_outcome(session.click_modify())
+                    step.update(ok=outcome == "ok", outcome=outcome, reply=str(text)[:500])
             except Exception as err:
                 self._reset_session()
                 raise OutcomeUnknown(
@@ -380,13 +389,73 @@ def pin_password(resolver, key: str, value: str) -> None:
 # ----------------------------------------------------------------------- run
 
 async def run(settings, args, console, *, resolver=None, decide=None,
-              thread_id: str = "", operator_request: str = "") -> dict:
+              thread_id: str = "", operator_request: str = "", control=None,
+              trace=None) -> dict:
     """One real run, start to finish, including every approval pause.
 
     The web console passes ``resolver`` (the password, asked once when the
-    server started), ``decide`` (the approval, answered in the browser) and the
-    operator's ``operator_request``. The terminal passes none of them.
+    server started), ``decide`` (the approval, answered in the browser), the
+    operator's ``operator_request``, its Stop button's ``control`` and the
+    ``trace`` it shows. The terminal passes none of them: the run then opens
+    its own trace under ``out/local/traces/`` and stops on Ctrl+C or ``--stop``.
     """
+    from contextlib import nullcontext
+
+    from .control import RunControl, stop_file_for
+    from .trace import open_run_trace
+
+    thread_id = args.resume or thread_id or f"local-{uuid.uuid4().hex[:8]}"
+    # Shown - and remembered - before anything can fail, so an interrupted or
+    # crashed run can always be found again.
+    remember_last_thread(settings, thread_id)
+    commit_flag = "" if settings.shadow_mode else " --commit"
+    console.line(f"thread {thread_id}   (continue later with: --resume {thread_id}"
+                 f"{commit_flag}, or --resume last{commit_flag})")
+
+    own_trace = trace is None
+    if own_trace:
+        trace = open_run_trace(OUT_DIR, thread_id, settings=settings)
+        console.line(f"trace  {trace.path}   (read it with: --trace {thread_id})")
+    if control is None:
+        control = RunControl(thread_id=thread_id,
+                             stop_file=stop_file_for(settings.ledger_path))
+    control.thread_id = control.thread_id or thread_id
+
+    with trace if own_trace else nullcontext():
+        # The web console writes its own "started" record for the runs it owns.
+        trace.write({"service": "run", "kind": "started" if own_trace else "session",
+                     "source": "live",
+                     "environment": settings.environment,
+                     "mode": "dry run" if settings.shadow_mode else "commit",
+                     "scope": list(args.work_item or []) or "the whole active queue",
+                     "resume": bool(args.resume), "ewm_server": settings.ewm_server,
+                     "jts_server": settings.jts_server, "user": settings.service_account,
+                     "model": settings.agent_model, "orchestration": settings.orchestration,
+                     "operator_request": operator_request})
+        try:
+            report = await _run(settings, args, console, resolver=resolver,
+                                decide=decide, thread_id=thread_id,
+                                operator_request=operator_request,
+                                control=control, trace=trace)
+        except BaseException as err:
+            if own_trace:
+                import traceback
+
+                trace.write({"service": "run", "kind": "failed", "ok": False,
+                             "error": f"{type(err).__name__}: {err}"[:1000],
+                             "traceback": traceback.format_exc()[-8000:]})
+            raise
+        if own_trace:
+            trace.write({"service": "run", "kind": "finished",
+                         "halted": bool(report.get("halted")),
+                         "halt_reason": report.get("halt_reason", ""),
+                         "metrics": report.get("metrics") or {}})
+        report["trace"] = str(trace.path)
+        return report
+
+
+async def _run(settings, args, console, *, resolver, decide, thread_id: str,
+               operator_request: str, control, trace) -> dict:
     from alm_core.auth import JazzClient
     from alm_core.store import get_store
     from alm_core.tools.base import ToolContext
@@ -396,6 +465,7 @@ async def run(settings, args, console, *, resolver=None, decide=None,
     from .graph import checkpointer_for
     from .memory import MemoryStore as AgentMemory
     from .runner import ask_for_decision, drive
+    from .trace import TracedBackend
 
     agent_llm = llm_module.get_agent_llm(settings)
     if agent_llm is None:
@@ -427,7 +497,8 @@ async def run(settings, args, console, *, resolver=None, decide=None,
     # What earlier runs learned lives in the same local file as the ledger.
     memory = AgentMemory(store)
     await memory.migrate()
-    backend = make_local_backend(**gpt_target())
+    local_backend = make_local_backend(**gpt_target())
+    backend = TracedBackend(local_backend, source="live")
     recorder = None
     if getattr(args, "record", False):
         # Keeps the real reads and this run's outcome, for replay off the VPN
@@ -436,36 +507,40 @@ async def run(settings, args, console, *, resolver=None, decide=None,
 
         backend = recorder = RecordingBackend(backend, role=settings.jazz_role)
     ctx = ToolContext(settings=settings, client=client, store=store, run_id="")
-    thread_id = args.resume or thread_id or f"local-{uuid.uuid4().hex[:8]}"
-    # Shown - and remembered - before anything can fail, so an interrupted or
-    # crashed run can always be found again.
-    remember_last_thread(settings, thread_id)
-    commit_flag = "" if settings.shadow_mode else " --commit"
-    console.line(f"thread {thread_id}   (continue later with: --resume {thread_id}"
-                 f"{commit_flag}, or --resume last{commit_flag})")
-
     web_decide = decide
 
     def decide(payload):
+        trace.write({"service": "approval", "kind": "card", "reason": payload.get("reason"),
+                     "users": [i.get("userid") for i in payload.get("items", [])]})
         if recorder is not None:
             recorder.note_approval(payload)
         if web_decide is not None:
-            return web_decide(payload)
-        if settings.shadow_mode:
+            decision = web_decide(payload)
+        elif settings.shadow_mode:
             # A dry run cannot write, so there is nothing to decide: show the card
             # as a preview of what --commit will ask, and let the plan continue.
-            return ask_for_decision(
+            decision = ask_for_decision(
                 payload, auto=True, console=console, approver_prefix="dry-run",
                 auto_note="dry run: this is the card --commit will ask you to approve")
-        return ask_for_decision(payload, auto=args.auto_approve, console=console,
-                                approver_prefix="local")
+        else:
+            decision = ask_for_decision(payload, auto=args.auto_approve, console=console,
+                                        approver_prefix="local")
+        trace.write({"service": "approval", "kind": "decision",
+                     "approved": decision.approved, "approver": decision.approver,
+                     "userids": list(decision.approved_userids or [])})
+        return decision
+
+    def on_event(kind: str, data: dict) -> None:
+        trace.event(kind, data)
+        console(kind, data)
 
     try:
         async with checkpointer_for(settings) as checkpointer:
             runtime = AgenticRuntime(
                 ctx, llm=agent_llm, supervisor_llm=llm_module.get_supervisor_llm(settings),
                 memory=memory, max_hops=settings.max_hops, backend=backend,
-                on_event=console, shots_dir=str(OUT_DIR / "evidence" / thread_id))
+                on_event=on_event, shots_dir=str(OUT_DIR / "evidence" / thread_id),
+                control=control)
             graph = build_agentic_graph(runtime, checkpointer=checkpointer)
             report = await drive(graph, ctx, thread_id=thread_id, decide=decide,
                                  console=console, resume=bool(args.resume),
@@ -480,7 +555,7 @@ async def run(settings, args, console, *, resolver=None, decide=None,
                 console.line(f"recorded for replay: {path}")
             return report
     finally:
-        backend.close()
+        local_backend.close()
         client.close()
         await store.close()
 
@@ -524,7 +599,7 @@ async def purge(settings, console, days: int, *, out_dir: Path = OUT_DIR,
     """Delete the personal data local runs leave behind, older than ``days``.
 
     Removed - the agents': run checkpoints (the whole state of a run, names
-    included), approval cards, agent memory, run reports and evidence
+    included), approval cards, agent memory, run reports, run traces and evidence
     screenshots; the CLI's: profile screenshots and any ``screenshots.*`` backup
     folders, the user caches (``alm_users*.json``), ``comment_capture.json``,
     ``dryrun.log`` and ``pipeline_state.json``; runs recorded for replay; and
@@ -550,7 +625,7 @@ async def purge(settings, console, days: int, *, out_dir: Path = OUT_DIR,
     counts = {
         "runs": 0, "approvals": 0, "memories": 0, "reports": 0, "evidence": 0,
         "cli_screenshots": 0, "cli_users": 0, "cli_comments": 0, "recordings": 0,
-        "cli_backups": 0, "cli_state": 0, "test_runs": 0,
+        "cli_backups": 0, "cli_state": 0, "test_runs": 0, "traces": 0,
     }
 
     checkpoints = checkpoint_db_path(settings.ledger_path)
@@ -605,6 +680,10 @@ async def purge(settings, console, days: int, *, out_dir: Path = OUT_DIR,
     for report in out_dir.glob("run-*.json"):
         if report.stat().st_mtime < stamp:
             remove(report, "reports")
+    # Traces record everything a run saw, requesters' names included.
+    for trace_file in (out_dir / "traces").glob("*.jsonl"):
+        if trace_file.stat().st_mtime < stamp:
+            remove(trace_file, "traces")
     evidence = out_dir / "evidence"
     if evidence.is_dir():
         for folder in (p for p in evidence.iterdir() if p.is_dir()):
@@ -658,7 +737,8 @@ async def purge(settings, console, days: int, *, out_dir: Path = OUT_DIR,
     console.line(f"{verb} local data older than {days} day(s): "
                  f"{counts['runs']} run checkpoint(s), {counts['approvals']} approval "
                  f"card(s), {counts['memories']} agent memor(y/ies), {counts['reports']} "
-                 f"report(s), {counts['evidence']} evidence folder(s), "
+                 f"report(s), {counts['traces']} trace(s), "
+                 f"{counts['evidence']} evidence folder(s), "
                  f"{counts['cli_screenshots']} CLI screenshot(s), "
                  f"{counts['cli_users']} CLI user cache(s), "
                  f"{counts['cli_comments']} CLI comment capture(s), "
@@ -741,10 +821,52 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                              "to replay later with agent_eval.py --recorded (no VPN needed)")
     parser.add_argument("--dry-run", action="store_true",
                         help="with --purge-older-than: list the counts, delete nothing")
+    parser.add_argument("--stop", nargs="?", const="all", default="", metavar="THREAD_ID",
+                        help="stop the run in progress on this machine (a terminal or web "
+                             "console run) after its current step, then exit; give a thread "
+                             "id to stop only that run")
+    parser.add_argument("--trace", metavar="THREAD_ID", default="",
+                        help="print a run's trace - every model, tool, service and HTTP "
+                             "call ('last' for the most recent run), then exit")
+    parser.add_argument("--follow", action="store_true",
+                        help="with --trace: keep printing new records until Ctrl+C")
     args = parser.parse_args(argv)
     if args.dry_run and not args.purge_older_than:
         parser.error("--dry-run only applies to --purge-older-than")
+    if args.follow and not args.trace:
+        parser.error("--follow only applies to --trace")
     return args
+
+
+def show_trace(settings, console, thread_id: str, *, follow: bool = False) -> int:
+    """Print a run's trace, one line per record; ``follow`` tails it."""
+    import time
+
+    from .trace import format_record, read_trace
+
+    if thread_id == "last":
+        thread_id = last_thread(settings)
+    folder = Path(settings.ledger_path).parent / "traces"
+    path = folder / f"{thread_id}.jsonl"
+    if not thread_id or not path.is_file():
+        known = sorted(folder.glob("*.jsonl"), key=lambda f: f.stat().st_mtime)[-5:]
+        console.line(f"trace: none for {thread_id or 'the last run'!r} in {folder}")
+        if known:
+            console.line("recent: " + ", ".join(f.stem for f in reversed(known)))
+        return 2
+    console.line(f"trace {path}")
+    shown = 0
+    try:
+        while True:
+            records = read_trace(path)
+            for record in records[shown:]:
+                console.line(format_record(record))
+            shown = len(records)
+            if not follow:
+                return 0
+            time.sleep(1)
+    except KeyboardInterrupt:
+        return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -752,8 +874,10 @@ def main(argv: list[str] | None = None) -> int:
     from .sandbox import load_env
 
     load_env()
-    os.environ["ALM_LOG_LEVEL"] = "INFO" if args.verbose else "ERROR"
-    logging.getLogger().setLevel(logging.INFO if args.verbose else logging.ERROR)
+    from alm_core.logging import route_console
+
+    # The run's trace records everything; the terminal shows errors unless --verbose.
+    route_console("INFO" if args.verbose else "ERROR")
     try:
         sys.stdout.reconfigure(errors="replace")
     except (AttributeError, ValueError):
@@ -771,6 +895,36 @@ def main(argv: list[str] | None = None) -> int:
                      f"({sys.executable}). Install the agent requirements with:")
         console.line(f'  "{sys.executable}" -m pip install -r requirements-cloud.txt')
         return 2
+
+
+def _run_stoppable(settings, args, console) -> dict:
+    """The run, with Ctrl+C as a Stop button: the first press stops it after the
+    current step, a second press (or one at the y/N prompt) aborts at once."""
+    import getpass
+    import signal
+
+    from . import runner
+    from .control import RunControl, stop_file_for
+
+    control = RunControl(stop_file=stop_file_for(settings.ledger_path))
+
+    def on_interrupt(_signum, _frame):
+        if control.stop_requested() or runner.PROMPTING:
+            raise KeyboardInterrupt
+        control.request_stop(f"cli:{getpass.getuser()} (Ctrl+C)")
+        console.line("")
+        console.line("stopping after the current step (a write in progress always "
+                     "finishes). Press Ctrl+C again to abort now.")
+
+    try:
+        previous = signal.signal(signal.SIGINT, on_interrupt)
+    except ValueError:  # not the main thread: no handler, Ctrl+C aborts as before
+        previous = None
+    try:
+        return asyncio.run(run(settings, args, console, control=control))
+    finally:
+        if previous is not None:
+            signal.signal(signal.SIGINT, previous)
 
 
 def _main(args, console) -> int:
@@ -792,6 +946,17 @@ def _main(args, console) -> int:
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         if args.check:
             return asyncio.run(check(settings, console, list(args.work_item or [])))
+        if args.stop:
+            from .control import stop_file_for, write_stop_file
+
+            target = "" if args.stop == "all" else args.stop
+            request = write_stop_file(stop_file_for(settings.ledger_path), thread_id=target)
+            console.line(f"stop requested for {target or 'every run'} by "
+                         f"{request['by']}. A run stops after its current step - a write in "
+                         "progress always finishes - then reports as stopped.")
+            return 0
+        if args.trace:
+            return show_trace(settings, console, args.trace, follow=args.follow)
         if args.purge_older_than:
             asyncio.run(purge(settings, console, args.purge_older_than,
                               dry_run=args.dry_run))
@@ -814,7 +979,7 @@ def _main(args, console) -> int:
         if not args.work_item and not args.resume:
             console.line("tip: limit a first run with --work-item <id>")
 
-        report = asyncio.run(run(settings, args, console))
+        report = _run_stoppable(settings, args, console)
     except SetupError as err:
         console.line(f"setup: {err}")
         return 2
@@ -835,11 +1000,17 @@ def _main(args, console) -> int:
     path = save_report(report, OUT_DIR)
     console.line("")
     console.line(f"full report and audit trail: {path}")
-    if report["halted"]:
+    if report.get("trace"):
+        console.line(f"trace of every call: {report['trace']}")
+    stopped = report["halted"] and report["halt_reason"].startswith("stopped")
+    if stopped:
+        console.line("stopped: nothing more was started. Anything written before the stop is "
+                     "in the ledger; a new run reports it as a replay, not a second write.")
+    elif report["halted"]:
         console.line("next: fix the cause in the HALTED line above, then run again")
     elif not args.commit:
         console.line("next: review the plan above; to perform it, run again with --commit")
-    return 1 if report["halted"] and "rejected" not in report["halt_reason"] else 0
+    return 1 if report["halted"] and not stopped and "rejected" not in report["halt_reason"] else 0
 
 
 if __name__ == "__main__":

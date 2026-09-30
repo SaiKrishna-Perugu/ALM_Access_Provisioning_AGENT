@@ -294,6 +294,10 @@ change, reviewed like any other code.
 | `setup: sign-in failed` at start-up | As for `agent_local.py`: CID, password, VPN, `ALM_CA_BUNDLE`. Nothing was written |
 | A writing run waits at the card and nobody decides | After 4 hours the batch is rejected and the run stops. Nothing was written after the gate |
 | Port in use | Another console is running. Stop it, or pass `--port 8766` |
+| The page shows work items 1001/1002, Alice Smith, Bao Nguyen… | The console was started with `--sandbox` (the **SIMULATED DATA** banner says so). Ctrl+C it and start `python src/agent_web.py` without `--sandbox` |
+| A run must stop now | **Stop run** on the page, or `python src/agent_local.py --stop` from any terminal. It ends after the current step; a write in progress finishes first |
+| Status stays **stopping** | The current step is a write, or a slow EWM/JTS/GPT call, finishing. The trace (Trace tab, or `--trace last --follow`) shows which. Nothing new starts |
+| What exactly did the run call? | The Trace tab, or `python src/agent_local.py --trace <thread-id>`. The file is `out/local/traces/<thread-id>.jsonl` |
 
 Everything a local run did is in `out/local/run-<run_id>.json` and in the
 `alm_audit` table of `out/local/alm.db` (the SQL in section 1 works unchanged in

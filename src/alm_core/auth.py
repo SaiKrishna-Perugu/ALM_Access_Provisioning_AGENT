@@ -22,6 +22,7 @@ from urllib.parse import urlsplit, urlunsplit
 import requests
 from requests.adapters import HTTPAdapter
 
+from . import trace
 from .errors import AuthenticationError, ServerError, TransportError
 from .logging import get_logger
 
@@ -104,6 +105,8 @@ def make_session(settings, retries: int | None = None) -> requests.Session:
     session.mount("https://", adapter)
     session.mount("http://", adapter)
     session.headers.update({"User-Agent": f"{settings.service_name}/2.0"})
+    # Method, URL, status and timing of every exchange - never bodies or headers.
+    session.hooks["response"].append(trace.http_response)
     return session
 
 
@@ -246,9 +249,11 @@ class JazzClient:
         session = make_session(self.settings)
         verifier = (ewm_session_is_live if kind == "ewm" else jts_session_is_live)(
             server, self.settings.timeout)
-        form_login(session, server, self.settings.service_account,
-                   self._password(refresh=refresh), verifier,
-                   timeout=self.settings.timeout)
+        with trace.span("auth", "sign_in", server=server, system=kind,
+                        user=self.settings.service_account, refresh=refresh):
+            form_login(session, server, self.settings.service_account,
+                       self._password(refresh=refresh), verifier,
+                       timeout=self.settings.timeout)
         with self._lock:
             self._sessions[server] = session
         return session
@@ -263,6 +268,8 @@ class JazzClient:
             response = session.request(method, url, **kwargs)
         except requests.RequestException as err:
             breaker.record_failure()
+            trace.emit("http", "request", method=method, url=trace.safe_url(url), ok=False,
+                       error=f"{type(err).__name__}: {err}"[:500])
             raise TransportError(f"{method} {url} failed: {err}",
                                  context={"server": server}) from err
 
