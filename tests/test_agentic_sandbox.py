@@ -310,7 +310,9 @@ def test_gemini_api_provider_builds_a_rate_limited_client(no_key, monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", FAKE_KEY)
     settings = sandbox_settings(agent_model="gemini-3.5-flash")
     client = llm_module.get_agent_llm(settings)
-    assert type(client).__name__ == "ChatGoogleGenerativeAI"
+    # Wrapped so every call lands in the run's trace; the model is underneath.
+    assert type(client).__name__ == "TracedModel"
+    assert type(client._inner).__name__ == "ChatGoogleGenerativeAI"
     assert client.rate_limiter is not None
     assert client.reasoning_effort == "low"
     # One limiter for the whole process: the quota belongs to the key.

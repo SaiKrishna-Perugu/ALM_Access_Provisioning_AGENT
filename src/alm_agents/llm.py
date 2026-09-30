@@ -203,7 +203,13 @@ _cached: dict[tuple, object] = {}
 def _get(settings, key: str, **kwargs):
     cache_key = (id(settings), key)
     if cache_key not in _cached:
-        _cached[cache_key] = _client(settings, **kwargs)
+        client = _client(settings, **kwargs)
+        if client is not None:
+            # Every call is recorded in the run's trace, when a run has one.
+            from .trace import TracedModel
+
+            client = TracedModel(client, role=key)
+        _cached[cache_key] = client
     return _cached[cache_key]
 
 

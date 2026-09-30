@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import logging
 import os
 import random
 import struct
@@ -383,11 +382,13 @@ def build_settings(*, shadow: bool, model: str = "", rpm: float = 0.0,
 async def run_sandbox(settings, *, llm, supervisor_llm=None, auto_approve: bool = False,
                       console: Console | None = None, estate: SandboxEstate | None = None,
                       decide=None, shots_dir: str = "", work_item_ids: list[str] | None = None,
-                      operator_request: str = "", thread_id: str = "") -> dict:
+                      operator_request: str = "", thread_id: str = "", control=None,
+                      trace=None) -> dict:
     """One complete agentic run against the simulated estate.
 
     ``decide(payload) -> ApprovalDecision`` overrides the terminal prompt; the
-    tests use it. Returns a report of what happened.
+    tests use it. ``control`` is the run's stop switch and ``trace`` records
+    every call (the web console passes both). Returns a report of what happened.
     """
     from langgraph.checkpoint.memory import MemorySaver
 
@@ -407,17 +408,42 @@ async def run_sandbox(settings, *, llm, supervisor_llm=None, auto_approve: bool 
     async def notifier(request):
         notifications.append(request.plan_hash)
 
+    backend = SandboxBackend(estate)
+    on_event = console
+    if trace is not None:
+        from .trace import TracedBackend
+
+        backend = TracedBackend(backend, source="simulated")
+
+        def on_event(kind, data):
+            trace.event(kind, data)
+            console(kind, data)
+
     runtime = AgenticRuntime(
         ctx, llm=llm, supervisor_llm=supervisor_llm or llm, memory=AgentMemory(None),
-        max_hops=settings.max_hops, notifier=notifier, backend=SandboxBackend(estate),
-        on_event=console, shots_dir=shots_dir or str(OUT_DIR / "evidence"))
+        max_hops=settings.max_hops, notifier=notifier, backend=backend,
+        on_event=on_event, shots_dir=shots_dir or str(OUT_DIR / "evidence"),
+        control=control)
     graph = build_agentic_graph(runtime, checkpointer=MemorySaver(serde=checkpoint_serde()))
 
     def terminal(payload):
         return ask_for_decision(payload, auto=auto_approve, console=console)
 
+    answer = decide or terminal
+
+    def decide_traced(payload):
+        if trace is not None:
+            trace.write({"service": "approval", "kind": "card", "reason": payload.get("reason"),
+                         "users": [i.get("userid") for i in payload.get("items", [])]})
+        decision = answer(payload)
+        if trace is not None:
+            trace.write({"service": "approval", "kind": "decision",
+                         "approved": decision.approved, "approver": decision.approver,
+                         "userids": list(decision.approved_userids or [])})
+        return decision
+
     report = await drive(graph, ctx, thread_id=thread_id or f"sandbox-{uuid.uuid4().hex[:8]}",
-                         decide=decide or terminal, console=console, trigger="sandbox",
+                         decide=decide_traced, console=console, trigger="sandbox",
                          work_item_ids=list(work_item_ids or []),
                          operator_request=operator_request)
     report.update(
@@ -727,8 +753,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     load_env()
     # Before any alm_core import configures logging: the terminal is for the run.
-    os.environ["ALM_LOG_LEVEL"] = "INFO" if args.verbose else "ERROR"
-    logging.getLogger().setLevel(logging.INFO if args.verbose else logging.ERROR)
+    from alm_core.logging import route_console
+
+    # The run's trace records everything; the terminal shows errors unless --verbose.
+    route_console("INFO" if args.verbose else "ERROR")
     try:
         sys.stdout.reconfigure(errors="replace")
     except (AttributeError, ValueError):

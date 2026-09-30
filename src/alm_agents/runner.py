@@ -67,6 +67,11 @@ def _short(value) -> str:
 
 # ------------------------------------------------------------------ approval
 
+# True while the terminal waits at the y/N prompt. Ctrl+C there ends the run at
+# once: nothing is in flight at the gate, so there is nothing to finish first.
+PROMPTING = False
+
+
 def ask_for_decision(payload: dict, *, auto: bool, console: Console,
                      approver_prefix: str = "sandbox",
                      auto_note: str = "auto-approved (--auto-approve)"):
@@ -89,7 +94,14 @@ def ask_for_decision(payload: dict, *, auto: bool, console: Console,
         approved, approver, comment = True, f"{approver_prefix}:auto-approve", auto_note
         console.line(auto_note)
     else:
-        answer = input("Approve this batch? [y/N] ").strip().lower()
+        global PROMPTING
+        PROMPTING = True
+        try:
+            answer = input("Approve this batch? [y/N] ").strip().lower()
+        except EOFError:
+            answer = ""  # no terminal to answer from: not approved
+        finally:
+            PROMPTING = False
         approved = answer in {"y", "yes"}
         approver = f"{approver_prefix}:{getpass.getuser()}"
         comment = "approved at the terminal" if approved else "rejected at the terminal"

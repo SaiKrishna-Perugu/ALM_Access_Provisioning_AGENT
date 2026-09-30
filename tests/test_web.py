@@ -290,3 +290,78 @@ def test_a_failed_run_shows_a_scrubbed_error():
     run_id = post(client, "/api/runs", csrf, {"prompt": "dry run 1001", "mode": "dry"}).json()["id"]
     run = wait_for(client, run_id, {"done", "failed"})
     assert run["status"] == "failed" and secret not in run["error"]
+
+
+# ------------------------------------------------------------ stop and trace
+
+def test_the_session_says_the_data_is_simulated():
+    client = make_client()
+    signed_in(client)
+    session = client.get("/api/session").json()
+    assert session["data_source"] == "simulated" and session["sandbox"] is True
+
+
+def test_the_stop_button_ends_a_run_waiting_at_the_card_without_writing():
+    manager = make_manager()
+    client = make_client(manager)
+    csrf = signed_in(client)
+    run_id = post(client, "/api/runs", csrf, {"prompt": BOTH, "mode": "commit",
+                                              "confirm": "COMMIT"}).json()["id"]
+    wait_for(client, run_id, {"awaiting_approval"})
+    assert client.post(f"/api/runs/{run_id}/stop", json={},
+                       headers={"Origin": ORIGIN}).status_code == 403
+    answer = post(client, f"/api/runs/{run_id}/stop", csrf, {})
+    assert answer.status_code == 200 and answer.json()["status"] == "stopping"
+    run = wait_for(client, run_id, {"stopped", "done", "failed"})
+    assert run["status"] == "stopped", run
+    assert run["report"]["halt_reason"] == "stopped by web:tester"
+    assert run["report"]["results"] == [] and run["stopped_by"] == "web:tester"
+    kinds = [e["kind"] for e in manager.runs[run_id].events]
+    assert "stop_requested" in kinds and "approval_decided" not in kinds
+    assert post(client, f"/api/runs/{run_id}/stop", csrf, {}).status_code == 409
+
+
+def test_a_stop_file_from_another_terminal_stops_a_web_run(tmp_path, monkeypatch):
+    from alm_agents import local
+    from alm_agents.control import stop_file_for, write_stop_file
+
+    monkeypatch.setattr(local, "DEFAULT_LEDGER", tmp_path / "local" / "alm.db")
+    manager = make_manager()
+    client = make_client(manager)
+    csrf = signed_in(client)
+    run_id = post(client, "/api/runs", csrf, {"prompt": BOTH, "mode": "commit",
+                                              "confirm": "COMMIT"}).json()["id"]
+    wait_for(client, run_id, {"awaiting_approval"})
+    write_stop_file(stop_file_for(str(tmp_path / "local" / "alm.db")), by="cli:ops")
+    run = wait_for(client, run_id, {"stopped", "done", "failed"})
+    assert run["status"] == "stopped" and run["report"]["halt_reason"] == "stopped by cli:ops"
+
+
+def test_the_trace_tab_serves_the_runs_calls_and_the_file(tmp_path):
+    manager = make_manager()
+    client = make_client(manager)
+    csrf = signed_in(client)
+    run_id = post(client, "/api/runs", csrf, {"prompt": BOTH, "mode": "dry"}).json()["id"]
+    wait_for(client, run_id, {"done", "failed"})
+
+    everything = client.get(f"/api/runs/{run_id}/trace").json()
+    services = {r["service"] for r in everything["records"]}
+    # A dry run never reaches the ledger: the policy refuses its writes first.
+    assert {"run", "supervisor", "tool", "ewm", "jts", "approval"} <= services
+    assert everything["done"] and str(tmp_path) in everything["path"]
+    started = everything["records"][0]
+    assert started["kind"] == "started" and started["data_source"] == "simulated"
+
+    tools = client.get(f"/api/runs/{run_id}/trace?service=tool").json()["records"]
+    assert tools and {r["service"] for r in tools} == {"tool"}
+    # One trace record per tool call - the page's console must not add a second.
+    assert len(tools) == sum(e["kind"] == "tool_call" for e in manager.runs[run_id].events)
+    tail = client.get(f"/api/runs/{run_id}/trace?after={everything['next'] - 1}").json()
+    assert len(tail["records"]) == 1
+
+    download = client.get(f"/api/runs/{run_id}/trace.jsonl")
+    assert download.status_code == 200
+    assert "attachment" in download.headers["content-disposition"]
+    lines = [json.loads(line) for line in download.text.splitlines() if line.strip()]
+    assert len(lines) == len(everything["records"])
+    assert client.get("/api/runs/nope/trace").status_code == 404

@@ -7,8 +7,15 @@ const WRITE_TOOLS = new Set(["provision_jts_user", "reactivate_jts_user",
 const ROUTE = ["triage", "extractor", "validator", "risk_officer", "approval",
   "provisioner", "verifier", "evidence_officer", "closer", "remediator"];
 const WORK_ITEM_RE = /(?<![\w-])(\d{4,10})(?![\w-])/g;
+const ACTIVE = ["starting", "running", "awaiting_approval", "stopping"];
+// Trace filters, in the order a run meets them.
+const SERVICES = ["run", "supervisor", "model", "agent", "tool", "ewm", "jts", "http", "auth",
+  "gpt", "browser", "ledger", "approval", "log"];
 
-const state = { session: null, mode: "dry", current: null, source: null, visits: {} };
+const state = {
+  session: null, mode: "dry", current: null, source: null, visits: {}, view: "activity",
+  status: "", trace: { records: [], next: -1, filter: "all", timer: null, run: null },
+};
 const $ = (id) => document.getElementById(id);
 
 function el(tag, cls, text) {
@@ -70,7 +77,7 @@ function renderScope() {
 
 function setMode(mode) {
   state.mode = mode;
-  document.querySelectorAll(".segmented button").forEach((b) =>
+  document.querySelectorAll("button[data-mode]").forEach((b) =>
     b.setAttribute("aria-pressed", String(b.dataset.mode === mode)));
   $("confirm-row").hidden = mode !== "commit";
   $("start").classList.toggle("write", mode === "commit");
@@ -117,8 +124,32 @@ async function submit(event) {
 // ----------------------------------------------------------------- runs
 function statusPill(status) {
   const labels = { starting: "starting", running: "running", awaiting_approval: "needs approval",
-    done: "done", failed: "failed" };
+    stopping: "stopping", stopped: "stopped", done: "done", failed: "failed" };
   return el("span", `status ${status}`, labels[status] || status);
+}
+
+// The Stop button shows while the selected run can still be stopped.
+function renderStop(status) {
+  state.status = status;
+  const stop = $("stop");
+  stop.hidden = !ACTIVE.includes(status);
+  stop.disabled = status === "stopping";
+  stop.textContent = status === "stopping" ? "Stopping…" : "Stop run";
+}
+
+async function stopRun() {
+  if (!state.current) return;
+  const stop = $("stop");
+  stop.disabled = true;
+  stop.textContent = "Stopping…";
+  try {
+    const answer = await api(`/api/runs/${encodeURIComponent(state.current)}/stop`,
+      { method: "POST", body: {} });
+    renderFactsStatus(answer.status);
+  } catch (err) {
+    renderStop(state.status);
+    addEntry("fail", (b) => b.append(el("div", "tl-title", `Could not stop: ${err.message}`)));
+  }
 }
 
 async function refreshRuns() {
@@ -150,6 +181,7 @@ function resetRunView() {
   $("outcome").hidden = true;
   state.visits = {};
   renderRoute(null);
+  resetTrace();
 }
 
 async function selectRun(id) {
@@ -160,6 +192,7 @@ async function selectRun(id) {
   renderFacts(run);
   document.querySelectorAll("#runs button").forEach((b) => b.removeAttribute("aria-current"));
   refreshRuns();
+  if (state.view === "trace") loadTrace();
   const source = new EventSource(`/api/runs/${encodeURIComponent(id)}/events`);
   state.source = source;
   source.onmessage = (message) => handle(JSON.parse(message.data));
@@ -169,7 +202,157 @@ async function selectRun(id) {
     renderFacts(done);
     renderOutcome(done);
     refreshRuns();
+    if (state.view === "trace") loadTrace();
   });
+}
+
+// ---------------------------------------------------------------- views
+function setView(view) {
+  state.view = view;
+  document.querySelectorAll("button[data-view]").forEach((b) =>
+    b.setAttribute("aria-pressed", String(b.dataset.view === view)));
+  $("activity-view").hidden = view !== "activity";
+  $("trace-view").hidden = view !== "trace";
+  if (view === "trace") loadTrace();
+  else stopTracePolling();
+}
+
+// ---------------------------------------------------------------- trace
+function resetTrace() {
+  stopTracePolling();
+  state.trace.records = [];
+  state.trace.next = -1;
+  state.trace.run = state.current;
+  $("trace-list").replaceChildren();
+  $("trace-path").textContent = "";
+  $("trace-empty").hidden = false;
+  const link = $("trace-download");
+  link.hidden = !state.current;
+  if (state.current) {
+    link.href = `/api/runs/${encodeURIComponent(state.current)}/trace.jsonl`;
+    link.setAttribute("download", "");
+  }
+  renderTraceFilters();
+}
+
+function stopTracePolling() {
+  if (state.trace.timer) clearTimeout(state.trace.timer);
+  state.trace.timer = null;
+}
+
+async function loadTrace() {
+  stopTracePolling();
+  const id = state.current;
+  if (!id) return;
+  try {
+    const data = await api(`/api/runs/${encodeURIComponent(id)}/trace?after=${state.trace.next}`);
+    if (id !== state.current) return;
+    $("trace-path").textContent = `Saved to ${data.path}`;
+    if (data.records.length) {
+      state.trace.records.push(...data.records);
+      state.trace.next = data.next;
+      appendTrace(data.records);
+      renderTraceFilters();
+    }
+    if (!data.done || data.records.length) {
+      state.trace.timer = setTimeout(loadTrace, data.records.length ? 400 : 1500);
+    }
+  } catch (err) {
+    $("trace-path").textContent = `Trace unavailable: ${err.message}`;
+  }
+}
+
+function renderTraceFilters() {
+  const counts = {};
+  state.trace.records.forEach((r) => { counts[r.service] = (counts[r.service] || 0) + 1; });
+  const box = $("trace-filters");
+  box.replaceChildren();
+  const chip = (name, label, n) => {
+    const b = el("button", null, label);
+    b.type = "button";
+    b.setAttribute("aria-pressed", String(state.trace.filter === name));
+    if (n !== undefined) b.append(el("span", "n", n));
+    b.addEventListener("click", () => {
+      state.trace.filter = name;
+      renderTraceFilters();
+      $("trace-list").replaceChildren();
+      appendTrace(state.trace.records);
+    });
+    box.append(b);
+  };
+  chip("all", "all", state.trace.records.length);
+  SERVICES.filter((s) => counts[s]).forEach((s) => chip(s, s, counts[s]));
+  Object.keys(counts).filter((s) => !SERVICES.includes(s)).forEach((s) => chip(s, s, counts[s]));
+}
+
+function appendTrace(records) {
+  const list = $("trace-list");
+  const following = list.scrollHeight - list.scrollTop - list.clientHeight < 80;
+  const shown = records.filter((r) => state.trace.filter === "all" || r.service === state.trace.filter);
+  if (state.trace.records.length) $("trace-empty").hidden = true;
+  shown.forEach((r) => list.append(traceRow(r)));
+  // A long run keeps the page responsive: the newest rows stay, the file has all.
+  while (list.childElementCount > 4000) list.firstElementChild.remove();
+  if (following) list.scrollTop = list.scrollHeight;
+}
+
+function traceRow(r) {
+  const item = el("li", r.ok === false || r.denied ? "bad" : "");
+  const details = el("details");
+  const summary = el("summary");
+  const ms = typeof r.ms === "number" ? (r.ms >= 1000 ? `${(r.ms / 1000).toFixed(1)}s` : `${r.ms}ms`) : "";
+  summary.append(el("span", "t", `+${Number(r.t || 0).toFixed(1)}s`),
+    el("span", `svc svc-${r.service}`, r.service), el("span", "what", traceSummary(r)),
+    el("span", "ms", ms));
+  details.append(summary);
+  // The full record appears only when opened: some carry long observations.
+  details.addEventListener("toggle", () => {
+    if (details.open && details.childElementCount === 1) {
+      details.append(el("pre", null, JSON.stringify(r, null, 2)));
+    }
+  });
+  item.append(details);
+  return item;
+}
+
+function traceSummary(r) {
+  const s = r.service;
+  if (s === "model") {
+    const calls = (r.tool_calls || []).map((c) => c.name).join(", ");
+    const tokens = r.input_tokens != null ? `  ${r.input_tokens}→${r.output_tokens} tokens` : "";
+    return r.ok === false ? `${r.caller}: ${r.error}` : `${r.caller} → ${calls || "text"}${tokens}`;
+  }
+  if (s === "tool") {
+    const args = Object.entries(r.args || {}).map(([k, v]) => `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`).join(" ");
+    return `${r.agent}.${r.tool}(${args})${r.denied ? "  DENIED" : ""}${r.write ? "  write" : ""}`;
+  }
+  if (s === "supervisor") return `hop ${r.hop} → ${r.next}${r.why ? ": " + r.why : ""}`;
+  if (s === "http") {
+    return `${r.system || ""} ${r.method || ""} ${r.url || ""} → ${r.status ?? r.error ?? ""}`;
+  }
+  if (s === "ledger") {
+    return `${r.kind} ${r.operation || ""} ${r.userid || ""} wi ${r.work_item_id || "-"} ${r.outcome || r.reason || ""}`;
+  }
+  if (s === "log") return `[${r.level}] ${r.kind}`;
+  if (s === "agent") return `${r.agent}: ${String(r.text || "").replace(/\s+/g, " ")}`;
+  if (s === "approval") {
+    return r.kind === "card" ? `card for ${(r.users || []).join(", ")}`
+      : `${r.approved ? "approved" : "not approved"} by ${r.approver}: ${(r.userids || []).join(", ")}`;
+  }
+  if (["ewm", "jts", "gpt", "browser"].includes(s)) {
+    const target = r.userid || r.work_item_id || r.target || (r.userids || []).join(", ") || "";
+    const result = r.error || r.outcome || r.state || r.result || "";
+    return `${r.kind} ${target}${result !== "" ? " → " + result : ""}${r.source === "simulated" ? "  (simulated)" : ""}`;
+  }
+  if (s === "run") {
+    if (r.kind === "started" || r.kind === "session") {
+      return `${r.kind}: ${r.data_source || r.source || ""} ${r.environment || ""} ${r.mode || ""}`;
+    }
+    return `${r.kind}${r.halt_reason ? ": " + r.halt_reason : ""}${r.error ? ": " + r.error : ""}`;
+  }
+  const rest = Object.fromEntries(Object.entries(r).filter(([k]) =>
+    !["seq", "at", "t", "thread_id", "service", "kind", "ms", "ok"].includes(k)));
+  return `${r.kind || ""} ${JSON.stringify(rest)}`;
 }
 
 // ---------------------------------------------------------------- route
@@ -222,7 +405,20 @@ function handle(event) {
           document.createTextNode(` on ${d.environment} · ${Array.isArray(d.work_items)
             ? "work items " + d.work_items.join(", ") : d.work_items}`));
         b.append(title);
+        b.append(el("div", "why", d.data_source === "live"
+          ? `Live: reading work items from EWM ${d.ewm_host}; users from JTS ${d.jts_host}.`
+          : "Simulated estate: made-up work items and users. Nothing reaches EWM, JTS or GPT."));
       });
+      break;
+    case "stop_requested":
+      addEntry("stop", (b) => {
+        b.append(el("div", "tl-title", `Stop requested by ${d.by}`));
+        b.append(el("div", "why", "The run ends after its current step. A write in progress finishes first."));
+      });
+      renderFactsStatus("stopping");
+      break;
+    case "stopped":
+      addEntry("stop", (b) => b.append(el("div", "tl-title", `Run stopped ${d.at}`)));
       break;
     case "supervisor": {
       const next = d.next || "";
@@ -287,8 +483,8 @@ function handle(event) {
       break;
     case "run_finished":
       renderRoute(null);
-      addEntry(d.halted ? "fail" : "end", (b) => b.append(el("div", "tl-title",
-        d.halted ? `Stopped: ${d.halt_reason}` : "Run finished")));
+      addEntry(d.stopped ? "stop" : d.halted ? "fail" : "end", (b) => b.append(el("div", "tl-title",
+        d.stopped ? `Run ended: ${d.halt_reason}` : d.halted ? `Halted: ${d.halt_reason}` : "Run finished")));
       break;
     case "run_failed":
       renderRoute(null);
@@ -365,6 +561,7 @@ function renderFacts(run) {
     ["Thread", el("span", "mono", run.thread_id)],
     ["Request", run.prompt],
   ];
+  if (run.stopped_by) rows.push(["Stopped by", run.stopped_by]);
   if (run.error) rows.push(["Error", run.error]);
   rows.forEach(([label, value]) => {
     facts.append(el("dt", null, label));
@@ -375,12 +572,14 @@ function renderFacts(run) {
   $("tl-status").replaceChildren(statusPill(run.status));
   $("tl-mode").replaceChildren(el("span", `mode ${run.mode}`, run.mode === "commit" ? "write" : "dry run"));
   $("tl-thread").textContent = run.thread_id;
+  renderStop(run.status);
 }
 
 function renderFactsStatus(status) {
   $("tl-status").replaceChildren(statusPill(status));
   const first = $("facts").querySelector("dd");
   if (first) first.replaceChildren(statusPill(status));
+  renderStop(status);
   refreshRuns();
 }
 
@@ -393,8 +592,11 @@ function renderOutcome(run) {
   const done = run.mode === "commit"
     ? "Completed. Every write below went through the policy check and the ledger."
     : "Dry run complete. Nothing was written; the activity shows what a writing run would do.";
-  box.append(el("div", `banner ${report.halted ? "fail" : "ok"}`,
-    report.halted ? `Stopped: ${report.halt_reason}` : done));
+  const stopped = run.status === "stopped";
+  const reason = String(report.halt_reason || "");
+  box.append(el("div", `banner ${stopped ? "stop" : report.halted ? "fail" : "ok"}`, stopped
+    ? `${reason.charAt(0).toUpperCase()}${reason.slice(1)}. Nothing more was started; anything below was written before the stop and is in the ledger.`
+    : report.halted ? `Halted: ${reason}` : done));
   const results = report.results || [];
   if (results.length) {
     const wrap = el("div", "scroll-x");
@@ -432,8 +634,16 @@ async function boot() {
   state.session = await api("/api/session");
   const s = state.session;
   const env = $("env");
-  env.classList.add(s.sandbox ? "env-sandbox" : s.environment === "PROD" ? "env-prod" : "env-test");
-  $("env-text").textContent = s.sandbox ? `sandbox · ${s.environment}` : s.environment;
+  const live = s.data_source === "live";
+  // Which data the agents see must never be in doubt: live systems or made-up ones.
+  env.classList.add(!live ? "env-sandbox" : s.environment === "PROD" ? "env-prod" : "env-live");
+  $("env-text").textContent = live ? `live · ${s.environment}` : "simulated data";
+  $("source-banner").hidden = live;
+  if (live && (s.ewm_host || s.jts_host)) {
+    $("hosts").hidden = false;
+    $("hosts").textContent = [s.ewm_host, s.jts_host].filter(Boolean).join(" · ");
+    $("hosts").title = `EWM ${s.ewm_host}, JTS ${s.jts_host}`;
+  }
   $("model").textContent = `${s.model} · ${s.orchestration}`;
   $("operator").textContent = s.operator;
   $("confirm-word").textContent = s.confirm_word;
@@ -441,12 +651,16 @@ async function boot() {
   examples();
   setMode("dry");
   renderRoute(null);
-  document.querySelectorAll(".segmented button").forEach((b) =>
+  document.querySelectorAll("button[data-mode]").forEach((b) =>
     b.addEventListener("click", () => setMode(b.dataset.mode)));
+  document.querySelectorAll("button[data-view]").forEach((b) =>
+    b.addEventListener("click", () => setView(b.dataset.view)));
+  $("stop").addEventListener("click", stopRun);
   $("prompt").addEventListener("input", renderScope);
   $("request").addEventListener("submit", submit);
+  resetTrace();
   const runs = await refreshRuns();
-  const active = runs.find((r) => ["starting", "running", "awaiting_approval"].includes(r.status));
+  const active = runs.find((r) => ACTIVE.includes(r.status));
   if (active) selectRun(active.id);
   setInterval(() => { refreshRuns().catch(() => {}); }, 8000);
 }

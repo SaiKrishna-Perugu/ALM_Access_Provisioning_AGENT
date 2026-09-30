@@ -23,6 +23,12 @@ What the browser can and cannot do is decided here, not in the page:
   someone approves in the page, and can approve only users on the card.
 * **The page is locked down.** A strict Content-Security-Policy, no third-party
   requests, no framing, and every piece of agent output is rendered as text.
+* **Stop means stop, safely.** The Stop button (or ``agent_local.py --stop``
+  from another terminal, or Ctrl+C here) halts the run after its current step;
+  a write in progress always finishes, so nothing is left half-done.
+* **Everything is traced.** Each run records every model, tool, service, HTTP,
+  ledger and GPT call to ``out/<local|sandbox>/traces/<thread>.jsonl``; the
+  Trace tab shows it live and downloads it.
 """
 # No `from __future__ import annotations` here: FastAPI must see the real
 # types of the handlers defined inside create_app, not strings it cannot resolve.
@@ -31,8 +37,6 @@ import asyncio
 import getpass
 import hmac
 import json
-import logging
-import os
 import queue
 import re
 import secrets
@@ -111,13 +115,17 @@ class WebRun:
     work_items: list[str]
     sandbox: bool
     created: float = field(default_factory=time.time)
-    status: str = "starting"  # running | awaiting_approval | done | failed
+    # running | awaiting_approval | stopping | done | stopped | failed
+    status: str = "starting"
     events: list[dict] = field(default_factory=list)
     pending: dict | None = None
     report: dict | None = None
     error: str = ""
     decisions: queue.Queue = field(default_factory=queue.Queue)
     lock: threading.Lock = field(default_factory=threading.Lock)
+    control: object = None   # alm_agents.control.RunControl
+    trace: object = None     # alm_agents.trace.RunTrace
+    thread: threading.Thread | None = None
 
     def emit(self, kind: str, data: dict) -> None:
         with self.lock:
@@ -128,7 +136,9 @@ class WebRun:
         return {"id": self.id, "thread_id": self.thread_id, "prompt": self.prompt,
                 "mode": self.mode, "work_items": self.work_items, "sandbox": self.sandbox,
                 "status": self.status, "created": self.created, "error": self.error,
-                "pending": self.pending, "report": _report_view(self.report)}
+                "pending": self.pending, "report": _report_view(self.report),
+                "stopped_by": getattr(self.control, "by", "") or "",
+                "trace": str(getattr(self.trace, "path", "") or "")}
 
 
 def _clip(value, limit: int = 1500):
@@ -169,6 +179,7 @@ def _report_view(report: dict | None) -> dict | None:
                                           "message", "replayed")}
                     for r in report.get("results") or []],
         "estate": report.get("estate"),
+        "trace": report.get("trace", ""),
     }
 
 
@@ -177,19 +188,59 @@ def _report_view(report: dict | None) -> dict | None:
 class RunManager:
     """Starts runs one at a time, each in its own thread and event loop."""
 
+    ACTIVE = ("starting", "running", "awaiting_approval", "stopping")
+
     def __init__(self, *, sandbox: bool, settings_for, llm_for, resolver=None,
-                 operator: str = ""):
+                 operator: str = "", out_dir: Path | None = None):
         self.sandbox = sandbox
         self.settings_for = settings_for  # (mode) -> Settings
         self.llm_for = llm_for            # (settings) -> (agent_llm, supervisor_llm)
         self.resolver = resolver
         self.operator = operator or getpass.getuser()
+        # Where traces go: out/local for real runs, out/sandbox for simulated ones.
+        self.out_dir = out_dir
         self.runs: dict[str, WebRun] = {}
         self._busy = threading.Lock()
 
+    def _out_dir(self) -> Path:
+        if self.out_dir is not None:
+            return self.out_dir
+        if self.sandbox:
+            from .sandbox import OUT_DIR as SANDBOX_OUT
+
+            return SANDBOX_OUT
+        from .local import OUT_DIR as LOCAL_OUT
+
+        return LOCAL_OUT
+
     def active(self) -> WebRun | None:
-        return next((r for r in self.runs.values()
-                     if r.status in ("starting", "running", "awaiting_approval")), None)
+        return next((r for r in self.runs.values() if r.status in self.ACTIVE), None)
+
+    def stop(self, run_id: str, by: str = "") -> WebRun:
+        """Stop a run after its current step. A write in progress finishes."""
+        run = self.runs.get(run_id)
+        if run is None:
+            raise KeyError(run_id)
+        if run.status not in self.ACTIVE:
+            raise RequestRefused("This run has already ended.")
+        by = by or f"web:{self.operator}"
+        if run.control is not None:
+            run.control.request_stop(by)
+        if run.status != "stopping":
+            run.emit("stop_requested", {"by": by})
+        run.status = "stopping"
+        run.decisions.put((False, []))  # wakes a run waiting at the approval card
+        return run
+
+    def shutdown(self, timeout: float = 120.0) -> WebRun | None:
+        """On Ctrl+C in the server's terminal: stop the active run and let it end."""
+        run = self.active()
+        if run is None:
+            return None
+        self.stop(run.id, by=f"cli:{self.operator} (console closed)")
+        if run.thread is not None:
+            run.thread.join(timeout)
+        return run
 
     def start(self, prompt: str, mode: str, confirm: str) -> WebRun:
         if self.active() is not None:
@@ -200,12 +251,24 @@ class RunManager:
         prefix = "web-sandbox" if self.sandbox else "web"
         run = WebRun(id=run_id, thread_id=f"{prefix}-{run_id[:8]}", prompt=prompt.strip(),
                      mode=mode, work_items=work_items, sandbox=self.sandbox)
+        from .control import RunControl, stop_file_for
+        from .local import DEFAULT_LEDGER
+        from .trace import open_run_trace
+
+        ledger = getattr(settings, "ledger_path", "") or str(DEFAULT_LEDGER)
+        run.control = RunControl(thread_id=run.thread_id,
+                                 stop_file=stop_file_for(ledger if not self.sandbox
+                                                         else str(DEFAULT_LEDGER)))
+        run.trace = open_run_trace(self._out_dir(), run.thread_id, settings=settings)
         self.runs[run_id] = run
+        source = data_source(settings, sandbox=self.sandbox)
         run.emit("run_started", {"mode": mode, "work_items": work_items or "the active queue",
                                  "environment": settings.environment,
-                                 "sandbox": self.sandbox, "thread_id": run.thread_id})
-        threading.Thread(target=self._run, args=(run, settings), daemon=True,
-                         name=f"alm-run-{run_id}").start()
+                                 "sandbox": self.sandbox, "thread_id": run.thread_id,
+                                 **source})
+        run.thread = threading.Thread(target=self._run, args=(run, settings), daemon=True,
+                                      name=f"alm-run-{run_id}")
+        run.thread.start()
         return run
 
     def decide(self, run_id: str, approved: bool, userids: list[str]) -> None:
@@ -240,13 +303,26 @@ class RunManager:
             run.pending = card
             run.status = "awaiting_approval"
             run.emit("approval_required", card)
-            try:
-                approved, chosen = run.decisions.get(timeout=APPROVAL_TIMEOUT_SECONDS)
-            except queue.Empty:
-                approved, chosen = False, []
-                run.emit("log", {"text": "No decision in time: the batch is rejected."})
+            approved, chosen = False, []
+            deadline = time.monotonic() + APPROVAL_TIMEOUT_SECONDS
+            while True:
+                if run.control is not None and run.control.stop_requested():
+                    break  # the approval node sees the stop and halts
+                try:
+                    approved, chosen = run.decisions.get(timeout=1.0)
+                    break
+                except queue.Empty:
+                    if time.monotonic() > deadline:
+                        run.emit("log", {"text": "No decision in time: the batch is rejected."})
+                        break
             run.pending = None
-            run.status = "running"
+            stopping = run.control is not None and run.control.stop_requested()
+            run.status = "stopping" if stopping else "running"
+            if stopping:
+                return ApprovalDecision(
+                    thread_id=payload.get("thread_id", ""), approved=False,
+                    approver=getattr(run.control, "by", "") or f"web:{self.operator}",
+                    plan_hash=payload.get("plan_hash", ""), comment="run stopped")
             run.emit("approval_decided", {"approved": approved, "userids": chosen,
                                           "approver": f"web:{self.operator}"})
             return ApprovalDecision(
@@ -257,39 +333,74 @@ class RunManager:
         return decide
 
     def _run(self, run: WebRun, settings) -> None:
-        run.status = "running"
+        if run.status == "starting":
+            run.status = "running"
         console = WebConsole(run)
-        try:
-            agent_llm, supervisor_llm = self.llm_for(settings)
-            decide = self._decider(run, settings)
-            if self.sandbox:
-                from .sandbox import OUT_DIR as SANDBOX_OUT
-                from .sandbox import run_sandbox
+        trace = run.trace
+        with trace:
+            trace.write({"service": "run", "kind": "started", "via": "web",
+                         "operator": self.operator, "mode": run.mode,
+                         "scope": run.work_items or "the whole active queue",
+                         "environment": settings.environment,
+                         "operator_request": run.prompt,
+                         "model": getattr(settings, "agent_model", ""),
+                         "orchestration": getattr(settings, "orchestration", ""),
+                         **data_source(settings, sandbox=self.sandbox)})
+            try:
+                agent_llm, supervisor_llm = self.llm_for(settings)
+                decide = self._decider(run, settings)
+                if self.sandbox:
+                    from .sandbox import OUT_DIR as SANDBOX_OUT
+                    from .sandbox import run_sandbox
 
-                report = asyncio.run(run_sandbox(
-                    settings, llm=agent_llm, supervisor_llm=supervisor_llm, console=console,
-                    decide=decide, work_item_ids=run.work_items, operator_request=run.prompt,
-                    thread_id=run.thread_id,
-                    shots_dir=str(SANDBOX_OUT / "evidence" / run.thread_id)))
-            else:
-                from . import local
+                    report = asyncio.run(run_sandbox(
+                        settings, llm=agent_llm, supervisor_llm=supervisor_llm,
+                        console=console, decide=decide, work_item_ids=run.work_items,
+                        operator_request=run.prompt, thread_id=run.thread_id,
+                        shots_dir=str(SANDBOX_OUT / "evidence" / run.thread_id),
+                        control=run.control, trace=trace))
+                    report["trace"] = str(trace.path)
+                else:
+                    from . import local
 
-                args = SimpleNamespace(work_item=run.work_items, resume="", record=False,
-                                       auto_approve=False)
-                report = asyncio.run(local.run(
-                    settings, args, console, resolver=self.resolver, decide=decide,
-                    thread_id=run.thread_id, operator_request=run.prompt))
-            run.report = report
-            run.status = "done"
-            run.emit("run_finished", {"halted": bool(report.get("halted")),
-                                      "halt_reason": report.get("halt_reason", ""),
-                                      "metrics": report.get("metrics") or {}})
-        except Exception as err:  # noqa: BLE001 - shown in the page, never raised
-            from alm_core.logging import scrub_secrets
+                    args = SimpleNamespace(work_item=run.work_items, resume="", record=False,
+                                           auto_approve=False)
+                    report = asyncio.run(local.run(
+                        settings, args, console, resolver=self.resolver, decide=decide,
+                        thread_id=run.thread_id, operator_request=run.prompt,
+                        control=run.control, trace=trace))
+                run.report = report
+                reason = report.get("halt_reason", "") or ""
+                stopped = bool(report.get("halted")) and reason.startswith("stopped")
+                run.status = "stopped" if stopped else "done"
+                trace.write({"service": "run", "kind": "finished",
+                             "halted": bool(report.get("halted")), "halt_reason": reason,
+                             "metrics": report.get("metrics") or {}})
+                run.emit("run_finished", {"halted": bool(report.get("halted")),
+                                          "halt_reason": reason, "stopped": stopped,
+                                          "metrics": report.get("metrics") or {}})
+            except Exception as err:  # noqa: BLE001 - shown in the page, never raised
+                import traceback
 
-            run.error = scrub_secrets(f"{type(err).__name__}: {err}")[:600]
-            run.status = "failed"
-            run.emit("run_failed", {"error": run.error})
+                from alm_core.logging import scrub_secrets
+
+                run.error = scrub_secrets(f"{type(err).__name__}: {err}")[:600]
+                run.status = "failed"
+                trace.write({"service": "run", "kind": "failed", "ok": False,
+                             "error": run.error,
+                             "traceback": scrub_secrets(traceback.format_exc())[-8000:]})
+                run.emit("run_failed", {"error": run.error})
+
+
+def data_source(settings, *, sandbox: bool) -> dict:
+    """Where a run's work items come from - shown on the page and in the trace."""
+    from urllib.parse import urlsplit
+
+    if sandbox:
+        return {"data_source": "simulated", "ewm_host": "", "jts_host": ""}
+    return {"data_source": "live",
+            "ewm_host": urlsplit(getattr(settings, "ewm_server", "") or "").hostname or "",
+            "jts_host": urlsplit(getattr(settings, "jts_server", "") or "").hostname or ""}
 
 
 # ------------------------------------------------------------------ the app
@@ -313,7 +424,7 @@ class Sessions:
 
 
 def create_app(manager: RunManager, *, port: int, access_token: str, environment: str,
-               model: str, orchestration: str):
+               model: str, orchestration: str, source: dict | None = None):
     from fastapi import FastAPI, Request
     from fastapi.responses import (
         FileResponse,
@@ -400,7 +511,9 @@ def create_app(manager: RunManager, *, port: int, access_token: str, environment
         return {"csrf": session_of(request)[1], "environment": environment,
                 "sandbox": manager.sandbox, "model": model, "orchestration": orchestration,
                 "operator": manager.operator, "max_commit_work_items": MAX_COMMIT_WORK_ITEMS,
-                "confirm_word": "PROD" if environment == "PROD" else "COMMIT"}
+                "confirm_word": "PROD" if environment == "PROD" else "COMMIT",
+                **(source or {"data_source": "simulated" if manager.sandbox else "live",
+                              "ewm_host": "", "jts_host": ""})}
 
     @app.get("/api/runs")
     async def list_runs(request: Request):
@@ -443,6 +556,44 @@ def create_app(manager: RunManager, *, port: int, access_token: str, environment
             return refuse(409, str(err))
         return {"ok": True}
 
+    @app.post("/api/runs/{run_id}/stop")
+    async def stop_run(request: Request, run_id: str):
+        if (denied := require(request, write=True)) is not None:
+            return denied
+        try:
+            run = manager.stop(run_id)
+        except KeyError:
+            return refuse(404, "no such run")
+        except RequestRefused as err:
+            return refuse(409, str(err))
+        return {"ok": True, "status": run.status}
+
+    @app.get("/api/runs/{run_id}/trace")
+    async def run_trace(request: Request, run_id: str, after: int = -1,
+                        service: str = ""):
+        if (denied := require(request)) is not None:
+            return denied
+        run = manager.runs.get(run_id)
+        if run is None or run.trace is None:
+            return refuse(404, "no such run")
+        records = run.trace.since(after, limit=2000)
+        last = records[-1]["seq"] if records else after
+        if service:
+            wanted = set(service.split(","))
+            records = [r for r in records if r.get("service") in wanted]
+        return {"records": records, "next": last, "path": str(run.trace.path),
+                "done": run.status not in manager.ACTIVE}
+
+    @app.get("/api/runs/{run_id}/trace.jsonl")
+    async def run_trace_file(request: Request, run_id: str):
+        if (denied := require(request)) is not None:
+            return denied
+        run = manager.runs.get(run_id)
+        if run is None or run.trace is None or not Path(run.trace.path).is_file():
+            return refuse(404, "no such run")
+        return FileResponse(run.trace.path, media_type="application/x-ndjson",
+                            filename=f"{run.thread_id}.jsonl")
+
     @app.get("/api/runs/{run_id}/events")
     async def events(request: Request, run_id: str, after: int = -1):
         if (denied := require(request)) is not None:
@@ -461,7 +612,7 @@ def create_app(manager: RunManager, *, port: int, access_token: str, environment
                     yield f"id: {cursor}\ndata: {json.dumps(event)}\n\n"
                 if fresh:
                     quiet = 0.0
-                elif run.status in ("done", "failed"):
+                elif run.status in ("done", "stopped", "failed"):
                     yield "event: end\ndata: {}\n\n"
                     return
                 else:
@@ -502,8 +653,10 @@ def main(argv: list[str] | None = None) -> int:
     from .sandbox import load_env
 
     load_env()
-    os.environ.setdefault("ALM_LOG_LEVEL", "ERROR")
-    logging.getLogger().setLevel(logging.ERROR)
+    from alm_core.logging import route_console
+
+    # Everything goes to each run's trace; the terminal shows errors only.
+    route_console("ERROR")
     if not 1024 <= args.port <= 65535:
         print("setup: --port must be between 1024 and 65535")
         return 2
@@ -554,11 +707,18 @@ def main(argv: list[str] | None = None) -> int:
     access_token = secrets.token_urlsafe(32)
     manager = RunManager(sandbox=args.sandbox, settings_for=settings_for, llm_for=llm_for,
                          resolver=resolver)
+    source = data_source(probe, sandbox=args.sandbox)
     app = create_app(manager, port=args.port, access_token=access_token,
                      environment=probe.environment, model=probe.agent_model,
-                     orchestration=probe.orchestration)
+                     orchestration=probe.orchestration, source=source)
     url = f"http://{LOOPBACK}:{args.port}/?token={access_token}"
-    print(f"ALM agent console - {'SANDBOX (simulated estate)' if args.sandbox else probe.environment}")
+    if args.sandbox:
+        print("ALM agent console - SANDBOX: SIMULATED DATA. The work items and users are "
+              "made up;\n  nothing reaches EWM, JTS or GPT. For real work items, start it "
+              "without --sandbox.")
+    else:
+        print(f"ALM agent console - LIVE {probe.environment}: EWM {source['ewm_host']}, "
+              f"JTS {source['jts_host']}, signed in as {probe.service_account}")
     print(f"Open this link in your browser (it signs you in; keep it private):\n  {url}")
     print("Stop the console with Ctrl+C.")
     if not args.no_browser:
@@ -574,4 +734,12 @@ def main(argv: list[str] | None = None) -> int:
 
     uvicorn.run(app, host=LOOPBACK, port=args.port, log_level="warning",
                 proxy_headers=False, server_header=False)
+    # Ctrl+C here: a run in progress stops after its current step, not mid-write.
+    if manager.active() is not None:
+        print("Stopping the run in progress after its current step "
+              "(a write in progress always finishes)...")
+        stopped = manager.shutdown()
+        if stopped is not None and stopped.status in RunManager.ACTIVE:
+            print("The run did not end in time. Resume or re-run it later: the ledger "
+                  "keeps anything already written from being written twice.")
     return 0

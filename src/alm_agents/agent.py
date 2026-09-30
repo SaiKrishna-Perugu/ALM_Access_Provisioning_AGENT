@@ -33,6 +33,7 @@ from typing import Any
 from alm_core.logging import get_logger, redact_names, redact_pii, scrub_secrets
 from alm_core.models import AuditEvent, Outcome
 
+from .control import StopRequested
 from .policy import PolicyEngine
 
 log = get_logger("alm.agent")
@@ -245,8 +246,13 @@ class AgentRunner:
                  environment: str = "",
                  on_event: Callable[[str, dict], None] | None = None,
                  redact: bool = True,
-                 known_names: Callable[[], Any] | None = None):
+                 known_names: Callable[[], Any] | None = None,
+                 control=None):
         self.llm = llm
+        # The run's stop switch (alm_agents.control.RunControl), checked before
+        # every model call and every tool call. A tool call already running -
+        # a write in particular - is always allowed to finish.
+        self.control = control
         # Strip e-mail addresses, and the personal names this run holds, from
         # what the model reads. User IDs stay: they are what the agents work
         # with. The console and audit keep the original.
@@ -325,6 +331,21 @@ class AgentRunner:
         except Exception:  # noqa: BLE001 - auditing must not break the run
             log.exception("agent_audit_write_failed", tool=tool)
 
+    # ----------------------------------------------------------------- stop
+
+    def _stopping(self) -> bool:
+        return self.control is not None and self.control.stop_requested()
+
+    def _stop_reason(self) -> str:
+        return getattr(self.control, "reason", "") or "stopped by the operator"
+
+    async def _ask(self, model, messages, *, timeout: float):
+        """One model call, abandoned at once if the operator stops the run."""
+        from .control import unless_stopped
+
+        return await unless_stopped(self.control,
+                                    asyncio.wait_for(model.ainvoke(messages), timeout))
+
     # ----------------------------------------------------------------- loop
 
     async def run(self, agent: Agent, task: str, context: str = "") -> AgentResult:
@@ -357,12 +378,18 @@ class AgentRunner:
             if time.monotonic() > deadline:
                 result.stopped_because = "timeout"
                 break
+            if self._stopping():
+                result.stopped_because = self._stop_reason()
+                break
 
             try:
-                response: AIMessage = await asyncio.wait_for(
-                    model.ainvoke(messages), timeout=max(5, deadline - time.monotonic()))
+                response: AIMessage = await self._ask(
+                    model, messages, timeout=max(5, deadline - time.monotonic()))
             except asyncio.TimeoutError:
                 result.stopped_because = "model call timed out"
+                break
+            except StopRequested:
+                result.stopped_because = self._stop_reason()
                 break
             except Exception as err:  # noqa: BLE001 - a model outage is not a crash
                 reason = scrub_secrets(f"{type(err).__name__}: {err}")[:300]
@@ -389,6 +416,9 @@ class AgentRunner:
                 break
 
             for call in tool_calls:
+                if self._stopping():
+                    result.stopped_because = self._stop_reason()
+                    break
                 name = call.get("name", "")
                 args = call.get("args", {}) or {}
                 started = time.monotonic()
@@ -409,10 +439,11 @@ class AgentRunner:
                                             tool_call_id=call.get("id") or name))
                 log.info("agent_tool_call", agent=agent.name, tool=name,
                          denied=denied, ms=record.ms)
-                self._emit("tool_call", agent=agent.name, tool=name, args=args,
-                           observation=observation, denied=denied, ms=record.ms)
-
                 spec = self.registry.get(name)
+                self._emit("tool_call", agent=agent.name, tool=name, args=args,
+                           observation=observation, denied=denied, ms=record.ms,
+                           write=bool(spec is not None and spec.is_write))
+
                 if spec is not None and spec.terminal and not denied:
                     if name == "handoff":
                         result.handoff_to = str(args.get("to", ""))
@@ -425,6 +456,9 @@ class AgentRunner:
                                              if k != "summary"}
                     result.stopped_because = name
                     return result
+            if self._stopping():
+                result.stopped_because = self._stop_reason()
+                break
         else:
             result.stopped_because = "iteration limit"
 

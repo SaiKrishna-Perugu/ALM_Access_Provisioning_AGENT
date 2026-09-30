@@ -249,6 +249,19 @@ def configure(level: str = "") -> None:
     )
 
 
+def route_console(level: str) -> None:
+    """Record INFO and above, but show only ``level`` and above on the console.
+
+    A run's trace (``alm_agents.trace``) listens on the root logger, so the
+    events must still be produced when the terminal or web console wants quiet.
+    """
+    global _configured
+    _configured = False
+    configure("INFO")
+    for handler in logging.getLogger().handlers:
+        handler.setLevel(level.upper())
+
+
 def get_logger(name: str = "alm"):
     """A logger that emits redacted JSON, with or without structlog installed."""
     configure()

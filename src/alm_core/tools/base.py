@@ -19,6 +19,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
+from .. import trace
 from ..errors import AlmError, ApprovalRequired, IdempotencyViolation, OutcomeUnknown
 from ..logging import get_logger
 from ..models import (
@@ -96,6 +97,7 @@ async def guarded_write(
         result = ProvisionResult(**base, outcome=Outcome.SKIPPED,
                                  message="shadow mode - not written")
         await record(ctx, result, step)
+        trace.emit("ledger", "shadow", **_traced(base), step=step)
         return result
 
     # 2. Approval. An unapproved write is a bug, not a decision to make here.
@@ -104,6 +106,8 @@ async def guarded_write(
         result = ProvisionResult(**base, outcome=Outcome.NOT_ATTEMPTED,
                                  message="no human approval covers this user")
         await record(ctx, result, step)
+        trace.emit("ledger", "refused", **_traced(base), step=step,
+                   reason="no human approval covers this user")
         raise ApprovalRequired(
             f"{operation.value} for {userid} is not covered by an approval",
             context={"work_item_id": work_item_id, "thread_id": ctx.thread_id})
@@ -117,6 +121,8 @@ async def guarded_write(
         result = ProvisionResult(**base, outcome=Outcome.NOT_ATTEMPTED,
                                  message=str(err), detail=err.context)
         await record(ctx, result, step)
+        trace.emit("ledger", "claim_refused", **_traced(base), step=step,
+                   reason=str(err))
         return result
 
     if not proceed:
@@ -124,7 +130,12 @@ async def guarded_write(
                   ProvisionResult(**base, outcome=Outcome.SKIPPED, replayed=True,
                                   message="already completed by an earlier run"))
         await record(ctx, replay, step)
+        trace.emit("ledger", "replay", **_traced(base), step=step,
+                   outcome=replay.outcome.value, message=replay.message)
         return replay
+
+    trace.emit("ledger", "claimed", **_traced(base), step=step)
+    started = asyncio.get_running_loop().time()
 
     # 4. Perform it, bounded, and always complete the claim.
     try:
@@ -148,7 +159,16 @@ async def guarded_write(
 
     await ctx.store.complete(key, result)
     await record(ctx, result, step)
+    trace.emit("ledger", "write", **_traced(base), step=step, outcome=result.outcome.value,
+               ok=result.outcome == Outcome.OK, message=result.message,
+               ms=int((asyncio.get_running_loop().time() - started) * 1000),
+               outcome_unknown=bool((result.detail or {}).get("outcome_unknown")))
     return result
+
+
+def _traced(base: dict) -> dict:
+    return {"userid": base["userid"], "operation": base["operation"].value,
+            "work_item_id": base["work_item_id"]}
 
 
 async def to_thread(func, /, *args, **kwargs):
