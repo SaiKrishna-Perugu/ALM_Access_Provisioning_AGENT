@@ -80,6 +80,19 @@ class Settings(BaseSettings):
     secret_version: str = Field(
         default="latest",
         description="Pin to a numeric version in PROD if rotation must be deliberate.")
+    secret_backend: Literal["auto", "gcp", "aws", "azure", "none"] = Field(
+        default="auto",
+        description=("Where secrets live, after the environment and mounted files. "
+                     "gcp: Secret Manager. aws: Secrets Manager. azure: Key Vault. "
+                     "auto: gcp when GOOGLE_CLOUD_PROJECT is set, otherwise none."))
+    secret_prefix: str = Field(
+        default="",
+        description="Prefix for secret names in AWS Secrets Manager, e.g. 'alm/prod/'.")
+    aws_region: str = Field(
+        default="", description="AWS region (Secrets Manager, RDS tokens, Bedrock). "
+                                "Defaults to AWS_REGION.")
+    azure_key_vault_url: str = Field(
+        default="", description="Key Vault URL, e.g. https://alm-prod.vault.azure.net/")
 
     # ---------------------------------------------------------------- TLS
     ca_bundle: str = Field(
@@ -97,7 +110,14 @@ class Settings(BaseSettings):
                      "access token is fetched at connect time."))
     postgres_iam_auth: bool = Field(
         default=True,
-        description="Use a short-lived IAM access token as the database password.")
+        description="Use a short-lived IAM access token as the database password "
+                    "(Cloud SQL). Kept for older settings; db_auth says which cloud.")
+    db_auth: Literal["auto", "password", "gcp_iam", "aws_iam", "azure_ad"] = Field(
+        default="auto",
+        description=("How the service authenticates to Postgres. password: the DSN's own. "
+                     "gcp_iam / aws_iam / azure_ad: a short-lived token from the "
+                     "runtime identity, minted per connection. auto: gcp_iam when "
+                     "postgres_iam_auth is on, otherwise password."))
     postgres_pool_min: int = Field(default=1, ge=0)
     postgres_pool_max: int = Field(default=10, ge=1)
     ledger_path: str = Field(
@@ -112,6 +132,10 @@ class Settings(BaseSettings):
                      "The agents never need them: the e-mail-vs-LDAP check runs in code."))
 
     # ------------------------------------------------------------ pub/sub
+    ad_job_transport: Literal["store", "pubsub"] = Field(
+        default="store",
+        description=("How AD jobs reach the Windows worker. store: the shared Postgres "
+                     "job queue (any cloud). pubsub: Google Pub/Sub."))
     pubsub_topic: str = Field(
         default="alm-ad-provisioning",
         description="Topic the orchestrator publishes AD jobs to.")
@@ -120,14 +144,21 @@ class Settings(BaseSettings):
         description="Subscription the Windows worker pulls from.")
 
     # ---------------------------------------------------------------- llm
-    llm_provider: Literal["gemini_api", "vertex_express", "vertex"] = Field(
+    llm_provider: Literal["gemini_api", "vertex_express", "vertex", "bedrock",
+                          "azure_openai"] = Field(
         default="gemini_api",
         description=("gemini_api: the Gemini Developer API with a key from Google AI "
                      "Studio (GEMINI_API_KEY). vertex_express: Vertex AI with an API key "
                      "created in the Google Cloud console (also GEMINI_API_KEY) - the two "
                      "kinds of key look alike but each works on one endpoint only. "
                      "vertex: Vertex AI as a service account - no key, project-scoped. "
-                     "Same models every way; see llm.py."))
+                     "bedrock: AWS Bedrock with the runtime IAM role (Claude, Llama, "
+                     "Mistral...). azure_openai: Azure OpenAI with a managed identity or "
+                     "AZURE_OPENAI_API_KEY; ALM_AGENT_MODEL is the deployment name. "
+                     "See llm.py."))
+    azure_openai_endpoint: str = Field(
+        default="", description="https://<resource>.openai.azure.com/")
+    azure_openai_api_version: str = Field(default="2024-10-21")
     gemini_api_key_secret_name: str = Field(
         default="alm-gemini-api-key",
         description="Secret Manager id holding the Gemini API key (gemini_api provider).")
@@ -260,12 +291,21 @@ class Settings(BaseSettings):
                 "ALM_LLM_PROVIDER=vertex needs GOOGLE_CLOUD_PROJECT: the Vertex AI "
                 "client is project-scoped. Set it, use ALM_LLM_PROVIDER=gemini_api "
                 "with a GEMINI_API_KEY, or run with ALM_ORCHESTRATION=deterministic.")
-        if self.llm_provider != "vertex" and any(
-                m.lower().startswith("claude") for m in (self.agent_model,
-                                                         self.supervisor_model)):
+        models = [m.lower() for m in (self.agent_model, self.supervisor_model) if m]
+        if self.llm_provider in ("gemini_api", "vertex_express") and any(
+                m.startswith("claude") for m in models):
             raise ValueError(
-                "Claude models are served through Vertex AI Model Garden, not the "
-                "Gemini API. Set ALM_LLM_PROVIDER=vertex, or choose a gemini-* model.")
+                "Claude models are served through Vertex AI Model Garden or AWS Bedrock, "
+                "not the Gemini API. Set ALM_LLM_PROVIDER=vertex or bedrock, or choose "
+                "a gemini-* model.")
+        if self.llm_provider in ("bedrock", "azure_openai") and any(
+                m.startswith("gemini") for m in models):
+            raise ValueError(
+                f"ALM_LLM_PROVIDER={self.llm_provider} cannot serve a Gemini model. Set "
+                "ALM_AGENT_MODEL to a model this provider serves (for azure_openai, "
+                "the deployment name).")
+        if self.llm_provider == "azure_openai" and self.llm_enabled and                 self.orchestration in ("agentic", "guided") and not self.azure_openai_endpoint:
+            raise ValueError("ALM_LLM_PROVIDER=azure_openai needs ALM_AZURE_OPENAI_ENDPOINT.")
         if self.orchestration in ("agentic", "guided") and not self.llm_enabled:
             raise ValueError(
                 f"ALM_ORCHESTRATION={self.orchestration} contradicts ALM_LLM_ENABLED=false. Choose "
@@ -314,6 +354,24 @@ class Settings(BaseSettings):
     @property
     def routing_model(self) -> str:
         return self.supervisor_model or self.agent_model
+
+    @property
+    def secret_store(self) -> str:
+        """The cloud secret store in use: gcp, aws, azure or none."""
+        if self.secret_backend != "auto":  # noqa: S105  # pragma: allowlist secret
+            return self.secret_backend
+        return "gcp" if self.project_id else "none"
+
+    @property
+    def database_auth(self) -> str:
+        """password, gcp_iam, aws_iam or azure_ad."""
+        if self.db_auth != "auto":
+            return self.db_auth
+        return "gcp_iam" if self.postgres_iam_auth else "password"
+
+    @property
+    def aws_region_name(self) -> str:
+        return self.aws_region or os.getenv("AWS_REGION", "") or             os.getenv("AWS_DEFAULT_REGION", "")
 
     def secret_path(self, secret_id: str) -> str:
         """Full Secret Manager resource name for a secret id."""

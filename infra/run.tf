@@ -114,8 +114,20 @@ resource "google_cloud_run_v2_service" "api" {
         value = "/etc/ssl/certs/corporate-ca.pem"
       }
       env {
+        name  = "ALM_AD_JOB_TRANSPORT"
+        value = "pubsub"
+      }
+      env {
         name  = "ALM_PUBSUB_TOPIC"
         value = google_pubsub_topic.ad_jobs.name
+      }
+      env {
+        name  = "ALM_SECRET_BACKEND"
+        value = "gcp"
+      }
+      env {
+        name  = "ALM_DB_AUTH"
+        value = "gcp_iam"
       }
       env {
         name  = "ALM_APPROVAL_BASE_URL"

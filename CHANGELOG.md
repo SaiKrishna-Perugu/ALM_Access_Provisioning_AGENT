@@ -24,6 +24,17 @@ written by newer code is refused until you update.
   - **Scale.** `max_instances` in Terraform can now be raised; it was pinned to 1.
 - **Stop and trace in the cloud API.** `POST /runs/<thread-id>/stop` works from any replica, and `GET /runs/<thread-id>/trace` returns the run's trace. `GET /runs` and `GET /queue` show the run registry and failed jobs.
 - **`ALM_RECONCILE_INTERVAL_MINUTES=0` now turns the sweep off,** as the runbook said it would. Before, the setting rejected 0.
+- **Runs on GCP, AWS or Azure.** The core imports no cloud SDK; each cloud's adapter is chosen by a setting, and its SDKs are an optional install (`pip install '.[gcp]'`, `'.[aws]'`, `'.[azure]'`):
+
+  | Concern | Setting | Choices |
+  |---|---|---|
+  | Secrets | `ALM_SECRET_BACKEND` | Secret Manager, Secrets Manager, Key Vault |
+  | Database login | `ALM_DB_AUTH` | Cloud SQL IAM, RDS IAM, Entra ID, or a password |
+  | Agent models | `ALM_LLM_PROVIDER` | adds `bedrock` and `azure_openai` |
+
+- **AD jobs go through the shared database by default** (`ALM_AD_JOB_TRANSPORT=store`), so the Windows worker needs nothing beyond Postgres. The GCP Terraform keeps Pub/Sub.
+- **Fixed: the Windows worker would never have added anyone in the cloud design.** It claimed the same ledger entry the run had already marked "submitted", so it skipped every job. The worker now has its own ledger entry, still idempotent across redeliveries.
+- **Fixed: a database URL with the password inline was ignored** when IAM database login was on, and a token was minted anyway.
 
 ## 2026-10-01: stop control and full tracing
 

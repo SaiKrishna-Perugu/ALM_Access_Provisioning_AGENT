@@ -1,4 +1,11 @@
-"""Hand AD group changes to the Windows Kerberos worker via Pub/Sub.
+"""Hand AD group changes to the Windows Kerberos worker.
+
+How the job travels is configuration (``ALM_AD_JOB_TRANSPORT``):
+
+* ``store`` (default) - a row in the shared Postgres job queue (kind
+  ``ad_job``). Works on any cloud; the worker already needs that database for
+  the ledger, so nothing else has to exist.
+* ``pubsub`` - a Google Pub/Sub message, for the original GCP deployment.
 
 GPT provisioning is the one step that cannot run in the Linux container: it
 needs Windows Kerberos SSO through a real browser process. So the orchestrator
@@ -30,6 +37,11 @@ from .base import ToolContext, guarded_write, to_thread
 log = get_logger("alm.tools.gpt")
 
 JOB_SCHEMA = 1
+AD_JOB = "ad_job"
+# The worker's own ledger key. The orchestrator records "submitted" under the
+# plain key; if the worker claimed that same key it would find it completed and
+# never touch GPT. Its key is distinct, and just as stable across redeliveries.
+WORKER_KEY_VARIANT = "gpt-worker"
 
 
 def build_job(*, run_id: str, thread_id: str, userid: str, work_item_id: str,
@@ -38,7 +50,8 @@ def build_job(*, run_id: str, thread_id: str, userid: str, work_item_id: str,
     return {
         "schema": JOB_SCHEMA,
         "operation": Operation.AD_GROUP_ADD.value,
-        "idempotency_key": idempotency_key(work_item_id, userid, Operation.AD_GROUP_ADD),
+        "idempotency_key": idempotency_key(work_item_id, userid, Operation.AD_GROUP_ADD,
+                                           WORKER_KEY_VARIANT),
         "run_id": run_id,
         "thread_id": thread_id,
         "environment": environment,
@@ -121,14 +134,25 @@ def _publish(ctx: ToolContext, job: dict) -> tuple[bool, str, dict]:
                   "JazzUsers permission check"), {"message_id": message_id}
 
 
+async def _enqueue(ctx: ToolContext, job: dict) -> tuple[bool, str, dict]:
+    """Queue the job in the shared store. The idempotency key is the job's thread,
+    so a second publish of the same addition is a no-op while the first waits."""
+    job_id = await ctx.store.enqueue_job(AD_JOB, job["idempotency_key"], job, dedupe=True)
+    return True, ("submitted for AD provisioning; membership is confirmed later by the "
+                  "JazzUsers permission check"), {"job_id": job_id, "transport": "store"}
+
+
 async def request_group_membership(ctx: ToolContext, user: RequestedUser, *,
                                    group: str, domain: str) -> ProvisionResult:
-    """Publish one AD group addition for the Windows worker."""
+    """Hand one AD group addition to the Windows worker."""
     work_item_id = user.work_item_ids[0] if user.work_item_ids else ""
     job = build_job(run_id=ctx.run_id, thread_id=ctx.thread_id, userid=user.userid,
                     work_item_id=work_item_id, group=group, domain=domain,
                     approver=ctx.approver, environment=ctx.environment)
+    if getattr(ctx.settings, "ad_job_transport", "store") == "pubsub":
+        action = lambda: to_thread(_publish, ctx, job)  # noqa: E731
+    else:
+        action = lambda: _enqueue(ctx, job)  # noqa: E731
     return await guarded_write(
         ctx, userid=user.userid, work_item_id=work_item_id,
-        operation=Operation.AD_GROUP_ADD, step="ad_provision",
-        action=lambda: to_thread(_publish, ctx, job))
+        operation=Operation.AD_GROUP_ADD, step="ad_provision", action=action)

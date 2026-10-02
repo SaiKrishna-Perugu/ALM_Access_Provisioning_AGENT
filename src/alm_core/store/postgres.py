@@ -15,12 +15,12 @@ The audit table is append-only by construction: there is no UPDATE or DELETE
 statement in this module for ``alm_audit``, and the migration grants the
 application role INSERT and SELECT only.
 
-Cloud SQL is reached on the instance private IP over Direct VPC egress, and
-authenticated with **IAM database authentication** - the password is a
-short-lived access token minted from the runtime service account, so there is no
-database password to store or rotate. Tokens expire in an hour, so the pool
-re-mints one for every new connection rather than pinning a conninfo string at
-pool construction.
+The database is reached on a private address, and authenticated with the
+cloud's **IAM database authentication** (``ALM_DB_AUTH``: Cloud SQL, RDS or
+Azure Database for PostgreSQL) - the password is a short-lived token minted
+from the runtime identity, so there is no database password to store or rotate.
+Tokens expire, so the pool mints one for every new connection rather than
+pinning a conninfo string at pool construction.
 """
 from __future__ import annotations
 
@@ -215,7 +215,7 @@ class PostgresStore:
                 "(pip install -r requirements-cloud.txt)") from err
 
         iam = bool(self.settings is not None
-                   and getattr(self.settings, "postgres_iam_auth", False))
+                   and getattr(self.settings, "database_auth", "password") != "password")
         pool_class = _iam_pool_class(self.settings) if iam else AsyncConnectionPool
         self._pool = pool_class(
             self.dsn, min_size=self.pool_min, max_size=self.pool_max, open=False,
@@ -493,7 +493,8 @@ class PostgresStore:
             return (await cur.fetchone())[0]
 
     async def claim_job(self, worker: str, lease_seconds: float,
-                        *, max_attempts: int = 5) -> dict | None:
+                        *, max_attempts: int = 5,
+                        kinds: tuple[str, ...] | None = None) -> dict | None:
         """Take the oldest ready job, never one whose thread another worker holds.
 
         Claims are serialised by a transaction-scoped advisory lock, so two
@@ -512,7 +513,9 @@ class PostgresStore:
                 "    OR (j.status = 'running' AND j.locked_until < now())) "
                 "AND NOT EXISTS (SELECT 1 FROM alm_run_job o WHERE o.thread_id = j.thread_id "
                 "    AND o.status = 'running' AND o.locked_until >= now() AND o.id <> j.id) "
-                "ORDER BY j.id LIMIT 1")
+                "AND (%s::text[] IS NULL OR j.kind = ANY(%s::text[])) "
+                "ORDER BY j.id LIMIT 1", (list(kinds) if kinds else None,
+                                          list(kinds) if kinds else None))
             row = await cur.fetchone()
             if row is None:
                 return None

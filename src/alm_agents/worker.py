@@ -40,6 +40,7 @@ from alm_core.logging import get_logger, scrub_secrets
 log = get_logger("alm.worker")
 
 START, RESUME, RECONCILE = "start", "resume", "reconcile"
+RUN_KINDS = (START, RESUME, RECONCILE)
 STOP_POLL_SECONDS = 1.0
 TRACE_FLUSH_SECONDS = 1.0
 SCHEDULER_LEASE = "scheduler"
@@ -146,7 +147,7 @@ class Worker:
         claimed = False
         while len(self._tasks) < self.concurrency:
             job = await self.store.claim_job(self.worker_id, self.lease,
-                                             max_attempts=self.max_attempts)
+                                             max_attempts=self.max_attempts, kinds=RUN_KINDS)
             if job is None:
                 break
             claimed = True

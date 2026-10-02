@@ -12,8 +12,10 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "ruff>=0.6"]
-# The autonomous deployment. Pinned in requirements-cloud.txt, which is the
-# file the Dockerfile and CI install from.
+# The autonomous deployment, cloud-neutral: agents, API, workers, stores, and
+# the Gemini Developer API client the laptop and sandbox use. Pinned in
+# requirements-cloud.txt (which also carries the gcp extra), the file the
+# Dockerfile and CI install from.
 cloud = [
     "langgraph>=1.2",
     "langgraph-checkpoint-postgres>=3.1",
@@ -21,18 +23,31 @@ cloud = [
     "aiosqlite>=0.22",
     "langchain-core>=1.6",
     "langchain-google-genai>=4.3",
-    "langchain-google-vertexai>=3.2",
     "typesafe-sdk>=0.7.1",
     "fastapi>=0.141",
     "uvicorn[standard]>=0.34",
     "pydantic[email]>=2.10",
     "pydantic-settings>=2.7",
+    "psycopg[binary,pool]>=3.2",
+    "structlog>=24.4",
+]
+# One per cloud: only the adapters that cloud uses (secrets, database tokens,
+# models, AD job transport). The core imports none of them.
+gcp = [
+    "langchain-google-vertexai>=3.2",
     "google-auth>=2.40",
     "google-cloud-secret-manager>=2.21",
     "google-cloud-pubsub>=2.27",
     "google-cloud-logging>=3.11",
-    "psycopg[binary,pool]>=3.2",
-    "structlog>=24.4",
+]
+aws = [
+    "boto3>=1.35",
+    "langchain-aws>=0.2",
+]
+azure = [
+    "azure-identity>=1.19",
+    "azure-keyvault-secrets>=4.9",
+    "langchain-openai>=0.3",
 ]
 
 # The scripts are run as `python src/<script>.py` and import each other by bare

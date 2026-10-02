@@ -124,7 +124,8 @@ def check_postgres(settings) -> Check:
         with psycopg.connect(postgres_dsn(settings), connect_timeout=10) as conn, conn.cursor() as cur:
             cur.execute("SELECT current_user, version()")
             user, version = cur.fetchone()
-        auth = "IAM token" if settings.postgres_iam_auth else "password"
+        auth = ("password" if settings.database_auth == "password"
+                else f"{settings.database_auth} token")
         return True, f"connected as {user} using {auth} ({version.split(',')[0]})"
 
     return _timed(run, "cloud-sql")

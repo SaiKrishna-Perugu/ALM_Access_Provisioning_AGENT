@@ -20,8 +20,17 @@ Where the model comes from is configuration (``ALM_LLM_PROVIDER``):
 * ``gemini_api`` - the Gemini Developer API with a key from Google AI Studio.
   The quickest way in, and what the local sandbox uses.
 * ``vertex`` - the same Gemini models on Vertex AI, authenticated as the Cloud
-  Run service account. No key exists to leak; the production choice. Claude
-  models from Model Garden are available on this provider only.
+  Run service account. No key exists to leak. Claude models from Model Garden
+  are available here too.
+* ``vertex_express`` - Vertex AI with an API key from the Google Cloud console.
+* ``bedrock`` - AWS Bedrock with the runtime IAM role (Claude, Llama, Mistral,
+  Nova...). No key; the AWS production choice.
+* ``azure_openai`` - Azure OpenAI with the managed identity (or
+  ``AZURE_OPENAI_API_KEY``); ``ALM_AGENT_MODEL`` is the deployment name. The
+  Azure production choice.
+
+Every provider's client is a LangChain chat model with tool calling, wrapped
+by ``TracedModel``; the agents cannot tell them apart.
 
 If no model is reachable, or ``llm_enabled`` is false, the helper functions
 degrade to "no proposal" and the deterministic path stands alone. The agents
@@ -30,6 +39,7 @@ themselves need a model; the deterministic orchestration does not.
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 from dataclasses import dataclass, field
@@ -138,6 +148,15 @@ def _client(settings, *, model: str = "", max_tokens: int = 0,
     max_tokens = max_tokens or settings.llm_max_output_tokens
 
     try:
+        if settings.llm_provider == "bedrock":
+            from langchain_aws import ChatBedrockConverse
+
+            return ChatBedrockConverse(
+                model=model, region_name=settings.aws_region_name or None,
+                temperature=temperature, max_tokens=max_tokens,
+                rate_limiter=_rate_limiter(settings))
+        if settings.llm_provider == "azure_openai":
+            return _azure_openai(settings, model, temperature, max_tokens)
         if _is_anthropic(model):
             if settings.llm_provider != "vertex" or not settings.project_id:
                 log.warning("llm_unavailable", model=model,
@@ -186,15 +205,44 @@ def _client(settings, *, model: str = "", max_tokens: int = 0,
                                     profile.get("reasoning_effort_levels"))
         # Rebuilt rather than copied: the constructor validates the combination.
         return ChatGoogleGenerativeAI(**kwargs, **thinking) if thinking else client
-    except ImportError:
-        log.warning("llm_unavailable",
-                    reason="langchain-google-genai is not installed "
-                           "(pip install -r requirements-cloud.txt)")
+    except ImportError as err:
+        log.warning("llm_unavailable", provider=settings.llm_provider,
+                    reason=f"{err.name or 'the model client'} is not installed "
+                           f"(pip install '.[{_extra(settings.llm_provider)}]')")
         return None
     except Exception as err:  # noqa: BLE001 - a bad region or model id
         log.warning("llm_client_failed", model=model,
                     error=scrub_secrets(f"{type(err).__name__}: {err}"))
         return None
+
+
+def _extra(provider: str) -> str:
+    return {"bedrock": "aws", "azure_openai": "azure"}.get(provider, "gcp")
+
+
+def _azure_openai(settings, model: str, temperature: float, max_tokens: int):
+    """Azure OpenAI: a key when one is given, otherwise the managed identity."""
+    from langchain_openai import AzureChatOpenAI
+
+    kwargs: dict = {
+        "azure_deployment": model,
+        "azure_endpoint": settings.azure_openai_endpoint,
+        "api_version": settings.azure_openai_api_version,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "max_retries": 3,
+        "timeout": 120,
+        "rate_limiter": _rate_limiter(settings),
+    }
+    key = os.getenv("AZURE_OPENAI_API_KEY", "").strip()
+    if key:
+        kwargs["api_key"] = key
+    else:
+        from azure.identity import DefaultAzureCredential, get_bearer_token_provider
+
+        kwargs["azure_ad_token_provider"] = get_bearer_token_provider(
+            DefaultAzureCredential(), "https://cognitiveservices.azure.com/.default")
+    return AzureChatOpenAI(**kwargs)
 
 
 _cached: dict[tuple, object] = {}
