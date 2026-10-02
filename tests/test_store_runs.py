@@ -265,3 +265,19 @@ def test_traces_page_by_cursor_per_thread(store_factory):
     everything, tail = with_store(store_factory, scenario)
     assert [r["kind"] for r in everything] == ["started", "tool_call", "finished"]
     assert [r["kind"] for r in tail] == ["finished"]
+
+
+def test_a_worker_claims_only_the_kinds_it_handles(store_factory):
+    """Run workers and the AD worker share one queue without taking each
+    other's jobs."""
+    async def scenario(store):
+        await store.enqueue_job("ad_job", "key-1", {"userid": "AB12345"})
+        await store.enqueue_job("start", "wi-1")
+        run_job = await store.claim_job("runs", 60, kinds=("start", "resume"))
+        nothing = await store.claim_job("runs", 60, kinds=("start", "resume"))
+        ad_job = await store.claim_job("ad", 60, kinds=("ad_job",))
+        return run_job, nothing, ad_job
+
+    run_job, nothing, ad_job = with_store(store_factory, scenario)
+    assert run_job["kind"] == "start" and nothing is None
+    assert ad_job["kind"] == "ad_job" and ad_job["payload"] == {"userid": "AB12345"}

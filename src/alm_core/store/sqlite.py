@@ -470,7 +470,8 @@ class SqliteStore:
                 raise
 
     async def claim_job(self, worker: str, lease_seconds: float,
-                        *, max_attempts: int = 5) -> dict | None:
+                        *, max_attempts: int = 5,
+                        kinds: tuple[str, ...] | None = None) -> dict | None:
         """Take the oldest ready job, never one whose thread another worker holds.
 
         A running job whose lease has expired is ready again: its worker died.
@@ -492,7 +493,7 @@ class SqliteStore:
                 chosen = None
                 for row in rows:
                     job = job_row(row)
-                    if job["thread_id"] in held:
+                    if job["thread_id"] in held or (kinds and job["kind"] not in kinds):
                         continue
                     if job["attempts"] >= max_attempts:
                         await db.execute(

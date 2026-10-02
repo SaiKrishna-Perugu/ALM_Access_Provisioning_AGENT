@@ -529,8 +529,10 @@ Still open:
   Microsoft Graph adapter would retire the Windows worker.
 - **Sign-in and roles.** The API trusts IAP (or a signed approval link); there
   is no OIDC sign-in or role model for other clouds yet.
-- **AWS and Azure.** Only the GCP Terraform exists; the code's cloud-specific
-  parts are the secret, database-token, model and queue adapters.
+- **AWS and Azure infrastructure.** The code runs on either - secrets (Secrets
+  Manager, Key Vault), database tokens (RDS IAM, Entra ID), models (Bedrock,
+  Azure OpenAI) and the AD job queue (the shared Postgres store) all have
+  adapters - but only the GCP Terraform exists.
 
 ---
 

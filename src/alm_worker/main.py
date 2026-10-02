@@ -1,14 +1,17 @@
 """The Windows Kerberos worker: consume AD jobs, drive GPT, report back.
 
-Runs on a domain-joined Windows host as a gMSA or service account, pulling from
-a Pub/Sub subscription. Start it with:
+Runs on a domain-joined Windows host as a gMSA or service account. Start it with:
 
     python -m alm_worker.main
 
-Authentication to Google is Application Default Credentials. On an on-premises
-Windows host that means **Workload Identity Federation** - the host presents an
-existing credential and exchanges it for a short-lived Google token, so there is
-no downloaded service account key on a machine outside the cloud perimeter.
+Where jobs come from follows ``ALM_AD_JOB_TRANSPORT``:
+
+* ``store`` (default) - claims ``ad_job`` rows from the shared Postgres job
+  queue, the same database as the ledger. Any cloud; nothing else to run.
+* ``pubsub`` - pulls from a Google Pub/Sub subscription. Authentication to
+  Google is Application Default Credentials; on an on-premises Windows host that
+  means **Workload Identity Federation**, so there is no downloaded service
+  account key on a machine outside the cloud perimeter.
 
 Contract with the orchestrator:
 
@@ -33,7 +36,9 @@ here; the orchestrator's permission poll is what confirms the access landed.
 from __future__ import annotations
 
 import json
+import os
 import signal
+import socket
 import sys
 import threading
 import time
@@ -55,6 +60,7 @@ REQUIRED_FIELDS = ("idempotency_key", "userid", "group", "domain", "run_id")
 MAX_IN_FLIGHT = 1
 # Long enough to open the group, stage a user and submit, with headroom.
 ACK_DEADLINE_SECONDS = 600
+STORE_POLL_SECONDS = 5.0
 
 _stop = threading.Event()
 
@@ -85,6 +91,7 @@ class Worker:
 
     def __init__(self, settings):
         self.settings = settings
+        self.worker_id = f"gpt-{socket.gethostname()}-{os.getpid()}"
         self.session: GptSession | None = None
         self.store = None
         self._loop = None
@@ -112,7 +119,8 @@ class Worker:
         self.store = self._run_async(get_store(self.settings))
         self.session = GptSession(headless=True)
         self.session.start()
-        log.info("worker_started", subscription=self.settings.pubsub_subscription,
+        log.info("worker_started", transport=self.settings.ad_job_transport,
+                 subscription=self.settings.pubsub_subscription,
                  environment=self.settings.environment)
 
     def stop(self) -> None:
@@ -186,6 +194,62 @@ class Worker:
     # ------------------------------------------------------------ consume
 
     def run(self) -> None:
+        """Consume jobs from the configured transport until told to stop."""
+        if self.settings.ad_job_transport == "pubsub":
+            self.run_pubsub()
+        else:
+            self.run_store()
+
+    def run_store(self) -> None:
+        """Claim ``ad_job`` rows from the shared queue, one at a time.
+
+        The queue's lease plays the ack deadline's part: a worker that dies
+        mid-job loses the claim and the job is taken over; one that keeps
+        failing goes ``dead`` after MAX_DELIVERY_ATTEMPTS for a human to look at.
+        """
+        from alm_core.tools.gpt_queue import AD_JOB
+
+        while not _stop.is_set():
+            self.heartbeat()
+            try:
+                job = self._run_async(self.store.claim_job(
+                    self.worker_id, ACK_DEADLINE_SECONDS,
+                    max_attempts=MAX_DELIVERY_ATTEMPTS, kinds=(AD_JOB,)))
+            except Exception as err:  # noqa: BLE001 - the database blipped; try again
+                log.warning("claim_failed", error=str(err))
+                _stop.wait(5)
+                continue
+            if job is None:
+                _stop.wait(STORE_POLL_SECONDS)
+                continue
+            self.handle_store_job(job)
+
+    def handle_store_job(self, job: dict) -> None:
+        try:
+            payload = validate_job(json.dumps(job["payload"]).encode("utf-8"))
+        except ValueError as err:
+            log.error("poison_message", error=str(err), job=job["id"])
+            self._run_async(self.store.finish_job(
+                job["id"], self.worker_id, ok=False, error=f"poison: {err}",
+                max_attempts=job["attempts"]))   # never retried
+            self._failed += 1
+            return
+        try:
+            result = self.process(payload)
+        except Exception as err:  # noqa: BLE001 - keep the job for a retry
+            log.exception("job_processing_failed", userid=payload.get("userid"))
+            self._run_async(self.store.finish_job(
+                job["id"], self.worker_id, ok=False, error=f"{type(err).__name__}: {err}",
+                max_attempts=MAX_DELIVERY_ATTEMPTS))
+            self._failed += 1
+            return
+        # Closed only after the outcome is durably recorded by process().
+        self._run_async(self.store.finish_job(job["id"], self.worker_id, ok=True))
+        self._processed += 1
+        log.info("job_complete", userid=result.userid, outcome=result.outcome.value,
+                 replayed=result.replayed, attempt=job["attempts"])
+
+    def run_pubsub(self) -> None:
         """Pull messages one at a time and process them to completion.
 
         Synchronous pull rather than the streaming subscriber: this worker owns a
@@ -292,7 +356,7 @@ def main() -> int:
     signal.signal(signal.SIGTERM, _handle_signal)
 
     settings = get_settings()
-    if not settings.project_id:
+    if settings.ad_job_transport == "pubsub" and not settings.project_id:
         log.error("worker_misconfigured",
                   error="GOOGLE_CLOUD_PROJECT is required to pull from Pub/Sub")
         return 2

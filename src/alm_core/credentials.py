@@ -1,4 +1,8 @@
-"""Credential resolution: environment, then Secret Manager, then interactive prompt.
+"""Credential resolution: environment, mounted file, the cloud's secret store, prompt.
+
+The cloud's secret store is whichever the deployment uses (``ALM_SECRET_BACKEND``):
+Google Secret Manager, AWS Secrets Manager or Azure Key Vault. Each SDK is
+imported only by its own adapter, so the core runs without any of them.
 
 ``getpass.getpass()`` at the top of every script is what made this system
 unschedulable - it cannot run without a human at a terminal. The provider chain
@@ -127,6 +131,95 @@ class SecretManagerProvider:
         return response.payload.data.decode("utf-8").strip() or None
 
 
+class AwsSecretsManagerProvider:
+    """Reads a secret from AWS Secrets Manager with the runtime's IAM role.
+
+    The secret id is ``ALM_SECRET_PREFIX`` + the logical name, so one account
+    can hold several environments (``alm/test/...``, ``alm/prod/...``).
+    """
+
+    name = "aws-secrets-manager"
+
+    def __init__(self, settings, client=None):
+        self.settings = settings
+        self._client = client
+
+    def _ensure_client(self):
+        if self._client is None:
+            try:
+                import boto3
+            except ImportError as err:  # pragma: no cover
+                raise CredentialError(
+                    "AWS Secrets Manager requested but boto3 is not installed "
+                    "(pip install '.[aws]')") from err
+            self._client = boto3.client("secretsmanager",
+                                        region_name=self.settings.aws_region_name or None)
+        return self._client
+
+    def get(self, key: str) -> str | None:
+        try:
+            response = self._ensure_client().get_secret_value(
+                SecretId=f"{self.settings.secret_prefix}{key}")
+        except CredentialError:
+            raise
+        except Exception as err:  # noqa: BLE001 - not found, access denied, network
+            log.warning("aws_secret_lookup_failed", secret=key, error=type(err).__name__)
+            return None
+        return (response.get("SecretString") or "").strip() or None
+
+
+class AzureKeyVaultProvider:
+    """Reads a secret from Azure Key Vault with the runtime's managed identity.
+
+    Key Vault names allow letters, digits and dashes only, so underscores in a
+    logical name become dashes.
+    """
+
+    name = "azure-key-vault"
+
+    def __init__(self, settings, client=None):
+        self.settings = settings
+        self._client = client
+
+    def _ensure_client(self):
+        if self._client is None:
+            if not self.settings.azure_key_vault_url:
+                raise CredentialError("ALM_SECRET_BACKEND=azure needs ALM_AZURE_KEY_VAULT_URL")
+            try:
+                from azure.identity import DefaultAzureCredential
+                from azure.keyvault.secrets import SecretClient
+            except ImportError as err:  # pragma: no cover
+                raise CredentialError(
+                    "Azure Key Vault requested but azure-identity / azure-keyvault-secrets "
+                    "are not installed (pip install '.[azure]')") from err
+            self._client = SecretClient(self.settings.azure_key_vault_url,
+                                        DefaultAzureCredential())
+        return self._client
+
+    def get(self, key: str) -> str | None:
+        name = f"{self.settings.secret_prefix}{key}".replace("_", "-").replace("/", "-")
+        try:
+            secret = self._ensure_client().get_secret(name)
+        except CredentialError:
+            raise
+        except Exception as err:  # noqa: BLE001 - not found, access denied, network
+            log.warning("key_vault_lookup_failed", secret=key, error=type(err).__name__)
+            return None
+        return (secret.value or "").strip() or None
+
+
+def cloud_secret_provider(settings) -> SecretProvider | None:
+    """The deployment's secret store, or None on a laptop."""
+    store = getattr(settings, "secret_store", "gcp" if settings.project_id else "none")
+    if store == "gcp":
+        return SecretManagerProvider(settings)
+    if store == "aws":
+        return AwsSecretsManagerProvider(settings)
+    if store == "azure":
+        return AzureKeyVaultProvider(settings)
+    return None
+
+
 class InteractiveProvider:
     """Last resort: prompt a human. Refuses when there is no terminal.
 
@@ -223,10 +316,10 @@ class CredentialResolver:
 
 def build_resolver(settings=None, *, prompt: str = "Password", interactive: bool = True,
                    labels: dict[str, str] | None = None) -> CredentialResolver:
-    """The standard chain: environment -> mounted file -> Secret Manager -> interactive.
+    """The standard chain: environment -> mounted file -> cloud store -> interactive.
 
-    Secret Manager is only added when a project is configured, so a laptop run
-    does not pay for a lookup that cannot succeed. ``interactive=False`` is for
+    The cloud store is only added when one is configured, so a laptop run does
+    not pay for a lookup that cannot succeed. ``interactive=False`` is for
     optional secrets: an absent optional key must not stop a run to ask.
     """
     if settings is None:
@@ -244,8 +337,9 @@ def build_resolver(settings=None, *, prompt: str = "Password", interactive: bool
         }),
         FileProvider(os.getenv("ALM_SECRET_DIR", "/secrets")),
     ]
-    if settings.project_id:
-        providers.append(SecretManagerProvider(settings))
+    cloud = cloud_secret_provider(settings)
+    if cloud is not None:
+        providers.append(cloud)
     if interactive:
         providers.append(InteractiveProvider(prompt, labels))
     return CredentialResolver(providers)
@@ -307,54 +401,94 @@ def typesafe_api_key(settings, resolver: CredentialResolver | None = None) -> st
         return None
 
 
-# ------------------------------------------------------- Cloud SQL IAM auth
+# ------------------------------------------------- database IAM authentication
 
-_db_token: tuple[str, float] | None = None
+_db_tokens: dict[str, tuple[str, float]] = {}
 _db_lock = threading.Lock()
 
+# How long each cloud's database token is reused: a little under its lifetime.
+DB_TOKEN_REUSE_SECONDS = {"gcp_iam": DB_TOKEN_TTL_SECONDS, "aws_iam": 10 * 60,
+                          "azure_ad": DB_TOKEN_TTL_SECONDS}
+AZURE_POSTGRES_SCOPE = "https://ossrdbms-aad.database.windows.net/.default"
 
-def database_access_token() -> str:
-    """A short-lived IAM access token to use as the Cloud SQL password.
+
+def database_access_token(settings=None, *, mode: str = "gcp_iam") -> str:
+    """A short-lived token to use as the database password.
 
     With IAM database authentication there is no stored database password to
-    rotate, leak or commit - the runtime service account mints a token that
-    expires in an hour. Cached just under that so a busy pool does not mint one
+    rotate, leak or commit - the runtime identity mints a token that expires on
+    its own. Cached a little under its lifetime so a busy pool does not mint one
     per connection.
     """
-    global _db_token
     with _db_lock:
         now = time.monotonic()
-        if _db_token and now - _db_token[1] < DB_TOKEN_TTL_SECONDS:
-            return _db_token[0]
+        cached = _db_tokens.get(mode)
+        if cached and now - cached[1] < DB_TOKEN_REUSE_SECONDS.get(mode, 600):
+            return cached[0]
+        token = {"gcp_iam": _gcp_db_token, "aws_iam": _aws_db_token,
+                 "azure_ad": _azure_db_token}[mode](settings)
+        if not token:
+            raise CredentialError(f"could not mint a database token ({mode})")
+        _db_tokens[mode] = (token, now)
+        log.info("database_token_minted", mode=mode)
+        return token
 
-        try:
-            import google.auth
-            import google.auth.transport.requests
-        except ImportError as err:  # pragma: no cover
-            raise CredentialError(
-                "google-auth is required for Cloud SQL IAM authentication "
-                "(pip install -r requirements-cloud.txt)") from err
 
-        credentials, _project = google.auth.default(scopes=[CLOUD_PLATFORM_SCOPE])
-        credentials.refresh(google.auth.transport.requests.Request())
-        if not credentials.token:
-            raise CredentialError("could not mint a Cloud SQL IAM access token")
-        _db_token = (credentials.token, now)
-        log.info("database_token_minted")
-        return credentials.token
+def _gcp_db_token(_settings) -> str:
+    try:
+        import google.auth
+        import google.auth.transport.requests
+    except ImportError as err:  # pragma: no cover
+        raise CredentialError(
+            "google-auth is required for Cloud SQL IAM authentication "
+            "(pip install '.[gcp]')") from err
+    credentials, _project = google.auth.default(scopes=[CLOUD_PLATFORM_SCOPE])
+    credentials.refresh(google.auth.transport.requests.Request())
+    return credentials.token
+
+
+def _aws_db_token(settings) -> str:
+    """An RDS IAM authentication token for the DSN's host, port and user."""
+    from urllib.parse import urlsplit
+
+    try:
+        import boto3
+    except ImportError as err:  # pragma: no cover
+        raise CredentialError("boto3 is required for RDS IAM authentication "
+                              "(pip install '.[aws]')") from err
+    parts = urlsplit(settings.postgres_dsn)
+    if not (parts.hostname and parts.username):
+        raise CredentialError("RDS IAM authentication needs a DSN with a host and a user")
+    client = boto3.client("rds", region_name=settings.aws_region_name or None)
+    return client.generate_db_auth_token(DBHostname=parts.hostname, Port=parts.port or 5432,
+                                         DBUsername=parts.username)
+
+
+def _azure_db_token(_settings) -> str:
+    try:
+        from azure.identity import DefaultAzureCredential
+    except ImportError as err:  # pragma: no cover
+        raise CredentialError("azure-identity is required for Entra ID database "
+                              "authentication (pip install '.[azure]')") from err
+    return DefaultAzureCredential().get_token(AZURE_POSTGRES_SCOPE).token
 
 
 def postgres_dsn(settings) -> str:
-    """The DSN to connect with, with an IAM token injected when enabled.
+    """The DSN to connect with, with a fresh database token when IAM auth is on.
 
     The token is a password, so it never appears in a log line: the caller hands
     this straight to psycopg and nothing else.
     """
+    from urllib.parse import quote, urlsplit
+
     dsn = settings.postgres_dsn
-    if not settings.postgres_iam_auth or not dsn:
+    mode = getattr(settings, "database_auth", "gcp_iam" if settings.postgres_iam_auth
+                   else "password")
+    if mode == "password" or not dsn:
         return dsn
-    if "password=" in dsn:
+    if "password=" in dsn or urlsplit(dsn).password:
         return dsn  # an explicit password wins; do not fight the operator
-    token = database_access_token()
+    token = database_access_token(settings, mode=mode)
     separator = "&" if "?" in dsn else "?"
-    return f"{dsn}{separator}password={token}"
+    # RDS tokens are full of '&' and '='; quote so the DSN still parses.
+    return f"{dsn}{separator}password={quote(token, safe='')}"

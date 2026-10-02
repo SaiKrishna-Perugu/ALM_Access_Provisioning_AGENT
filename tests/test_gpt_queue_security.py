@@ -79,7 +79,7 @@ def test_build_job_idempotency_key_is_deterministic():
         environment="TEST",
     )
 
-    expected_key = idempotency_key("9999", "AB12345", Operation.AD_GROUP_ADD)
+    expected_key = idempotency_key("9999", "AB12345", Operation.AD_GROUP_ADD, "gpt-worker")
     assert job1["idempotency_key"] == expected_key
     assert job2["idempotency_key"] == expected_key
     assert job1["idempotency_key"] == job2["idempotency_key"]

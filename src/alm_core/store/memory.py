@@ -172,7 +172,8 @@ class MemoryStore:
             return job["id"]
 
     async def claim_job(self, worker: str, lease_seconds: float,
-                        *, max_attempts: int = 5) -> dict | None:
+                        *, max_attempts: int = 5,
+                        kinds: tuple[str, ...] | None = None) -> dict | None:
         now = _now()
         async with self._lock:
             held = {j["thread_id"] for j in self._jobs
@@ -180,7 +181,7 @@ class MemoryStore:
             for job in self._jobs:
                 ready = ((job["status"] == "queued" and job["available_at"] <= now)
                          or (job["status"] == "running" and job["locked_until"] < now))
-                if not ready or job["thread_id"] in held:
+                if not ready or job["thread_id"] in held or (kinds and job["kind"] not in kinds):
                     continue
                 if job["attempts"] >= max_attempts:
                     job.update(status="dead", finished_at=now,
