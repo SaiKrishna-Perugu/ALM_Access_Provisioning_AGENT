@@ -17,6 +17,7 @@ import pytest
 
 pytest.importorskip("langgraph")
 pytest.importorskip("langchain_core")
+pytestmark = pytest.mark.usefixtures("scripted_recovery")
 
 from langchain_core.messages import AIMessage  # noqa: E402
 
@@ -78,7 +79,7 @@ def approve(payload: dict) -> ApprovalDecision:
 
 approve.calls = []
 
-FULL_PLAN = ["triage", "validator", "provisioner", "risk_officer",
+FULL_PLAN = ["triage", "extractor", "validator", "provisioner", "risk_officer",
              "provisioner", "verifier", "evidence_officer", "closer", "DONE"]
 
 APPROVED = ["AB12345", "CD67890", "TB22322"]
@@ -86,6 +87,8 @@ COMMENT = "AB12345 Alice Smith: imported into JTS; JazzUsers requested."
 
 FULL_SCRIPTS = {
     "triage": [[("fetch_open_requests", {"limit": 10})]],
+    # 1002's malformed row hides TB22322; recovering it is how it joins the run.
+    "extractor": [[("recover_user_ids", {"work_item_id": "1002"})]],
     "validator": [[("classify_user", {"userid": u}) for u in
                    ("AB12345", "CD67890", "EF11111", "GH22222", "TB22322")]
                   # A hallucinated ID: the policy must reject it before any lookup.

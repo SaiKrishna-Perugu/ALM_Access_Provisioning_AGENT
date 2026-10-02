@@ -456,12 +456,19 @@ def build_registry(ctx: ToolContext, board: Blackboard, memory: MemoryStore,
             return _status_observation(board.statuses[userid], cached=True)
         user = board.users.get(userid)
         if user is None:
-            # No fetched work item's structured field produced this ID, so it
-            # came from a model (the extractor recovering a malformed row, most
-            # likely). Say so: _risk() then makes it HIGH and the approver sees
-            # that a machine proposed it.
-            user = RequestedUser(userid=userid, extracted_by_llm=True)
-        board.users.setdefault(userid, user)
+            # No work item in this run requested this ID: not its structured
+            # field, and not recover_user_ids. Looking it up is a read, so it is
+            # allowed - but it must not make the user part of the run, or any
+            # well-formed ID a model names would land on the approval card.
+            status = await backend.classify_user(
+                ctx, RequestedUser(userid=userid, extracted_by_llm=True))
+            observation = json.loads(_status_observation(status, cached=False))
+            observation["note"] = (
+                f"{userid} is not requested by any work item in this run, so it was "
+                "looked up but NOT added to the run: it will not be on the approval "
+                "card and cannot be written. Users come only from a work item's New "
+                "Users field or from recover_user_ids.")
+            return json.dumps(observation, indent=2)
         status = await backend.classify_user(ctx, user)
         board.statuses[userid] = status
         fresh.add(userid)
@@ -751,7 +758,8 @@ def build_registry(ctx: ToolContext, board: Blackboard, memory: MemoryStore,
                  RecoverArgs, recover_user_ids),
         ToolSpec("classify_user",
                  "Look a user up in LDAP and the JTS registry; returns state, validity, "
-                 "whether they already hold the role, and a risk assessment.",
+                 "whether they already hold the role, and a risk assessment. Only "
+                 "users a work item requested become part of the run.",
                  UserArgs, classify_user),
         ToolSpec("check_jazz_permission",
                  "Check whether a user currently holds the JazzUsers repository role. "

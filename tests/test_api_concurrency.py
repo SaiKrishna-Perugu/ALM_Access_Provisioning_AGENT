@@ -15,6 +15,7 @@ import pytest
 
 pytest.importorskip("langgraph")
 pytest.importorskip("langchain_core")
+pytestmark = pytest.mark.usefixtures("scripted_recovery")
 
 from test_agentic_sandbox import ScriptedLLM  # noqa: E402
 from test_local_runner import local_settings  # noqa: E402
@@ -42,8 +43,10 @@ class PerRunLLM:
 
 
 def script(work_item: str, userid: str) -> ScriptedLLM:
-    return ScriptedLLM(["triage", "validator", "risk_officer", "provisioner", "DONE"], {
+    return ScriptedLLM(["triage", "extractor", "validator", "risk_officer", "provisioner",
+                        "DONE"], {
         "triage": [[("fetch_work_item", {"work_item_id": work_item})]],
+        "extractor": [[("recover_user_ids", {"work_item_id": work_item})]],
         "validator": [[("classify_user", {"userid": userid})]],
         "risk_officer": [[("request_human_approval",
                            {"reason": f"import {userid}", "userids": [userid]})]],
@@ -100,15 +103,13 @@ def test_two_concurrent_runs_keep_their_own_users_and_approvals(tmp_path):
     items_b = [i for c in cards_b for i in c["items"]]
     assert "AB12345" in {i["userid"] for i in items_a}
     assert "TB22322" in {i["userid"] for i in items_b}
-    assert all(set(i["work_item_ids"]) <= {"1001"} for i in items_a), items_a
-    assert all(set(i["work_item_ids"]) <= {"1002"} for i in items_b), items_b
+    assert all(i["work_item_ids"] == ["1001"] for i in items_a), items_a
+    assert all(i["work_item_ids"] == ["1002"] for i in items_b), items_b
     assert not {i["userid"] for i in items_a} & {i["userid"] for i in items_b}
-    # Run A wrote its approved user, once. Run B wrote nothing of run A's: its
-    # own new user was recovered from free text without a work item, so the
-    # scope check refuses it - per run, not because of run A.
+    # Each run wrote only its own user, once.
     assert {(r["userid"], r["outcome"]) for r in report_a["results"]} == {("AB12345", "ok")}
-    assert not {r["userid"] for r in report_b["results"]} & {"AB12345", "CD67890"}
-    assert report_a["approval_rounds"] == report_b["approval_rounds"] == 1
+    assert {(r["userid"], r["outcome"]) for r in report_b["results"]} == {("TB22322", "ok")}
+    assert {"AB12345", "TB22322"} <= set(estate.people)
 
 
 def test_each_session_gets_its_own_context_and_board_but_shares_the_connections(tmp_path):
