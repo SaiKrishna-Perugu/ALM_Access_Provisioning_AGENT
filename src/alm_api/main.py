@@ -62,10 +62,15 @@ class WebhookPayload(BaseModel):
 
 
 class Runtime:
-    """Holds the graph, the tool context and the shared background state."""
+    """The process's shared services and background state.
+
+    ``services`` are shared by every run; each start and each resume gets its
+    own graph and tool context from ``run_session``. ``ctx`` is a context with
+    no run of its own, for the handlers that only read or write the store.
+    """
 
     def __init__(self):
-        self.graph = None
+        self.services = None
         self.ctx = None
         self.settings = None
         self.resolver = None
@@ -142,11 +147,14 @@ async def _reconcile_loop() -> None:
 
 async def _run_in_background(*, thread_id: str, work_item_ids: list[str] | None,
                              trigger: str) -> None:
-    from alm_agents.graph import start_run
+    from alm_agents.graph import run_session, start_run
 
     async with runtime.lock_for(thread_id):
         try:
-            result = await start_run(runtime.graph, runtime.ctx, thread_id=thread_id,
+            # A graph and context of its own: a run must never share its board,
+            # budgets or approval with another run in this process.
+            graph, ctx = run_session(runtime.services)
+            result = await start_run(graph, ctx, thread_id=thread_id,
                                      work_item_ids=work_item_ids, trigger=trigger)
         except Exception:  # noqa: BLE001 - one run must not take the service down
             log.exception("run_failed", thread_id=thread_id)
@@ -156,20 +164,21 @@ async def _run_in_background(*, thread_id: str, work_item_ids: list[str] | None,
 
 
 async def _resume_in_background(thread_id: str, decision: ApprovalDecision) -> None:
-    from alm_agents.graph import resume_run
+    from alm_agents.graph import resume_run, run_session
 
     async with runtime.lock_for(thread_id):
         try:
-            await resume_run(runtime.graph, runtime.ctx, thread_id=thread_id,
-                             decision=decision)
+            graph, ctx = run_session(runtime.services)
+            await resume_run(graph, ctx, thread_id=thread_id, decision=decision)
         except Exception:  # noqa: BLE001
             log.exception("resume_failed", thread_id=thread_id)
 
 
 @contextlib.asynccontextmanager
 async def lifespan(_app: FastAPI):
-    from alm_agents.graph import build_runtime
+    from alm_agents.graph import build_services
     from alm_core.config import get_settings
+    from alm_core.tools.base import ToolContext
 
     configure()
     settings = get_settings()
@@ -177,8 +186,10 @@ async def lifespan(_app: FastAPI):
     runtime.resolver = build_resolver(settings)
 
     stack = contextlib.AsyncExitStack()
-    graph, ctx = await stack.enter_async_context(build_runtime(settings, notifier=_notifier))
-    runtime.graph, runtime.ctx, runtime.stack = graph, ctx, stack
+    services = await stack.enter_async_context(build_services(settings, notifier=_notifier))
+    runtime.services, runtime.stack = services, stack
+    runtime.ctx = ToolContext(settings=settings, client=services.client,
+                              store=services.store, run_id="")
 
     if settings.reconcile_interval_minutes > 0:
         runtime.reconcile_task = asyncio.create_task(_reconcile_loop())
@@ -209,7 +220,7 @@ async def healthz() -> dict:
 
 @app.get("/readyz")
 async def readyz() -> JSONResponse:
-    ready = runtime.graph is not None and runtime.ctx is not None
+    ready = runtime.services is not None and runtime.ctx is not None
     return JSONResponse({"ready": ready,
                          "environment": getattr(runtime.settings, "environment", ""),
                          "shadow_mode": getattr(runtime.settings, "shadow_mode", None)},
