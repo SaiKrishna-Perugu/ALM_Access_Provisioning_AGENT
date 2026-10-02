@@ -1,13 +1,17 @@
 // Cloud Run service, and the internal load balancer with IAP in front of it.
 //
-// Two settings here are load-bearing and easy to get wrong:
+// The API process also runs the run workers (ALM_WORKER_CONCURRENCY): they
+// claim jobs from the Postgres queue, and the one holding the scheduler lease
+// queues the reconciliation sweep. Two settings follow from that:
 //
-//   min_instance_count = 1  the reconciliation sweep is an in-process timer.
-//                           Scaled to zero, the queue stops being swept.
+//   min_instance_count = 1  something must be up to claim jobs and schedule
+//                           the sweep. Scaled to zero, queued runs wait.
 //   cpu_idle = false        Cloud Run throttles CPU between requests by default,
-//                           which would freeze that timer and any run waiting on
-//                           a 30-minute permission poll. "CPU always allocated"
-//                           is what makes background work possible at all.
+//                           which would freeze the workers, the scheduler and
+//                           any run waiting on a 30-minute permission poll.
+//
+// Instances can scale out: run state lives in Postgres, a thread is never
+// handed to two workers, and a dead instance's runs are taken over by another.
 
 resource "google_cloud_run_v2_service" "api" {
   name     = "${local.prefix}-api"
@@ -25,10 +29,7 @@ resource "google_cloud_run_v2_service" "api" {
 
     scaling {
       min_instance_count = 1
-      // One instance, deliberately. Runs are keyed by work item and guarded by
-      // the ledger, but a single writer keeps the failure modes obvious while
-      // the pilot runs. Raise it once concurrency is measured.
-      max_instance_count = 1
+      max_instance_count = var.max_instances
     }
 
     // Direct VPC egress: no Serverless VPC Access connector to size, pay for or
@@ -41,9 +42,8 @@ resource "google_cloud_run_v2_service" "api" {
       egress = "ALL_TRAFFIC"
     }
 
-    // Long enough for a run that waits on a permission poll to finish inside
-    // one request when triggered synchronously; background tasks outlive it.
-    timeout = "3600s"
+    // Requests are short (they only queue work); runs happen in the workers.
+    timeout = "300s"
 
     containers {
       image = var.container_image
@@ -68,6 +68,10 @@ resource "google_cloud_run_v2_service" "api" {
       env {
         name  = "ALM_SHADOW_MODE"
         value = tostring(var.shadow_mode)
+      }
+      env {
+        name  = "ALM_WORKER_CONCURRENCY"
+        value = tostring(var.worker_concurrency)
       }
       env {
         name  = "ALM_ORCHESTRATION"

@@ -1,11 +1,15 @@
 """A run's trace: every call to every service, as structured records.
 
 The code that talks to a service - the HTTP session, the ledger, GPT, the
-model - calls :func:`emit`. Nothing happens unless a run has installed a sink
-with :func:`set_sink`; the local runner and the web console install one that
-writes a JSON-lines file per run. One sink per process, because one run at a
-time is what the local tools allow, and HTTP calls run on worker threads that
-a context variable would not reach.
+model - calls :func:`emit`. Nothing happens unless a run has installed a sink.
+Two ways in:
+
+* :func:`set_sink` - one sink for the whole process. The local runner and the
+  web console run one run at a time and use this; it also reaches threads that
+  were not started from the run's context (GPT's dedicated browser thread).
+* :func:`bind_sink` - a sink for the current context only. A worker driving
+  several runs at once binds each run's sink in that run's task; asyncio tasks
+  and ``asyncio.to_thread`` carry it into the HTTP calls they make.
 
 What is never traced: request and response bodies (a login posts the
 password), headers (session cookies) and query values whose name looks like a
@@ -13,6 +17,7 @@ secret. Records pass through :func:`alm_core.logging.scrub_secrets` as well.
 """
 from __future__ import annotations
 
+import contextvars
 import threading
 import time
 from collections.abc import Callable
@@ -20,6 +25,11 @@ from contextlib import contextmanager
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 _sink: Callable[[dict], None] | None = None
+# A sink bound to the current context - the run a worker task is driving. It
+# wins over the process sink, so concurrent runs in one process each get their
+# own trace. asyncio tasks and asyncio.to_thread carry it with them.
+_bound: contextvars.ContextVar[Callable[[dict], None] | None] = contextvars.ContextVar(
+    "alm_trace_sink", default=None)
 _lock = threading.Lock()
 _SECRET_PARAM = ("pass", "secret", "token", "key", "auth", "cookie", "session")
 
@@ -31,13 +41,27 @@ def set_sink(sink: Callable[[dict], None] | None) -> None:
         _sink = sink
 
 
+@contextmanager
+def bind_sink(sink: Callable[[dict], None]):
+    """Send this context's events (one run's task and its threads) to ``sink``."""
+    token = _bound.set(sink)
+    try:
+        yield
+    finally:
+        _bound.reset(token)
+
+
+def current_sink() -> Callable[[dict], None] | None:
+    return _bound.get() or _sink
+
+
 def active() -> bool:
-    return _sink is not None
+    return current_sink() is not None
 
 
 def emit(service: str, kind: str, **fields) -> None:
     """Record one event. Never raises: tracing must not break a run."""
-    sink = _sink
+    sink = current_sink()
     if sink is None:
         return
     try:
@@ -86,7 +110,7 @@ def http_response(response, *_args, **_kwargs):
     ``requests`` calls it for every response, each redirect included, so the
     redirect chain of a form login shows up hop by hop.
     """
-    if _sink is None:
+    if current_sink() is None:
         return response
     elapsed = getattr(response, "elapsed", None)
     emit("http", "request",

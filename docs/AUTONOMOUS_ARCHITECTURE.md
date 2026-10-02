@@ -280,13 +280,24 @@ plan, and it is still open. Both paths are implemented so the answer can change
 without a rewrite:
 
 - **Webhook** — `POST /webhooks/ewm`, HMAC over `timestamp.body`, a 5-minute
-  timestamp window, and a delivery-id replay guard. Whatever bridges EWM to this
-  endpoint (a follow-up action plugin, or an intermediary) must sign requests.
-- **Reconciliation** — an in-process timer sweeps the whole active queue every
-  15 minutes. This is the safety net, and it is why the Container App is pinned
-  to `minReplicas: 1`: a replica scaled to zero stops sweeping.
+  timestamp window, and a delivery-id replay guard held in the store, so every
+  replica refuses a replay. Whatever bridges EWM to this endpoint (a follow-up
+  action plugin, or an intermediary) must sign requests.
+- **Reconciliation** — the worker holding the `scheduler` lease queues a sweep
+  of the whole active queue every 15 minutes (`ALM_RECONCILE_INTERVAL_MINUTES`).
+  One sweep per interval, however many workers run. This is the safety net, and
+  it is why at least one instance must stay up.
 
-The two overlap constantly by design. The ledger is what makes that harmless.
+Neither trigger runs anything itself: each becomes a job in the store's queue
+(`alm_run_job`). Workers - embedded in the API process
+(`ALM_WORKER_CONCURRENCY`) or standalone (`python -m alm_agents.worker`) -
+claim jobs, and the store never hands one run to two workers. A run that
+reaches the approval gate is parked and its job ends; the decision arrives as
+a `resume` job. A worker that dies mid-run loses its lease, and another worker
+continues the run from its last checkpoint.
+
+The two triggers overlap constantly by design. The ledger is what makes that
+harmless.
 
 ---
 
@@ -392,7 +403,7 @@ both against the same work items.
 
 | Service | Configuration | Why this one |
 |---|---|---|
-| **Cloud Run** | Direct VPC egress, `INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER`, min 1 instance, `cpu_idle = false` | Serverless containers with VPC attachment; no cluster to operate. Two settings are load-bearing: min 1 because the reconciliation sweep is an in-process timer, and CPU-always-allocated because Cloud Run otherwise throttles CPU between requests and would freeze both that timer and any run waiting on a 30-minute permission poll |
+| **Cloud Run** | Direct VPC egress, `INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER`, 1 to `max_instances` instances, `cpu_idle = false` | Serverless containers with VPC attachment; no cluster to operate. Each instance runs the API and `worker_concurrency` run workers. Min 1 so queued runs and the scheduled sweep always have a worker; CPU-always-allocated because Cloud Run otherwise throttles CPU between requests and would freeze the workers and any run waiting on a 30-minute permission poll. Scaling out is safe: run state is in Postgres |
 | **Cloud SQL for PostgreSQL 16** | Private IP only, IAM database auth, PITR, 35 backups | Ledger, audit, approvals, agent memory and the LangGraph checkpointer — one store, transactional. IAM auth means there is no database password to store or rotate |
 | **Pub/Sub** | 600s ack deadline, dead-letter topic, 5 delivery attempts | Bridge to the Windows worker. The long deadline is because the consumer drives a browser; the worker extends the lease while a job runs |
 | **Secret Manager** | Three secrets (four with the Gemini API key), per-secret IAM | The password is mounted rather than injected as an environment variable — a process listing exposes an environment. The Gemini key is read through the API by name |
@@ -489,32 +500,37 @@ of previous runs. `alm_agents/policy.py`, the roster's per-agent toolsets and th
 hop/write/tool-call budgets are the machinery that makes that safe, and none of
 them were in the plan.
 
-### Not done, and deliberately so
+### Status and what is still open
 
-- **Nothing has been executed.** No unit tests exist for the new packages and
-  none were run. The offline suite still covers only the CLI. For the agentic
-  layer specifically this means the prompts have never been exercised against a
-  real model - prompt behaviour is the part most likely to need iteration, and
-  it is the part with zero evidence behind it.
-- **No evaluation harness.** A multi-agent system needs one: fixed scenarios
-  (a malformed field, a user missing from LDAP, a mid-run failure) replayed
-  against recorded tool responses, asserting the agents reach the right
-  decisions. Without it, a prompt change is unverifiable. This is the first
-  thing to build once a model endpoint exists.
-- **Cost is unmeasured.** Every hop is a model call, and a 17-user batch may
-  make tens of them. Budget the token spend on TEST before enabling this on a
-  queue that runs continuously.
-- **OpenTelemetry export** is configured through the Cloud Trace connection
-  string but no spans are emitted yet; the structured logs carry the correlation
-  ids in the meantime.
-- **Postgres Workload Identity auth** is wired in the Terraform DSN but the token
-  provider is not implemented in `PostgresStore` — the first deployment will
-  need either a password DSN or `google-auth` token plumbing added there.
+Checked against the code on 2026-10-03. The enterprise track that closes the
+rest is in [docs/ENTERPRISE_PLAN.md](ENTERPRISE_PLAN.md).
+
+Done since this section was first written:
+
+- **Tests and evals.** The offline suite covers the agents, the stores (memory,
+  SQLite and Postgres), the workers, the API and the web console. An eval suite
+  (`src/agent_eval.py`) replays scenarios and recorded real runs against a real
+  model and grades outcomes and safety invariants.
+- **Cost is measured.** Every run reports model calls, tool calls, hops and
+  time, and its trace records the tokens of every model call.
+- **Postgres IAM authentication** is implemented for Cloud SQL (`PostgresStore`
+  mints a fresh token per connection).
+- **Scale-out.** Runs are jobs in a Postgres queue, driven by workers; any
+  number of API instances and workers can share the work (section 5).
+
+Still open:
+
+- **OpenTelemetry export.** Runs write a full trace (JSONL and the store), but
+  no spans are exported to a tracing backend yet.
 - **The audit table's grants** are described but not applied; `alm_audit` is
-  append-only by construction, not yet by permission.
-- **Open question 2 (Microsoft Graph instead of the GPT UI)** is untouched.
-  Option C in the plan — modifying AD groups through Graph or LDAP — would
-  delete `alm_worker` entirely and is the better long-term answer.
+  append-only by construction (and by trigger in SQLite), not yet by
+  permission in Postgres.
+- **Directory API.** AD membership still goes through the GPT web UI. A
+  Microsoft Graph adapter would retire the Windows worker.
+- **Sign-in and roles.** The API trusts IAP (or a signed approval link); there
+  is no OIDC sign-in or role model for other clouds yet.
+- **AWS and Azure.** Only the GCP Terraform exists; the code's cloud-specific
+  parts are the secret, database-token, model and queue adapters.
 
 ---
 

@@ -21,6 +21,7 @@ import re
 import threading
 import time
 from collections import deque
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -63,6 +64,10 @@ class RunTrace:
         path.parent.mkdir(parents=True, exist_ok=True)
         self._file = path.open("a", encoding="utf-8")
         self._log_handler: _LogForwarder | None = None
+        self._bound = None
+        # Called with every record after it is written - a worker mirrors records
+        # to the store so any API replica can show them. Must not raise.
+        self.listeners: list = []
 
     # -------------------------------------------------------------- writing
 
@@ -78,9 +83,16 @@ class RunTrace:
                       "thread_id": self.thread_id, **record}
             self._seq += 1
             line = scrub_secrets(json.dumps(record, ensure_ascii=False, default=str))
-            self._file.write(line + "\n")
-            self._file.flush()
-            self.records.append(json.loads(line))
+            if not self._file.closed:  # a late event after the run ended
+                self._file.write(line + "\n")
+                self._file.flush()
+            record = json.loads(line)
+            self.records.append(record)
+        for listener in list(self.listeners):
+            try:
+                listener(record)
+            except Exception:  # noqa: S110, BLE001 - a listener must not break the trace
+                pass
 
     def event(self, kind: str, data: dict) -> None:
         """The runtime's progress events (supervisor, tool_call, agent_text, ...)."""
@@ -95,6 +107,7 @@ class RunTrace:
     # ------------------------------------------------------------ lifecycle
 
     def __enter__(self) -> RunTrace:
+        """Trace the whole process (one run at a time: local and web runs)."""
         core_trace.set_sink(self.write)
         self._log_handler = _LogForwarder(self)
         logging.getLogger().addHandler(self._log_handler)
@@ -102,11 +115,31 @@ class RunTrace:
 
     def __exit__(self, *exc) -> None:
         core_trace.set_sink(None)
+        self.close()
+
+    @contextmanager
+    def bound(self):
+        """Trace only the current context - one run's task in a worker that
+        drives several runs at once. Use as ``with trace.bound():``."""
+        with core_trace.bind_sink(self.write):
+            self._log_handler = _LogForwarder(self)
+            logging.getLogger().addHandler(self._log_handler)
+            try:
+                yield self
+            finally:
+                self._close()
+
+    def _close(self) -> None:
         if self._log_handler is not None:
             logging.getLogger().removeHandler(self._log_handler)
             self._log_handler = None
+
+    def close(self) -> None:
+        """Stop listening and close the file. Safe to call twice."""
+        self._close()
         with self._lock:
-            self._file.close()
+            if not self._file.closed:
+                self._file.close()
 
 
 class _LogForwarder(logging.Handler):
@@ -117,6 +150,10 @@ class _LogForwarder(logging.Handler):
         self.trace = trace
 
     def emit(self, record: logging.LogRecord) -> None:
+        # Only the run whose context produced the line: with several runs in
+        # one process, each trace keeps its own log lines.
+        if core_trace.current_sink() != self.trace.write:
+            return
         try:
             message = record.getMessage()
             http = _HTTPX_LINE.match(message) if record.name.startswith("httpx") else None

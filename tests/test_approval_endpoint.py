@@ -25,6 +25,7 @@ PLAN = "plan-hash-1"
 class FakeStore:
     def __init__(self):
         self.decisions = []
+        self.resumes = []
 
     async def get_approval(self, thread_id):
         if thread_id != THREAD:
@@ -39,16 +40,19 @@ class FakeStore:
 def api(monkeypatch):
     store = FakeStore()
     monkeypatch.delenv("ALM_IAP_AUDIENCE", raising=False)
-    monkeypatch.setattr(main.runtime, "ctx", SimpleNamespace(store=store))
+    monkeypatch.setattr(main.runtime, "services", SimpleNamespace(store=store))
     monkeypatch.setattr(main.runtime, "settings",
                         SimpleNamespace(approval_signing_secret_name="signing"))  # pragma: allowlist secret
     monkeypatch.setattr(main.runtime, "resolver",
                         SimpleNamespace(get=lambda _name: SECRET))
 
-    async def no_resume(*_a, **_k):
-        return None
+    async def queued(_store, thread_id, decision):
+        store.resumes.append((thread_id, decision.approved))
+        return 1
 
-    monkeypatch.setattr(main, "_resume_in_background", no_resume)
+    from alm_agents import worker
+
+    monkeypatch.setattr(worker, "submit_decision", queued)
     # No `with`: the app's startup (graph, database, reconcile loop) never runs.
     return TestClient(main.app), store
 
@@ -79,6 +83,7 @@ def test_a_signed_token_records_the_decision(api):
                            json={"approved": True, "token": token})
     assert response.status_code == 200
     assert [d.approved for d in store.decisions] == [True]
+    assert store.resumes == [(THREAD, True)]  # the resume is queued, not run here
 
 
 def test_a_token_for_another_plan_is_refused(api):

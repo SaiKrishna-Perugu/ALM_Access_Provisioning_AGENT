@@ -36,16 +36,29 @@ GROUP BY 1, 2 ORDER BY 3 DESC;
 
 ## 2. Stop it
 
-In order of severity. All three are reversible.
+**One run.** Stop it after its current step; a write in progress always
+finishes, nothing new starts, and the run ends `stopped` with its report:
+
+```bash
+curl -X POST https://<api>/runs/<thread-id>/stop -H "<IAP or OIDC auth>"   # any replica
+python src/agent_local.py --stop <thread-id>                              # a laptop run
+```
+
+A queued run never starts; a run parked at the approval card ends without
+writing. `GET /runs/<thread-id>` shows `stopping`, then `stopped`.
+
+**Everything.** In order of severity. All three are reversible.
 
 1. **Stop writing, keep observing** — set `ALM_SHADOW_MODE=true` and restart the
    revision. Runs continue and record what they *would* do. This is the right
    first move in almost every incident.
 2. **Stop triggering** — set `ALM_RECONCILE_INTERVAL_MINUTES=0` and rotate the
    webhook HMAC secret in Secret Manager. Parked runs stay parked.
-3. **Stop everything** — scale the Container App to zero replicas. In-flight
-   runs are checkpointed and resume when it comes back; in-flight *writes* leave
-   a claim in the ledger that expires after 15 minutes.
+3. **Stop everything** — scale the service to zero instances. In-flight runs
+   are checkpointed; their jobs stay claimed until the lease runs out
+   (`ALM_JOB_LEASE_SECONDS`, 2 minutes), then the first worker back continues
+   them. In-flight *writes* leave a claim in the ledger that expires after 15
+   minutes.
 
 ```bash
 gcloud run services update alm-prod-api --region <region> --update-env-vars ALM_SHADOW_MODE=true
@@ -67,10 +80,12 @@ gcloud run services update-traffic alm-prod-api --region <region> \
     --to-revisions <previous-revision>=100
 ```
 
-**Database schema:** `SCHEMA_SQL` is additive (`CREATE TABLE IF NOT EXISTS`), so
-an older image runs against a newer schema. A migration that ever removes a
-column must be split across two releases — the old revision must keep working
-while traffic is still on it.
+**Database schema:** versioned (`alm_schema_version`). Migrations only add, and
+run on start-up under an advisory lock. An image refuses a database whose schema
+is *newer* than it knows, so a rollback across a migration needs the previous
+image *and* a restore taken before the migration ran (PITR), or a roll forward
+instead. A migration that ever removes a column must be split across two
+releases, so the old revision keeps working while traffic is still on it.
 
 **LangGraph checkpoints** are keyed by thread id and version. A rollback across a
 state-shape change can leave a parked run unresumable; if that happens, reject
@@ -81,7 +96,14 @@ up fresh. The ledger stops the retry from duplicating anything already done.
 
 ## 4. Dead-letter replay
 
-AD jobs move to `alm-ad-provisioning-dead-letter` after 5 delivery attempts, or
+**Run jobs** (the Postgres queue). A job that fails `ALM_JOB_MAX_ATTEMPTS` times
+(default 5, with backoff), or fails on a configuration error, goes `dead`. Its
+run is `failed`, with the error in `GET /runs/<thread-id>`. List them with
+`GET /queue`. Fix the cause, then queue the run again: re-send the trigger, or
+start it from the console. The ledger reports any write the failed attempts
+already made as a replay.
+
+**AD jobs** (Pub/Sub, for the Windows worker) move to `alm-ad-provisioning-dead-letter` after 5 delivery attempts, or
 immediately when the worker nacks a message it cannot parse.
 
 ```bash
