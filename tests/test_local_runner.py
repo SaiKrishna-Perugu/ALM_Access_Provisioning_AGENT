@@ -963,7 +963,7 @@ def test_a_preview_approval_never_authorises_a_write():
         asyncio.run(write())
 
 
-def test_an_approval_covers_only_the_users_on_the_card(tmp_path):
+def test_an_approval_covers_only_the_users_on_the_card(tmp_path, scripted_recovery):
     """Review finding: one 'y' covered users added after the human approved."""
     seen = []
 
@@ -976,18 +976,17 @@ def test_an_approval_covers_only_the_users_on_the_card(tmp_path):
                                 approver_prefix="test")
 
     llm = ScriptedLLM(
-        ["triage", "validator", "risk_officer", "validator", "provisioner", "DONE"], {
+        ["triage", "validator", "risk_officer", "extractor", "provisioner", "DONE"], {
             "triage": [[("fetch_open_requests", {"limit": 10})]],
-            "validator": [[("classify_user", {"userid": "AB12345"})],
-                          [("finish", {"summary": "ok"})],
-                          # After the approval: a user nobody has seen yet.
-                          [("classify_user", {"userid": "TB22322"})]],
+            "validator": [[("classify_user", {"userid": "AB12345"})]],
             "risk_officer": [[("request_human_approval",
                                {"reason": "one import", "userids": ["AB12345"]})]],
+            # After the approval: a user recovered from 1002's malformed row.
+            "extractor": [[("recover_user_ids", {"work_item_id": "1002"})]],
             "provisioner": [[("provision_jts_user", {"userid": "AB12345"})]],
         })
     report = asyncio.run(one_process(local_settings(tmp_path), llm, decide=record,
-                                     thread_id="cover"))
+                                     thread_id="cover", scope=("1001", "1002")))
     assert report["approval_rounds"] == 2
     assert "TB22322" not in seen[0] and "TB22322" in seen[1]
 
@@ -1526,3 +1525,29 @@ def test_the_ledger_path_comes_from_the_flag_then_env_then_default(env, monkeypa
     assert local.build_settings(commit=False).ledger_path == str(tmp_path / "from-env.db")
     flag = str(tmp_path / "from-flag.db")
     assert local.build_settings(commit=False, ledger_path=flag).ledger_path == flag
+
+
+def test_looking_up_an_unrequested_id_does_not_put_it_on_the_card(tmp_path):
+    """A model naming a well-formed ID that no work item requested gets a read,
+    not a user: the ID never reaches the approval card or a write."""
+    seen = []
+
+    def record(payload):
+        seen.append(sorted(i["userid"] for i in payload["items"]))
+        return approve(payload)
+
+    llm = ScriptedLLM(["triage", "validator", "risk_officer", "DONE"], {
+        "triage": [[("fetch_open_requests", {"limit": 10})]],
+        # TB22322 is on 1002, which is outside this run's scope (1001).
+        "validator": [[("classify_user", {"userid": "AB12345"}),
+                       ("classify_user", {"userid": "TB22322"})]],
+        "risk_officer": [[("request_human_approval",
+                           {"reason": "one import", "userids": ["AB12345", "TB22322"]})]],
+    })
+    events = Events()
+    asyncio.run(one_process(local_settings(tmp_path), llm, decide=record,
+                            thread_id="unrequested", console=events))
+    assert seen and all("TB22322" not in card for card in seen)
+    lookup = [d for k, d in events.events
+              if k == "tool_call" and d["args"].get("userid") == "TB22322"]
+    assert "NOT added to the run" in lookup[0]["observation"]

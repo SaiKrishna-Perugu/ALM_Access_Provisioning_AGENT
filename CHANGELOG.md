@@ -7,6 +7,14 @@ The local ledger (`out/local/alm.db`) has a schema version. A newer version of
 the code upgrades an older file automatically the next time it runs; a file
 written by newer code is refused until you update.
 
+## 2026-10-03: enterprise track, part 1 (run isolation and approval cards)
+
+**Do after pulling:** nothing.
+
+- **Concurrent runs no longer share state.** The cloud API used one set of run state for every run, so two runs at once could see each other's users on their approval cards. Each start and each resume now gets its own state; connections and the store are still shared.
+- **Approval cards hold only requested users.** An agent looking up a user ID that no work item asked for gets the lookup, but that user is no longer added to the run. They never reach the approval card or a write.
+  - Users join a run only from a work item's New Users field, or from `recover_user_ids` on a malformed row.
+
 ## 2026-10-01: stop control and full tracing
 
 **Do after pulling:** nothing. On the client network, start the console **without** `--sandbox`.

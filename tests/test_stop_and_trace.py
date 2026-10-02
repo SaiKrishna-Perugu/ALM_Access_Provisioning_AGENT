@@ -12,6 +12,7 @@ import pytest
 
 pytest.importorskip("langgraph")
 pytest.importorskip("langchain_core")
+pytestmark = pytest.mark.usefixtures("scripted_recovery")
 
 from langchain_core.messages import AIMessage  # noqa: E402
 from test_agentic_sandbox import (  # noqa: E402

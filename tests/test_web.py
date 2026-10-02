@@ -10,6 +10,7 @@ pytest.importorskip("fastapi")
 pytest.importorskip("httpx")
 pytest.importorskip("langgraph")
 pytest.importorskip("langchain_core")
+pytestmark = pytest.mark.usefixtures("scripted_recovery")
 
 from fastapi.testclient import TestClient  # noqa: E402
 from test_agentic_sandbox import (  # noqa: E402

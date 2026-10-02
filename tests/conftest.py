@@ -54,3 +54,18 @@ def users():
          "source_work_items": [{"work_item_id": "4348411", "summary": "Grant ALM access"},
                                {"work_item_id": "4348690", "summary": "Second request"}]},
     ]
+
+
+@pytest.fixture
+def scripted_recovery(monkeypatch):
+    """User-ID recovery without a model: every candidate in the text is judged
+    requested, as a confident judge would. Scripted runs use the extractor's
+    real recover_user_ids path - the only way a recovered user joins a run."""
+    from alm_agents import llm
+
+    def judge(_settings, raw_field, _work_item_id, _summary="", **_kw):
+        candidates = llm.userid_candidates(raw_field or "")
+        return llm.Recovery(method="scripted", candidates=candidates,
+                            accepted={c: 0.9 for c in candidates})
+
+    monkeypatch.setattr(llm, "recover_userids", judge)

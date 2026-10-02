@@ -104,7 +104,9 @@ VALIDATOR = Agent(
 
 Call classify_user for every user in scope. It tells you whether they exist in
 LDAP, whether they are already a JTS contributor, whether that account is
-archived, and whether they already hold the JazzUsers role.
+archived, and whether they already hold the JazzUsers role. Users in scope are
+the ones the work items requested (their New Users field, or recover_user_ids);
+an ID from anywhere else is looked up but never becomes part of the run.
 
 What each state means for the run:
 - READY: in LDAP, not yet a contributor. Normal case; can be provisioned.
