@@ -16,7 +16,16 @@ denial comes back as an observation the agent must work with, not an exception
 it can ignore. Safety lives in the tool boundary, not in the prompt.
 """
 from .agent import Agent, AgentResult, AgentRunner, ToolRegistry, ToolSpec
-from .graph import build_graph, build_runtime, resume_run, run_config, start_run
+from .graph import (
+    Services,
+    build_graph,
+    build_runtime,
+    build_services,
+    resume_run,
+    run_config,
+    run_session,
+    start_run,
+)
 from .memory import MemoryStore
 from .policy import PolicyEngine
 from .roster import NOMINAL_SEQUENCE, ROSTER
@@ -25,7 +34,8 @@ from .toolkit import Blackboard, build_registry
 
 __all__ = [
     # runtime
-    "build_runtime", "start_run", "resume_run", "run_config", "build_graph",
+    "build_services", "run_session", "Services", "build_runtime",
+    "start_run", "resume_run", "run_config", "build_graph",
     # agent machinery
     "Agent", "AgentRunner", "AgentResult", "ToolRegistry", "ToolSpec",
     "ROSTER", "NOMINAL_SEQUENCE",

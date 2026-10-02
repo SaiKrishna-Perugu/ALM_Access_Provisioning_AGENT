@@ -25,8 +25,10 @@ while the container restarts, and resume where it stopped.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 
 from alm_core.auth import JazzClient
 from alm_core.credentials import build_resolver
@@ -225,17 +227,43 @@ async def checkpointer_for(settings):
     yield MemorySaver(serde=checkpoint_serde())
 
 
+@dataclass
+class Services:
+    """What every run in a process shares: connections, clients, the store.
+
+    Nothing here belongs to one run. A run's own state - its tool context, its
+    blackboard, its policy budgets and its approval - is built fresh by
+    :func:`run_session`, so concurrent runs in one process cannot see each
+    other's users, approvals or counters.
+    """
+
+    settings: object
+    store: object
+    client: object                 # alm_core.auth.JazzClient
+    checkpointer: object
+    agent_llm: object = None
+    supervisor_llm: object = None
+    notifier: object = None
+    skip_ad: bool = False
+    # One bound on concurrent writes for the whole process, not per run: EWM
+    # and JTS see the sum of all runs.
+    write_limit: asyncio.Semaphore | None = field(default=None, repr=False)
+
+    @property
+    def agentic(self) -> bool:
+        return getattr(self.settings, "orchestration", "") in ("agentic", "guided")
+
+
 @asynccontextmanager
-async def build_runtime(settings=None, *, notifier=None, skip_ad: bool = False):
-    """Assemble everything a run needs and tear it down afterwards.
+async def build_services(settings=None, *, notifier=None, skip_ad: bool = False):
+    """Open everything runs share, and close it afterwards. Yields :class:`Services`.
 
-    Yields ``(graph, ctx)``. Which graph depends on ``ALM_ORCHESTRATION``:
+    Which graph the runs get depends on ``ALM_ORCHESTRATION``:
 
-    * ``agentic`` (default) - an LLM supervisor routes autonomous, tool-calling
-      agents. The order of work is decided per run.
+    * ``agentic`` / ``guided`` (default) - an LLM supervisor routes autonomous,
+      tool-calling agents.
     * ``deterministic`` - the fixed node sequence. Same tools, same guarantees,
-      no routing model. Useful when the LLM is unavailable or when a run must be
-      exactly reproducible.
+      no routing model.
 
     Both share the tool layer, the policy guards, the ledger and the audit
     trail, so switching modes changes how the work is sequenced and nothing
@@ -249,17 +277,20 @@ async def build_runtime(settings=None, *, notifier=None, skip_ad: bool = False):
     store = await get_store(settings)
     resolver = build_resolver(settings)
     client = JazzClient(settings, resolver)
-    ctx = ToolContext(settings=settings, client=client, store=store, run_id="")
 
     try:
         async with checkpointer_for(settings) as checkpointer:
-            if settings.orchestration in ("agentic", "guided"):
+            services = Services(settings=settings, store=store, client=client,
+                                checkpointer=checkpointer, notifier=notifier,
+                                skip_ad=skip_ad,
+                                write_limit=asyncio.Semaphore(
+                                    getattr(settings, "max_concurrent_writes", 4)))
+            if services.agentic:
                 from . import llm as llm_module
-                from .agentic import AgenticRuntime, build_agentic_graph
                 from .memory import MemoryStore
 
-                agent_llm = llm_module.get_agent_llm(settings)
-                if agent_llm is None:
+                services.agent_llm = llm_module.get_agent_llm(settings)
+                if services.agent_llm is None:
                     raise ConfigError(
                         "agentic orchestration was requested but no model client could "
                         f"be built (ALM_LLM_PROVIDER={settings.llm_provider}). For "
@@ -268,23 +299,54 @@ async def build_runtime(settings=None, *, notifier=None, skip_ad: bool = False):
                         "GOOGLE_CLOUD_PROJECT, ALM_REGION and that the runtime service "
                         "account holds roles/aiplatform.user. Or set "
                         "ALM_ORCHESTRATION=deterministic.")
-
-                memory = MemoryStore(store)
-                await memory.migrate()
-                runtime = AgenticRuntime(
-                    ctx, llm=agent_llm,
-                    supervisor_llm=llm_module.get_supervisor_llm(settings),
-                    memory=memory, max_hops=settings.max_hops, notifier=notifier)
-                log.info("orchestration_selected", mode="agentic",
+                services.supervisor_llm = llm_module.get_supervisor_llm(settings)
+                await MemoryStore(store).migrate()
+                log.info("orchestration_selected", mode=settings.orchestration,
                          agents=len(ROSTER), max_hops=settings.max_hops)
-                yield build_agentic_graph(runtime, checkpointer=checkpointer), ctx
             else:
                 log.info("orchestration_selected", mode="deterministic")
-                yield build_graph(ctx, checkpointer=checkpointer, notifier=notifier,
-                                  skip_ad=skip_ad), ctx
+            yield services
     finally:
         client.close()
         await store.close()
+
+
+def run_session(services: Services, *, control=None, on_event=None, backend=None,
+                shots_dir: str = ""):
+    """A graph and tool context for exactly one run. Returns ``(graph, ctx)``.
+
+    Cheap to call: it builds in-memory objects and compiles the graph, and
+    reuses the shared connections in ``services``. Call it once per start and
+    once per resume - a resumed run rehydrates everything it needs from its
+    checkpoint.
+    """
+    ctx = ToolContext(settings=services.settings, client=services.client,
+                      store=services.store, run_id="", semaphore=services.write_limit)
+    if not services.agentic:
+        return build_graph(ctx, checkpointer=services.checkpointer,
+                           notifier=services.notifier, skip_ad=services.skip_ad), ctx
+
+    from .agentic import AgenticRuntime, build_agentic_graph
+    from .memory import MemoryStore
+
+    runtime = AgenticRuntime(
+        ctx, llm=services.agent_llm, supervisor_llm=services.supervisor_llm,
+        memory=MemoryStore(services.store), max_hops=services.settings.max_hops,
+        notifier=services.notifier, backend=backend, on_event=on_event,
+        control=control, shots_dir=shots_dir)
+    return build_agentic_graph(runtime, checkpointer=services.checkpointer), ctx
+
+
+@asynccontextmanager
+async def build_runtime(settings=None, *, notifier=None, skip_ad: bool = False):
+    """One run's ``(graph, ctx)`` with its services - for scripts and smoke tests.
+
+    A long-lived process that serves many runs (the API, a worker) must use
+    :func:`build_services` once and :func:`run_session` per run instead: the
+    graph and context yielded here belong to a single run.
+    """
+    async with build_services(settings, notifier=notifier, skip_ad=skip_ad) as services:
+        yield run_session(services)
 
 
 def run_config(thread_id: str) -> dict:
