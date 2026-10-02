@@ -69,3 +69,32 @@ def scripted_recovery(monkeypatch):
                             accepted={c: 0.9 for c in candidates})
 
     monkeypatch.setattr(llm, "recover_userids", judge)
+
+
+PG_TABLES = ("alm_idempotency", "alm_audit", "alm_approval", "alm_schema_version",
+             "alm_run", "alm_run_job", "alm_run_control", "alm_webhook_seen", "alm_lease",
+             "alm_trace_event", "alm_agent_memory")
+
+
+def run_async(coro):
+    """asyncio.run on a selector loop: psycopg's async driver cannot use the
+    Windows default (proactor) loop. Harmless everywhere else."""
+    import asyncio
+    import selectors
+
+    return asyncio.run(coro, loop_factory=lambda: asyncio.SelectorEventLoop(
+        selectors.SelectSelector()))
+
+
+@pytest.fixture
+def postgres_dsn():
+    """A real Postgres for store tests: set PG_TEST_DSN (CI starts a service).
+    Every test gets empty tables."""
+    dsn = os.environ.get("PG_TEST_DSN", "")
+    if not dsn:
+        pytest.skip("PG_TEST_DSN is not set")
+    psycopg = pytest.importorskip("psycopg")
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        for table in PG_TABLES:
+            conn.execute(f"DROP TABLE IF EXISTS {table} CASCADE")
+    return dsn

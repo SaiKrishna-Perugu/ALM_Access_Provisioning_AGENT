@@ -74,6 +74,18 @@ jobs:
   # scripted and the estate simulated - no Gemini key, no network.
   agents:
     runs-on: ubuntu-latest
+    # A real Postgres, so the store contract, the job queue and the multi-worker
+    # claims are tested against the database production uses, not only SQLite.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: test  # pragma: allowlist secret - throwaway CI container
+          POSTGRES_DB: alm
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s
+          --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
@@ -88,6 +100,7 @@ jobs:
         env:
           # Fail if any checkpointed type is missing from the allowlist.
           LANGGRAPH_STRICT_MSGPACK: "true"
+          PG_TEST_DSN: postgresql://postgres:test@localhost:5432/alm  # pragma: allowlist secret
         # Coverage was 54% when the floor was set (2026-09-27); the margin
         # covers Windows-only paths CI does not run. Raise it as tests land.
         run: pytest -q --cov=src --cov-report=term --cov-fail-under=50

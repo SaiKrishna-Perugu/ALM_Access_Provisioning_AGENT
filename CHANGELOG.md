@@ -14,6 +14,9 @@ written by newer code is refused until you update.
 - **Concurrent runs no longer share state.** The cloud API used one set of run state for every run, so two runs at once could see each other's users on their approval cards. Each start and each resume now gets its own state; connections and the store are still shared.
 - **Approval cards hold only requested users.** An agent looking up a user ID that no work item asked for gets the lookup, but that user is no longer added to the run. They never reach the approval card or a write.
   - Users join a run only from a work item's New Users field, or from `recover_user_ids` on a malformed row.
+- **Shared run state in the database (schema version 2).** New tables hold the run registry, a job queue, stop requests, webhook replay protection, leases and traces. These let several API servers and workers share the work later in this track.
+  - Both the local SQLite ledger and Postgres upgrade automatically on the next run.
+  - Postgres now has schema versioning like SQLite, and refuses a database written by newer code.
 
 ## 2026-10-01: stop control and full tracing
 

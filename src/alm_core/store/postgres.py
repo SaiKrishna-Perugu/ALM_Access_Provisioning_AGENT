@@ -31,6 +31,7 @@ from typing import Any
 from ..errors import ConfigError, IdempotencyViolation
 from ..logging import get_logger
 from ..models import ApprovalDecision, ApprovalRequest, AuditEvent, Operation, ProvisionResult
+from .runs import JOB_SELECT, RUN_SELECT, job_row, next_job_status, run_row, run_values
 
 log = get_logger("alm.store")
 
@@ -87,6 +88,82 @@ CREATE TABLE IF NOT EXISTS alm_approval (
 );
 CREATE INDEX IF NOT EXISTS alm_approval_run ON alm_approval (run_id);
 """.replace("BIGGENERATED_PLACEHOLDER", "BIGSERIAL PRIMARY KEY")
+
+# Schema changes are appended here, never edited: (version, SQL to reach it).
+# Version 1 is SCHEMA_SQL itself. The same versions as the SQLite ledger.
+MIGRATIONS: list[tuple[int, str]] = [
+    (1, ""),
+    # Version 2: what lets several processes share the work - the run registry,
+    # the job queue, stop requests, webhook replay protection, leases, traces.
+    (2, """
+CREATE TABLE IF NOT EXISTS alm_run (
+    thread_id        TEXT PRIMARY KEY,
+    run_id           TEXT NOT NULL DEFAULT '',
+    status           TEXT NOT NULL DEFAULT 'queued',
+    mode             TEXT NOT NULL DEFAULT '',
+    scope            JSONB NOT NULL DEFAULT '[]'::jsonb,
+    requested_by     TEXT NOT NULL DEFAULT '',
+    trigger          TEXT NOT NULL DEFAULT '',
+    operator_request TEXT NOT NULL DEFAULT '',
+    environment      TEXT NOT NULL DEFAULT '',
+    version          TEXT NOT NULL DEFAULT '',
+    error            TEXT NOT NULL DEFAULT '',
+    report           JSONB,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS alm_run_updated ON alm_run (updated_at);
+
+CREATE TABLE IF NOT EXISTS alm_run_job (
+    id           BIGSERIAL PRIMARY KEY,
+    kind         TEXT NOT NULL,
+    thread_id    TEXT NOT NULL,
+    payload      JSONB NOT NULL DEFAULT '{}'::jsonb,
+    status       TEXT NOT NULL DEFAULT 'queued'
+                 CHECK (status IN ('queued', 'running', 'done', 'dead')),
+    attempts     INTEGER NOT NULL DEFAULT 0,
+    available_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    locked_by    TEXT NOT NULL DEFAULT '',
+    locked_until TIMESTAMPTZ,
+    error        TEXT NOT NULL DEFAULT '',
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    finished_at  TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS alm_run_job_ready ON alm_run_job (status, available_at);
+CREATE INDEX IF NOT EXISTS alm_run_job_thread ON alm_run_job (thread_id, status);
+
+CREATE TABLE IF NOT EXISTS alm_run_control (
+    thread_id    TEXT PRIMARY KEY,
+    stop_by      TEXT NOT NULL,
+    stop_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS alm_webhook_seen (
+    delivery_id  TEXT PRIMARY KEY,
+    seen_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS alm_lease (
+    name         TEXT PRIMARY KEY,
+    holder       TEXT NOT NULL,
+    until        TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS alm_trace_event (
+    id           BIGSERIAL PRIMARY KEY,
+    thread_id    TEXT NOT NULL,
+    seq          INTEGER NOT NULL,
+    record       JSONB NOT NULL,
+    at           TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS alm_trace_thread ON alm_trace_event (thread_id, id);
+"""),
+]
+SCHEMA_VERSION = MIGRATIONS[-1][0]
+
+# Serialises job claims across every process sharing the database: a claim is
+# a few milliseconds, and serialising it is what guarantees one worker per thread.
+_CLAIM_LOCK = 7_243_001
 
 
 def _json(value: Any) -> str:
@@ -154,10 +231,39 @@ class PostgresStore:
             self._pool = None
 
     async def migrate(self) -> None:
-        """Create the tables if they are absent. Safe to run on every startup."""
+        """Create the tables, then bring the schema up to this code's version.
+
+        Safe on every start-up and from several processes at once: an advisory
+        lock lets one migrate while the others wait. A database written by newer
+        code is refused rather than misread.
+        """
         async with self._conn() as conn, conn.cursor() as cur:
+            await cur.execute("SELECT pg_advisory_xact_lock(%s)", (_CLAIM_LOCK + 1,))
             await cur.execute(SCHEMA_SQL)
-        log.info("store_migrated")
+            await cur.execute("CREATE TABLE IF NOT EXISTS alm_schema_version "
+                              "(version INTEGER NOT NULL)")
+            await cur.execute("SELECT MAX(version) FROM alm_schema_version")
+            row = await cur.fetchone()
+            current = row[0] if row and row[0] is not None else 0
+            if current > SCHEMA_VERSION:
+                raise ConfigError(
+                    f"the database was written by a newer version of this service "
+                    f"(schema {current}; this code knows {SCHEMA_VERSION}). Deploy the "
+                    "newer version, or restore a backup taken before it ran.")
+            for version, statements in MIGRATIONS:
+                if version > current:
+                    if statements:
+                        await cur.execute(statements)
+                    await cur.execute("INSERT INTO alm_schema_version (version) VALUES (%s)",
+                                      (version,))
+                    log.info("store_schema_migrated", version=version)
+        log.info("store_migrated", version=SCHEMA_VERSION)
+
+    async def schema_version(self) -> int:
+        async with self._conn() as conn, conn.cursor() as cur:
+            await cur.execute("SELECT MAX(version) FROM alm_schema_version")
+            row = await cur.fetchone()
+        return row[0] if row and row[0] is not None else 0
 
     def _conn(self):
         if self._pool is None:
@@ -333,3 +439,202 @@ class PostgresStore:
         request = ApprovalRequest.model_validate(row[0]) if row[0] else None
         decision = ApprovalDecision.model_validate(row[1]) if row[1] else None
         return request, decision
+
+    # ---------------------------------------------------------------- runs
+
+    async def upsert_run(self, thread_id: str, **fields) -> None:
+        """Create or update a run's registry row. Unknown fields are refused."""
+        values = run_values(fields)
+        columns = list(values)
+        placeholders = ", ".join(
+            "%s::jsonb" if c in ("scope", "report") else "%s" for c in columns)
+        updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in columns)
+        sql = (f"INSERT INTO alm_run (thread_id{''.join(', ' + c for c in columns)}) "  # noqa: S608 - columns come from RUN_COLUMNS, never input
+               f"VALUES (%s{', ' + placeholders if columns else ''}) "
+               "ON CONFLICT (thread_id) DO UPDATE SET "
+               f"{updates + ', ' if updates else ''}updated_at = now()")
+        async with self._conn() as conn, conn.cursor() as cur:
+            await cur.execute(sql, (thread_id, *values.values()))
+
+    async def get_run(self, thread_id: str) -> dict | None:
+        async with self._conn() as conn, conn.cursor() as cur:
+            await cur.execute(
+                f"SELECT {', '.join(RUN_SELECT)} FROM alm_run WHERE thread_id = %s",  # noqa: S608 - fixed column list
+                (thread_id,))
+            row = await cur.fetchone()
+        return run_row(row) if row else None
+
+    async def list_runs(self, limit: int = 50) -> list[dict]:
+        async with self._conn() as conn, conn.cursor() as cur:
+            await cur.execute(
+                f"SELECT {', '.join(RUN_SELECT)} FROM alm_run "  # noqa: S608 - fixed column list
+                "ORDER BY created_at DESC LIMIT %s", (limit,))
+            rows = await cur.fetchall()
+        return [run_row(r) for r in rows]
+
+    # --------------------------------------------------------------- queue
+
+    async def enqueue_job(self, kind: str, thread_id: str, payload: dict | None = None,
+                          *, dedupe: bool = False, delay_seconds: float = 0) -> int | None:
+        """Queue a job. With ``dedupe``, an unfinished job of the same kind for the
+        same thread makes this a no-op (a redelivered webhook, say): returns None."""
+        async with self._conn() as conn, conn.cursor() as cur:
+            await cur.execute("SELECT pg_advisory_xact_lock(%s)", (_CLAIM_LOCK,))
+            if dedupe:
+                await cur.execute(
+                    "SELECT 1 FROM alm_run_job WHERE thread_id = %s AND kind = %s "
+                    "AND status IN ('queued', 'running')", (thread_id, kind))
+                if await cur.fetchone():
+                    return None
+            await cur.execute(
+                "INSERT INTO alm_run_job (kind, thread_id, payload, available_at) "
+                "VALUES (%s, %s, %s::jsonb, now() + make_interval(secs => %s)) RETURNING id",
+                (kind, thread_id, _json(payload or {}), float(delay_seconds)))
+            return (await cur.fetchone())[0]
+
+    async def claim_job(self, worker: str, lease_seconds: float,
+                        *, max_attempts: int = 5) -> dict | None:
+        """Take the oldest ready job, never one whose thread another worker holds.
+
+        Claims are serialised by a transaction-scoped advisory lock, so two
+        workers can never pick two jobs of one thread at the same moment.
+        """
+        async with self._conn() as conn, conn.cursor() as cur:
+            await cur.execute("SELECT pg_advisory_xact_lock(%s)", (_CLAIM_LOCK,))
+            await cur.execute(
+                "UPDATE alm_run_job SET status = 'dead', finished_at = now(), "
+                "error = 'gave up after ' || attempts || ' attempt(s)' "
+                "WHERE attempts >= %s AND (status = 'queued' OR "
+                "(status = 'running' AND locked_until < now()))", (max_attempts,))
+            await cur.execute(
+                f"SELECT {', '.join(JOB_SELECT)} FROM alm_run_job j "  # noqa: S608 - fixed column list
+                "WHERE ((j.status = 'queued' AND j.available_at <= now()) "
+                "    OR (j.status = 'running' AND j.locked_until < now())) "
+                "AND NOT EXISTS (SELECT 1 FROM alm_run_job o WHERE o.thread_id = j.thread_id "
+                "    AND o.status = 'running' AND o.locked_until >= now() AND o.id <> j.id) "
+                "ORDER BY j.id LIMIT 1")
+            row = await cur.fetchone()
+            if row is None:
+                return None
+            job = job_row(row)
+            await cur.execute(
+                "UPDATE alm_run_job SET status = 'running', locked_by = %s, "
+                "locked_until = now() + make_interval(secs => %s), attempts = attempts + 1 "
+                "WHERE id = %s", (worker, float(lease_seconds), job["id"]))
+        job.update(status="running", locked_by=worker, attempts=job["attempts"] + 1)
+        return job
+
+    async def extend_job(self, job_id: int, worker: str, lease_seconds: float) -> bool:
+        async with self._conn() as conn, conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE alm_run_job SET locked_until = now() + make_interval(secs => %s) "
+                "WHERE id = %s AND locked_by = %s AND status = 'running'",
+                (float(lease_seconds), job_id, worker))
+            return cur.rowcount > 0
+
+    async def finish_job(self, job_id: int, worker: str, *, ok: bool, error: str = "",
+                         max_attempts: int = 5, retry_seconds: float = 60) -> str:
+        """Close a job. A failure is retried later, with backoff, until
+        ``max_attempts``; then it is ``dead`` and waits for a human."""
+        async with self._conn() as conn, conn.cursor() as cur:
+            await cur.execute(
+                "SELECT attempts FROM alm_run_job WHERE id = %s AND locked_by = %s "
+                "AND status = 'running' FOR UPDATE", (job_id, worker))
+            row = await cur.fetchone()
+            if row is None:
+                return "lost"  # the lease expired and another worker took it
+            status = next_job_status(ok, row[0], max_attempts)
+            await cur.execute(
+                "UPDATE alm_run_job SET status = %s, error = %s, locked_until = NULL, "
+                "available_at = now() + make_interval(secs => %s), "
+                "finished_at = CASE WHEN %s = 'queued' THEN NULL ELSE now() END "
+                "WHERE id = %s",
+                (status, error[:2000], float(retry_seconds * row[0]), status, job_id))
+        return status
+
+    async def queue_depth(self) -> dict:
+        async with self._conn() as conn, conn.cursor() as cur:
+            await cur.execute("SELECT status, COUNT(*) FROM alm_run_job GROUP BY status")
+            return dict(await cur.fetchall())
+
+    async def list_jobs(self, *, status: str = "", limit: int = 100) -> list[dict]:
+        async with self._conn() as conn, conn.cursor() as cur:
+            if status:
+                await cur.execute(
+                    f"SELECT {', '.join(JOB_SELECT)} FROM alm_run_job WHERE status = %s "  # noqa: S608 - fixed column list
+                    "ORDER BY id DESC LIMIT %s", (status, limit))
+            else:
+                await cur.execute(
+                    f"SELECT {', '.join(JOB_SELECT)} FROM alm_run_job "  # noqa: S608 - fixed column list
+                    "ORDER BY id DESC LIMIT %s", (limit,))
+            rows = await cur.fetchall()
+        return [job_row(r) for r in rows]
+
+    # ------------------------------------------------------------- control
+
+    async def request_stop(self, thread_id: str, by: str) -> None:
+        async with self._conn() as conn, conn.cursor() as cur:
+            await cur.execute(
+                "INSERT INTO alm_run_control (thread_id, stop_by) VALUES (%s, %s) "
+                "ON CONFLICT (thread_id) DO UPDATE SET stop_by = EXCLUDED.stop_by, "
+                "stop_at = now()", (thread_id, by))
+
+    async def stop_request(self, thread_id: str) -> dict | None:
+        async with self._conn() as conn, conn.cursor() as cur:
+            await cur.execute(
+                "SELECT stop_by, stop_at FROM alm_run_control WHERE thread_id = %s",
+                (thread_id,))
+            row = await cur.fetchone()
+        return {"by": row[0], "at": row[1].isoformat()} if row else None
+
+    async def clear_stop(self, thread_id: str) -> None:
+        async with self._conn() as conn, conn.cursor() as cur:
+            await cur.execute("DELETE FROM alm_run_control WHERE thread_id = %s", (thread_id,))
+
+    # ------------------------------------------------- replay and leadership
+
+    async def remember_delivery(self, delivery_id: str, *,
+                                ttl_seconds: float = 86400) -> bool:
+        """True the first time a webhook delivery id is seen, False on a replay."""
+        async with self._conn() as conn, conn.cursor() as cur:
+            await cur.execute(
+                "DELETE FROM alm_webhook_seen WHERE seen_at < now() - make_interval(secs => %s)",
+                (float(ttl_seconds),))
+            await cur.execute(
+                "INSERT INTO alm_webhook_seen (delivery_id) VALUES (%s) "
+                "ON CONFLICT (delivery_id) DO NOTHING", (delivery_id,))
+            return cur.rowcount == 1
+
+    async def try_lease(self, name: str, holder: str, seconds: float) -> bool:
+        """Hold (or renew) a named lease. Exactly one holder at a time."""
+        async with self._conn() as conn, conn.cursor() as cur:
+            await cur.execute(
+                "INSERT INTO alm_lease (name, holder, until) "
+                "VALUES (%s, %s, now() + make_interval(secs => %s)) "
+                "ON CONFLICT (name) DO UPDATE SET holder = EXCLUDED.holder, "
+                "until = EXCLUDED.until "
+                "WHERE alm_lease.holder = EXCLUDED.holder OR alm_lease.until < now()",
+                (name, holder, float(seconds)))
+            await cur.execute("SELECT holder FROM alm_lease WHERE name = %s", (name,))
+            row = await cur.fetchone()
+        return bool(row and row[0] == holder)
+
+    # --------------------------------------------------------------- trace
+
+    async def record_trace(self, thread_id: str, records: list[dict]) -> None:
+        if not records:
+            return
+        async with self._conn() as conn, conn.cursor() as cur:
+            await cur.executemany(
+                "INSERT INTO alm_trace_event (thread_id, seq, record) VALUES (%s, %s, %s::jsonb)",
+                [(thread_id, int(r.get("seq", 0)), _json(r)) for r in records])
+
+    async def trace_since(self, thread_id: str, after: int = 0,
+                          limit: int = 1000) -> list[dict]:
+        """Records after cursor ``after``; each carries its ``cursor``."""
+        async with self._conn() as conn, conn.cursor() as cur:
+            await cur.execute(
+                "SELECT id, record FROM alm_trace_event WHERE thread_id = %s AND id > %s "
+                "ORDER BY id LIMIT %s", (thread_id, after, limit))
+            rows = await cur.fetchall()
+        return [{**record, "cursor": cursor} for cursor, record in rows]
