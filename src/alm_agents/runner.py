@@ -193,7 +193,23 @@ async def drive(graph, ctx, *, thread_id: str, decide, console: Console,
             break
         await resume_run(graph, ctx, thread_id=thread_id, decision=decide(payload))
 
-    final = (await graph.aget_state(config)).values
+    return await build_report(graph, ctx, thread_id=thread_id, approvals=approvals,
+                              wall_seconds=time.monotonic() - started)
+
+
+async def build_report(graph, ctx, *, thread_id: str, approvals: int | None,
+                       wall_seconds: float) -> dict:
+    """The run's report, from its final checkpoint and its audit trail.
+
+    ``approvals`` is the number of approval rounds this process saw; None
+    counts them from the run's own history (a run resumed by many workers).
+    """
+    from .graph import run_config
+
+    final = (await graph.aget_state(run_config(thread_id))).values
+    if approvals is None:
+        approvals = sum(1 for e in final.get("agent_history") or []
+                        if e.get("agent") == "approval")
     return {
         "run_id": ctx.run_id,
         "thread_id": thread_id,
@@ -203,7 +219,7 @@ async def drive(graph, ctx, *, thread_id: str, decide, console: Console,
         "agents": [e.get("agent") for e in final.get("agent_history") or []],
         "results": [r.model_dump(mode="json") for r in final.get("results") or []],
         "approval_rounds": approvals,
-        "metrics": run_metrics(final, time.monotonic() - started),
+        "metrics": run_metrics(final, wall_seconds),
         "audit_events": await ctx.store.run_events(ctx.run_id),
     }
 

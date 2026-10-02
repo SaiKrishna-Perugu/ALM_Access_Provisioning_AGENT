@@ -17,6 +17,13 @@ written by newer code is refused until you update.
 - **Shared run state in the database (schema version 2).** New tables hold the run registry, a job queue, stop requests, webhook replay protection, leases and traces. These let several API servers and workers share the work later in this track.
   - Both the local SQLite ledger and Postgres upgrade automatically on the next run.
   - Postgres now has schema versioning like SQLite, and refuses a database written by newer code.
+- **Runs are queued and run by workers.** The cloud API no longer runs anything itself. Webhooks, decisions, sweeps and stops become jobs in the database, and workers pick them up: inside the API (`ALM_WORKER_CONCURRENCY`, default 1) or as `python -m alm_agents.worker`.
+  - **Approval.** A run parks at the approval card without holding a worker.
+  - **Crash recovery.** A worker that dies mid-run hands the run to another worker, which continues from the last checkpoint; writes already made are replayed, not repeated.
+  - **Scheduling.** One worker schedules the 15-minute sweep, however many run.
+  - **Scale.** `max_instances` in Terraform can now be raised; it was pinned to 1.
+- **Stop and trace in the cloud API.** `POST /runs/<thread-id>/stop` works from any replica, and `GET /runs/<thread-id>/trace` returns the run's trace. `GET /runs` and `GET /queue` show the run registry and failed jobs.
+- **`ALM_RECONCILE_INTERVAL_MINUTES=0` now turns the sweep off,** as the runbook said it would. Before, the setting rejected 0.
 
 ## 2026-10-01: stop control and full tracing
 

@@ -1,4 +1,4 @@
-"""Tests for alm_api.security: webhook HMAC verification, approval tokens, and replay guard."""
+"""Tests for alm_api.security: webhook HMAC verification and approval tokens."""
 from __future__ import annotations
 
 import time
@@ -9,7 +9,6 @@ import pytest
 pytest.importorskip("pydantic")
 
 from alm_api.security import (  # noqa: E402
-    ReplayGuard,
     caller_identity,
     issue_approval_token,
     sign_payload,
@@ -78,29 +77,6 @@ def test_verify_webhook_expired_timestamp_rejected():
     ok, reason = verify_webhook(secret, body=body, signature=sig, timestamp=old_ts)
     assert ok is False
     assert "away from now" in reason
-
-
-def test_replay_guard_prevents_redelivery():
-    guard = ReplayGuard(capacity=10)
-    assert guard.check_and_add("msg-1") is True
-    assert guard.check_and_add("msg-2") is True
-    assert guard.check_and_add("msg-1") is False  # replay detected
-
-    secret = "webhook-secret"  # pragma: allowlist secret
-    body = b"payload"
-    ts = str(time.time())
-    sig = sign_payload(secret, f"{ts}.".encode() + body)
-
-    ok1, _ = verify_webhook(
-        secret, body=body, signature=sig, timestamp=ts, delivery_id="deliv-1", guard=guard
-    )
-    assert ok1 is True
-
-    ok2, reason2 = verify_webhook(
-        secret, body=body, signature=sig, timestamp=ts, delivery_id="deliv-1", guard=guard
-    )
-    assert ok2 is False
-    assert "already been processed" in reason2
 
 
 def test_approval_token_issue_and_verify_valid():

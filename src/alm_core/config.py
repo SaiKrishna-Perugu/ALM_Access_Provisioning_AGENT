@@ -205,8 +205,25 @@ class Settings(BaseSettings):
         default=False,
         description="Phase 9 step 3 only. Comments and evidence, never provisioning.")
 
+    # ------------------------------------------------------------ workers
+    worker_concurrency: int = Field(
+        default=1, ge=0, le=32,
+        description="Runs one process drives at once. The API process runs this many "
+                    "embedded workers (0: the API only enqueues; run `python -m "
+                    "alm_agents.worker` separately).")
+    job_lease_seconds: int = Field(
+        default=120, ge=15,
+        description="How long a claimed job is a worker's alone without a heartbeat. "
+                    "A dead worker's job is taken over after this.")
+    job_max_attempts: int = Field(default=5, ge=1, le=20)
+    worker_poll_seconds: float = Field(default=2.0, gt=0, le=60)
+    trace_dir: str = Field(
+        default="", description="Where workers write run traces (JSONL). Default: the "
+                                "system temp directory; the store keeps a copy.")
+
     # -------------------------------------------------------------- polls
-    reconcile_interval_minutes: int = Field(default=15, ge=1)
+    reconcile_interval_minutes: int = Field(
+        default=15, ge=0, description="Minutes between queue sweeps; 0 turns the sweep off.")
     permission_wait_minutes: int = Field(default=30, ge=0)
     permission_interval_minutes: int = Field(default=5, ge=1)
     jazz_role: str = Field(default="JazzUsers")

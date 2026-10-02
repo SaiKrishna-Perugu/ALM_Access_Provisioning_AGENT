@@ -312,15 +312,27 @@ async def build_services(settings=None, *, notifier=None, skip_ad: bool = False)
 
 
 def run_session(services: Services, *, control=None, on_event=None, backend=None,
-                shots_dir: str = ""):
+                shots_dir: str = "", mode: str = ""):
     """A graph and tool context for exactly one run. Returns ``(graph, ctx)``.
 
     Cheap to call: it builds in-memory objects and compiles the graph, and
     reuses the shared connections in ``services``. Call it once per start and
     once per resume - a resumed run rehydrates everything it needs from its
     checkpoint.
+
+    ``mode`` is ``"dry"`` or ``"commit"`` for this run; empty means the
+    deployment's default. A deployment configured not to write
+    (``ALM_SHADOW_MODE=true``) refuses ``"commit"``.
     """
-    ctx = ToolContext(settings=services.settings, client=services.client,
+    settings = services.settings
+    if mode not in ("", "dry", "commit"):
+        raise ConfigError(f"unknown run mode {mode!r}: use dry or commit")
+    if mode == "commit" and settings.shadow_mode:
+        raise ConfigError("this deployment does not write (ALM_SHADOW_MODE=true); "
+                          "a writing run is refused")
+    if mode == "dry" and not settings.shadow_mode:
+        settings = settings.model_copy(update={"shadow_mode": True})
+    ctx = ToolContext(settings=settings, client=services.client,
                       store=services.store, run_id="", semaphore=services.write_limit)
     if not services.agentic:
         return build_graph(ctx, checkpointer=services.checkpointer,

@@ -1,19 +1,23 @@
-"""FastAPI surface: webhook in, approval in, runs out.
+"""FastAPI surface: triggers in, decisions in, runs out.
 
 Endpoints:
 
-    POST /webhooks/ewm          HMAC-authenticated trigger for one work item
-    POST /approvals/{thread}    a human's decision; resumes the parked run
-    GET  /approvals/{thread}    the fallback approval page (IAP-authenticated)
-    GET  /runs                  recent runs
-    GET  /runs/{run_id}         the audit trail of one run
-    POST /admin/reconcile       force a reconciliation sweep now
-    GET  /healthz /readyz       liveness and readiness
+    POST /webhooks/ewm              HMAC-authenticated trigger for one work item
+    POST /approvals/{thread}        a human's decision; queues the run's resume
+    GET  /approvals/{thread}        the fallback approval page
+    GET  /runs                      the run registry, newest first
+    GET  /runs/{thread}             one run: registry row, approval, audit trail
+    POST /runs/{thread}/stop        stop a run after its current step
+    GET  /runs/{thread}/trace       the run's trace records (cursor-paged)
+    GET  /queue                     job counts by status, and dead jobs
+    POST /admin/reconcile           queue a reconciliation sweep now
+    GET  /healthz /readyz           liveness and readiness
 
-Runs execute as background tasks, not inside the request. A provisioning run
-waits on a 30-minute permission poll and on a human approval; holding an HTTP
-connection open for either would be absurd, and the webhook sender would retry
-into a duplicate trigger.
+Nothing here runs a run. Every trigger becomes a job in the store's queue,
+and workers - embedded in this process (``ALM_WORKER_CONCURRENCY``, default 1)
+or separate (``python -m alm_agents.worker``) - claim and drive them. So any
+number of API replicas can sit behind a load balancer: none holds run state,
+and a deploy or a crash loses nothing that a worker will not pick up again.
 """
 from __future__ import annotations
 
@@ -26,17 +30,10 @@ from alm_core.credentials import build_resolver
 from alm_core.logging import configure, get_logger
 from alm_core.models import ApprovalDecision
 
-from .chat import build_card, post_card
-from .security import (
-    ReplayGuard,
-    caller_identity,
-    issue_approval_token,
-    verify_approval_token,
-    verify_webhook,
-)
+from .security import caller_identity, verify_approval_token, verify_webhook
 
 try:
-    from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request
+    from fastapi import FastAPI, Header, HTTPException, Request
     from fastapi.responses import HTMLResponse, JSONResponse
     from pydantic import BaseModel, Field
 except ImportError as err:  # pragma: no cover
@@ -56,33 +53,29 @@ class ApprovalPayload(BaseModel):
 class WebhookPayload(BaseModel):
     """What the EWM bridge posts. Only the work item id is trusted."""
 
-    work_item_id: str = Field(min_length=1, max_length=32)
+    work_item_id: str = Field(min_length=1, max_length=32, pattern=r"^\d{1,10}$")
     event: str = "modified"
     state: str = ""
 
 
-class Runtime:
-    """The process's shared services and background state.
+class StopPayload(BaseModel):
+    reason: str = Field(default="", max_length=200)
 
-    ``services`` are shared by every run; each start and each resume gets its
-    own graph and tool context from ``run_session``. ``ctx`` is a context with
-    no run of its own, for the handlers that only read or write the store.
-    """
+
+class Runtime:
+    """The process's shared services, its embedded workers, and its store."""
 
     def __init__(self):
         self.services = None
-        self.ctx = None
         self.settings = None
         self.resolver = None
-        self.replay_guard = ReplayGuard()
         self.stack: contextlib.AsyncExitStack | None = None
-        self.reconcile_task: asyncio.Task | None = None
-        # One run at a time per thread; the lock stops a redelivered webhook
-        # from starting a second run over the same checkpoint.
-        self.locks: dict[str, asyncio.Lock] = {}
+        self.worker_task: asyncio.Task | None = None
+        self.stopping: asyncio.Event | None = None
 
-    def lock_for(self, thread_id: str) -> asyncio.Lock:
-        return self.locks.setdefault(thread_id, asyncio.Lock())
+    @property
+    def store(self):
+        return self.services.store
 
     def secret(self, name: str) -> str:
         try:
@@ -98,87 +91,24 @@ runtime = Runtime()
 def thread_for(work_item_id: str) -> str:
     """One durable thread per work item.
 
-    Using the work item as the thread id means a redelivered webhook resumes the
-    existing run instead of starting a rival one, and an approver who comes back
-    an hour later finds the same conversation.
+    Using the work item as the thread id means a redelivered webhook finds the
+    run already queued instead of starting a rival one, and an approver who
+    comes back an hour later finds the same conversation.
     """
     return f"wi-{work_item_id}"
 
 
-async def _notifier(request) -> None:
-    """Deliver the approval card for a parked run."""
-    settings = runtime.settings
-    secret = runtime.secret(settings.approval_signing_secret_name)
-    if not secret:
-        log.warning("approval_token_unavailable", thread_id=request.thread_id)
-        return
-    token = issue_approval_token(secret, thread_id=request.thread_id,
-                                 plan_hash=request.plan_hash,
-                                 expires_at=request.expires_at.timestamp())
-    base = settings.approval_base_url.rstrip("/")
-    card = build_card(
-        request,
-        approve_url=f"{base}/approvals/{request.thread_id}?decision=approve&token={token}",
-        reject_url=f"{base}/approvals/{request.thread_id}?decision=reject&token={token}",
-        review_url=f"{base}/approvals/{request.thread_id}?token={token}")
-    post_card(settings.chat_webhook_url, card)
-
-
-async def _reconcile_loop() -> None:
-    """The safety net for a trigger mechanism that cannot be relied on.
-
-    EWM/RTC has no first-class outbound webhook, so a missed event is expected,
-    not exceptional. This sweeps the whole active queue on a timer; the
-    idempotency ledger makes the overlap with webhook-triggered runs harmless.
-    """
-    settings = runtime.settings
-    interval = settings.reconcile_interval_minutes * 60
-    while True:
-        try:
-            await asyncio.sleep(interval)
-            log.info("reconcile_sweep_starting")
-            await _run_in_background(thread_id=f"reconcile-{int(time.time())}",
-                                     work_item_ids=None, trigger="reconcile")
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # noqa: BLE001 - the loop must outlive one bad sweep
-            log.exception("reconcile_sweep_failed")
-
-
-async def _run_in_background(*, thread_id: str, work_item_ids: list[str] | None,
-                             trigger: str) -> None:
-    from alm_agents.graph import run_session, start_run
-
-    async with runtime.lock_for(thread_id):
-        try:
-            # A graph and context of its own: a run must never share its board,
-            # budgets or approval with another run in this process.
-            graph, ctx = run_session(runtime.services)
-            result = await start_run(graph, ctx, thread_id=thread_id,
-                                     work_item_ids=work_item_ids, trigger=trigger)
-        except Exception:  # noqa: BLE001 - one run must not take the service down
-            log.exception("run_failed", thread_id=thread_id)
-            return
-        if "__interrupt__" in (result or {}):
-            log.info("run_parked_for_approval", thread_id=thread_id)
-
-
-async def _resume_in_background(thread_id: str, decision: ApprovalDecision) -> None:
-    from alm_agents.graph import resume_run, run_session
-
-    async with runtime.lock_for(thread_id):
-        try:
-            graph, ctx = run_session(runtime.services)
-            await resume_run(graph, ctx, thread_id=thread_id, decision=decision)
-        except Exception:  # noqa: BLE001
-            log.exception("resume_failed", thread_id=thread_id)
+def _mode() -> str:
+    return "dry" if runtime.settings.shadow_mode else "commit"
 
 
 @contextlib.asynccontextmanager
 async def lifespan(_app: FastAPI):
     from alm_agents.graph import build_services
+    from alm_agents.worker import Worker
     from alm_core.config import get_settings
-    from alm_core.tools.base import ToolContext
+
+    from .notify import make_notifier
 
     configure()
     settings = get_settings()
@@ -186,29 +116,29 @@ async def lifespan(_app: FastAPI):
     runtime.resolver = build_resolver(settings)
 
     stack = contextlib.AsyncExitStack()
-    services = await stack.enter_async_context(build_services(settings, notifier=_notifier))
-    runtime.services, runtime.stack = services, stack
-    runtime.ctx = ToolContext(settings=settings, client=services.client,
-                              store=services.store, run_id="")
+    runtime.services = await stack.enter_async_context(
+        build_services(settings, notifier=make_notifier(settings, runtime.resolver)))
+    runtime.stack = stack
 
-    if settings.reconcile_interval_minutes > 0:
-        runtime.reconcile_task = asyncio.create_task(_reconcile_loop())
+    if settings.worker_concurrency > 0:
+        runtime.stopping = asyncio.Event()
+        runtime.worker_task = asyncio.create_task(
+            Worker(runtime.services).run_forever(runtime.stopping))
 
-    log.info("api_started", environment=settings.environment,
-             shadow=settings.shadow_mode,
-             reconcile_minutes=settings.reconcile_interval_minutes)
+    log.info("api_started", environment=settings.environment, shadow=settings.shadow_mode,
+             embedded_workers=settings.worker_concurrency)
     try:
         yield
     finally:
-        if runtime.reconcile_task:
-            runtime.reconcile_task.cancel()
+        if runtime.worker_task is not None:
+            runtime.stopping.set()
             with contextlib.suppress(asyncio.CancelledError):
-                await runtime.reconcile_task
+                await runtime.worker_task
         await stack.aclose()
         log.info("api_stopped")
 
 
-app = FastAPI(title="ALM Access Provisioning", version="2.0.0", lifespan=lifespan)
+app = FastAPI(title="ALM Access Provisioning", version="3.0.0", lifespan=lifespan)
 
 
 # ------------------------------------------------------------------- health
@@ -220,7 +150,12 @@ async def healthz() -> dict:
 
 @app.get("/readyz")
 async def readyz() -> JSONResponse:
-    ready = runtime.services is not None and runtime.ctx is not None
+    ready = runtime.services is not None
+    if ready:
+        try:
+            await runtime.store.queue_depth()
+        except Exception:  # noqa: BLE001 - the database is unreachable
+            ready = False
     return JSONResponse({"ready": ready,
                          "environment": getattr(runtime.settings, "environment", ""),
                          "shadow_mode": getattr(runtime.settings, "shadow_mode", None)},
@@ -231,16 +166,18 @@ async def readyz() -> JSONResponse:
 
 @app.post("/webhooks/ewm", status_code=202)
 async def ewm_webhook(payload: WebhookPayload, request: Request,
-                      background: BackgroundTasks,
                       x_alm_signature: str = Header(default=""),
                       x_alm_timestamp: str = Header(default=""),
                       x_alm_delivery: str = Header(default="")) -> dict:
     """Trigger a run for one work item. Authenticated, replay-protected."""
+    from alm_agents.worker import submit_run
+
     body = await request.body()
     secret = runtime.secret(runtime.settings.webhook_secret_name)
     ok, reason = verify_webhook(secret, body=body, signature=x_alm_signature,
-                                timestamp=x_alm_timestamp, delivery_id=x_alm_delivery,
-                                guard=runtime.replay_guard)
+                                timestamp=x_alm_timestamp)
+    if ok and x_alm_delivery and not await runtime.store.remember_delivery(x_alm_delivery):
+        ok, reason = False, f"delivery {x_alm_delivery} has already been processed"
     if not ok:
         # Deliberately terse: a caller who cannot authenticate learns nothing
         # about why beyond the log line we keep.
@@ -248,16 +185,19 @@ async def ewm_webhook(payload: WebhookPayload, request: Request,
         raise HTTPException(status_code=401, detail="unauthenticated webhook")
 
     thread_id = thread_for(payload.work_item_id)
-    background.add_task(_run_in_background, thread_id=thread_id,
-                        work_item_ids=[payload.work_item_id], trigger="webhook")
-    log.info("webhook_accepted", work_item=payload.work_item_id, thread_id=thread_id)
-    return {"accepted": True, "thread_id": thread_id}
+    job = await submit_run(runtime.store, thread_id=thread_id,
+                           work_item_ids=[payload.work_item_id], mode=_mode(),
+                           requested_by="webhook:ewm", trigger="webhook",
+                           environment=runtime.settings.environment)
+    log.info("webhook_accepted", work_item=payload.work_item_id, thread_id=thread_id,
+             queued=job is not None)
+    return {"accepted": True, "thread_id": thread_id, "queued": job is not None}
 
 
 # ----------------------------------------------------------------- approvals
 
 async def _load_approval(thread_id: str):
-    request, decision = await runtime.ctx.store.get_approval(thread_id)
+    request, decision = await runtime.store.get_approval(thread_id)
     if request is None:
         raise HTTPException(status_code=404, detail="no approval for that thread")
     return request, decision
@@ -267,15 +207,20 @@ async def _load_approval(thread_id: str):
 async def approval_page(thread_id: str, request: Request, token: str = "",
                         decision: str = "") -> Any:
     """The browser fallback for approving, and the target of the card's buttons."""
+    from html import escape
+
     approval_request, existing = await _load_approval(thread_id)
     secret = runtime.secret(runtime.settings.approval_signing_secret_name)
     ok, reason, _claims = verify_approval_token(
         secret, token, thread_id=thread_id, plan_hash=approval_request.plan_hash)
     if not ok:
-        return HTMLResponse(f"<h1>Link no longer valid</h1><p>{reason}.</p>"
+        return HTMLResponse(f"<h1>Link no longer valid</h1><p>{escape(reason)}.</p>"
                             "<p>Ask for a fresh approval card.</p>", status_code=403)
 
     if decision in ("approve", "reject"):
+        if existing is not None:
+            raise HTTPException(status_code=409,
+                                detail=f"already decided by {existing.approver}")
         recorded = await _record_decision(
             thread_id, approved=decision == "approve",
             approver=caller_identity(request.headers),
@@ -284,34 +229,36 @@ async def approval_page(thread_id: str, request: Request, token: str = "",
             f"<h1>{'Approved' if recorded.approved else 'Rejected'}</h1>"
             f"<p>{approval_request.user_count} user(s) on "
             f"{approval_request.work_item_count} work item(s).</p>"
-            f"<p>Recorded against {recorded.approver}.</p>")
+            f"<p>Recorded against {escape(recorded.approver)}.</p>")
 
     if existing is not None:
         return HTMLResponse(
             f"<h1>Already decided</h1><p>{'Approved' if existing.approved else 'Rejected'} "
-            f"by {existing.approver} at {existing.decided_at:%Y-%m-%d %H:%M} UTC.</p>")
+            f"by {escape(existing.approver)} at {existing.decided_at:%Y-%m-%d %H:%M} UTC.</p>")
 
     rows = "".join(
-        f"<tr><td>{i.userid}</td><td>{i.display_name}</td><td>{i.action}</td>"
-        f"<td>{i.risk.value}</td><td>{'; '.join(i.risk_reasons)}</td></tr>"
+        f"<tr><td>{escape(i.userid)}</td><td>{escape(i.display_name)}</td>"
+        f"<td>{escape(i.action)}</td><td>{escape(i.risk.value)}</td>"
+        f"<td>{escape('; '.join(i.risk_reasons))}</td></tr>"
         for i in approval_request.items)
+    safe_token = escape(token, quote=True)
     return HTMLResponse(f"""
-<h1>ALM access provisioning - {approval_request.environment}</h1>
+<h1>ALM access provisioning - {escape(approval_request.environment)}</h1>
 <p>{approval_request.user_count} user(s), {approval_request.work_item_count} work item(s).
    Expires {approval_request.expires_at:%Y-%m-%d %H:%M} UTC.</p>
 <table border="1" cellpadding="6" cellspacing="0">
 <tr><th>User</th><th>Name</th><th>Action</th><th>Risk</th><th>Flags</th></tr>{rows}
 </table>
 <p>
-  <a href="?decision=approve&token={token}">Approve all</a> |
-  <a href="?decision=reject&token={token}">Reject</a>
+  <a href="?decision=approve&token={safe_token}">Approve all</a> |
+  <a href="?decision=reject&token={safe_token}">Reject</a>
 </p>""")
 
 
 @app.post("/approvals/{thread_id}")
 async def submit_approval(thread_id: str, payload: ApprovalPayload,
                           request: Request) -> dict:
-    """Record a decision and resume the parked run."""
+    """Record a decision and queue the parked run's resume."""
     approval_request, existing = await _load_approval(thread_id)
     if existing is not None:
         raise HTTPException(status_code=409,
@@ -326,8 +273,8 @@ async def submit_approval(thread_id: str, payload: ApprovalPayload,
         if not ok:
             raise HTTPException(status_code=403, detail=reason)
     elif identity == "unknown":
-        # Neither a signed token nor an IAP-authenticated identity: there would
-        # be nobody to name in the audit row, so there is no approval to record.
+        # Neither a signed token nor an authenticated identity: there would be
+        # nobody to name in the audit row, so there is no approval to record.
         raise HTTPException(status_code=401,
                             detail="an approval token or an authenticated caller is required")
 
@@ -342,15 +289,17 @@ async def submit_approval(thread_id: str, payload: ApprovalPayload,
 async def _record_decision(thread_id: str, *, approved: bool, approver: str,
                            plan_hash: str, comment: str = "",
                            approved_userids: list[str] | None = None) -> ApprovalDecision:
+    from alm_agents.worker import submit_decision
+
     decision = ApprovalDecision(thread_id=thread_id, approved=approved,
                                 approver=approver, plan_hash=plan_hash,
                                 comment=comment,
                                 approved_userids=approved_userids or [])
-    await runtime.ctx.store.save_approval_decision(decision)
+    await runtime.store.save_approval_decision(decision)
     log.info("approval_recorded", thread_id=thread_id, approved=approved,
              approver=approver)
-    # Resuming is a background task: the graph may now run for half an hour.
-    asyncio.create_task(_resume_in_background(thread_id, decision))
+    # The resume is a job: whichever worker claims it continues the run.
+    await submit_decision(runtime.store, thread_id, decision)
     return decision
 
 
@@ -358,22 +307,65 @@ async def _record_decision(thread_id: str, *, approved: bool, approver: str,
 
 @app.get("/runs")
 async def list_runs(limit: int = 50) -> dict:
-    return {"runs": await runtime.ctx.store.recent_runs(min(max(limit, 1), 200))}
+    return {"runs": await runtime.store.list_runs(min(max(limit, 1), 200))}
 
 
-@app.get("/runs/{run_id}")
-async def get_run(run_id: str) -> dict:
-    events = await runtime.ctx.store.run_events(run_id)
-    if not events:
+@app.get("/runs/{thread_id}")
+async def get_run(thread_id: str) -> dict:
+    run = await runtime.store.get_run(thread_id)
+    if run is None:
         raise HTTPException(status_code=404, detail="unknown run")
-    return {"run_id": run_id, "events": events}
+    approval_request, decision = await runtime.store.get_approval(thread_id)
+    events = await runtime.store.run_events(run["run_id"]) if run["run_id"] else []
+    return {**run,
+            "approval": approval_request.model_dump(mode="json") if approval_request else None,
+            "decision": decision.model_dump(mode="json") if decision else None,
+            "events": events}
+
+
+@app.post("/runs/{thread_id}/stop", status_code=202)
+async def stop_run(thread_id: str, request: Request,
+                   payload: StopPayload | None = None) -> dict:
+    """Stop a run after its current step. A write in progress always finishes."""
+    from alm_agents.worker import request_stop
+
+    identity = caller_identity(request.headers)
+    if identity == "unknown":
+        raise HTTPException(status_code=401, detail="an authenticated caller is required")
+    try:
+        status = await request_stop(runtime.store, thread_id, identity)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="unknown run") from None
+    log.info("stop_requested", thread_id=thread_id, by=identity,
+             reason=(payload.reason if payload else ""))
+    return {"thread_id": thread_id, "status": status}
+
+
+@app.get("/runs/{thread_id}/trace")
+async def run_trace(thread_id: str, after: int = 0, limit: int = 500) -> dict:
+    if await runtime.store.get_run(thread_id) is None:
+        raise HTTPException(status_code=404, detail="unknown run")
+    records = await runtime.store.trace_since(thread_id, after=max(after, 0),
+                                              limit=min(max(limit, 1), 2000))
+    return {"records": records, "next": records[-1]["cursor"] if records else after}
+
+
+@app.get("/queue")
+async def queue() -> dict:
+    return {"depth": await runtime.store.queue_depth(),
+            "dead": await runtime.store.list_jobs(status="dead", limit=50)}
 
 
 @app.post("/admin/reconcile", status_code=202)
-async def force_reconcile(background: BackgroundTasks,
-                          _identity: str = Depends(lambda: None)) -> dict:
-    """Sweep the active queue now, without waiting for the timer."""
-    thread_id = f"reconcile-{int(time.time())}"
-    background.add_task(_run_in_background, thread_id=thread_id,
-                        work_item_ids=None, trigger="reconcile")
+async def force_reconcile(request: Request) -> dict:
+    """Queue a sweep of the active queue now, without waiting for the schedule."""
+    from alm_agents.worker import submit_run
+
+    identity = caller_identity(request.headers)
+    if identity == "unknown":
+        raise HTTPException(status_code=401, detail="an authenticated caller is required")
+    thread_id = f"reconcile-manual-{int(time.time())}"
+    await submit_run(runtime.store, thread_id=thread_id, work_item_ids=None, mode=_mode(),
+                     requested_by=identity, trigger="reconcile",
+                     environment=runtime.settings.environment)
     return {"accepted": True, "thread_id": thread_id}

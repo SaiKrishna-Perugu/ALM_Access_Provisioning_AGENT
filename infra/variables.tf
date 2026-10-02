@@ -150,6 +150,26 @@ variable "github_repository" {
   default     = ""
 }
 
+variable "max_instances" {
+  description = "Most API+worker instances. Run state is in Postgres, so this may grow; each instance runs ALM_WORKER_CONCURRENCY runs at once."
+  type        = number
+  default     = 3
+  validation {
+    condition     = var.max_instances >= 1 && var.max_instances <= 20
+    error_message = "max_instances must be between 1 and 20."
+  }
+}
+
+variable "worker_concurrency" {
+  description = "Runs each instance drives at once (ALM_WORKER_CONCURRENCY)."
+  type        = number
+  default     = 2
+  validation {
+    condition     = var.worker_concurrency >= 1 && var.worker_concurrency <= 8
+    error_message = "worker_concurrency must be between 1 and 8."
+  }
+}
+
 variable "db_tier" {
   description = "Cloud SQL machine type."
   type        = string
