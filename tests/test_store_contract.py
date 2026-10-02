@@ -13,6 +13,8 @@ import pytest
 
 pytest.importorskip("pydantic")
 
+from conftest import run_async  # noqa: E402
+
 from alm_core.errors import IdempotencyViolation  # noqa: E402
 from alm_core.models import (  # noqa: E402
     ApprovalDecision,
@@ -44,16 +46,31 @@ async def _age_claim(store, by: timedelta) -> None:
     if isinstance(store, MemoryStore):
         store._claims[KEY]["claimed_at"] -= by
         return
+    if type(store).__name__ == "PostgresStore":
+        async with store._conn() as conn:
+            await conn.execute("UPDATE alm_idempotency SET claimed_at = %s WHERE key = %s",
+                               (utcnow() - by, KEY))
+        return
     from alm_core.store.sqlite import _ts
 
     await store._conn().execute("UPDATE alm_idempotency SET claimed_at = ? WHERE key = ?",
                                 (_ts(utcnow() - by), KEY))
 
 
-@pytest.fixture(params=["memory", "sqlite"])
+@pytest.fixture(params=["memory", "sqlite", "postgres"])
 def make_store(request, tmp_path):
     """A factory, so SQLite tests can reopen the same file."""
-    if request.param == "sqlite":
+    if request.param == "postgres":
+        dsn = request.getfixturevalue("postgres_dsn")
+        pytest.importorskip("psycopg_pool")
+        from alm_core.store.postgres import PostgresStore
+
+        async def factory():
+            store = PostgresStore(dsn, pool_min=1, pool_max=2)
+            await store.start()
+            await store.migrate()
+            return store
+    elif request.param == "sqlite":
         pytest.importorskip("aiosqlite")
         from alm_core.store.sqlite import SqliteStore
 
@@ -71,7 +88,7 @@ def make_store(request, tmp_path):
 
 
 def run(coro):
-    return asyncio.run(coro)
+    return run_async(coro)
 
 
 # ------------------------------------------------------------------- ledger
@@ -266,17 +283,18 @@ def test_an_older_ledger_is_upgraded_step_by_step(tmp_path, monkeypatch):
 
     async def scenario():
         await (await open_and_migrate()).close()  # a ledger at version 1
+        nxt = sqlite.SCHEMA_VERSION + 1
         monkeypatch.setattr(sqlite, "MIGRATIONS", sqlite.MIGRATIONS + [
-            (2, "ALTER TABLE alm_approval ADD COLUMN note TEXT NOT NULL DEFAULT '';")])
-        monkeypatch.setattr(sqlite, "SCHEMA_VERSION", 2)
+            (nxt, "ALTER TABLE alm_approval ADD COLUMN note TEXT NOT NULL DEFAULT '';")])
+        monkeypatch.setattr(sqlite, "SCHEMA_VERSION", nxt)
         store = await open_and_migrate()
         columns = [r[1] for r in await store._fetchall("PRAGMA table_info(alm_approval)")]
         version = await store.schema_version()
         await store.close()
-        return columns, version
+        return columns, version, nxt
 
-    columns, version = asyncio.run(scenario())
-    assert "note" in columns and version == 2
+    columns, version, nxt = asyncio.run(scenario())
+    assert "note" in columns and version == nxt
 
 
 def test_a_ledger_from_newer_code_is_refused(tmp_path):
@@ -295,3 +313,55 @@ def test_a_ledger_from_newer_code_is_refused(tmp_path):
 
     with pytest.raises(ConfigError, match="newer version"):
         asyncio.run(scenario())
+
+
+def test_a_version_1_ledger_gains_the_run_tables(tmp_path):
+    """A ledger written before the run registry existed upgrades in place."""
+    sqlite = _sqlite_or_skip()
+    path = str(tmp_path / "alm.db")
+
+    async def scenario():
+        import aiosqlite
+
+        async with aiosqlite.connect(path) as db:  # what version-1 code left behind
+            await db.executescript(sqlite.SCHEMA_SQL)
+            await db.execute("CREATE TABLE alm_schema_version (version INTEGER NOT NULL)")
+            await db.execute("INSERT INTO alm_schema_version VALUES (1)")
+            await db.commit()
+        store = sqlite.SqliteStore(path)
+        await store.start()
+        await store.migrate()
+        await store.upsert_run("wi-1", status="running")
+        version = await store.schema_version()
+        run_row = await store.get_run("wi-1")
+        await store.close()
+        return version, run_row
+
+    version, row = asyncio.run(scenario())
+    assert version == sqlite.SCHEMA_VERSION and row["status"] == "running"
+
+
+def test_postgres_migrates_once_and_refuses_a_newer_schema(postgres_dsn):
+    pytest.importorskip("psycopg_pool")
+    from alm_core.errors import ConfigError
+    from alm_core.store import postgres
+
+    async def scenario():
+        store = postgres.PostgresStore(postgres_dsn, pool_min=1, pool_max=2)
+        await store.start()
+        try:
+            await store.migrate()
+            await store.migrate()
+            version = await store.schema_version()
+            async with store._conn() as conn:
+                rows = await (await conn.execute(
+                    "SELECT count(*) FROM alm_schema_version")).fetchone()
+                await conn.execute("INSERT INTO alm_schema_version VALUES (99)")
+            with pytest.raises(ConfigError, match="newer version"):
+                await store.migrate()
+            return version, rows[0]
+        finally:
+            await store.close()
+
+    version, count = run_async(scenario())
+    assert version == postgres.SCHEMA_VERSION and count == len(postgres.MIGRATIONS)
