@@ -5,12 +5,11 @@ An approver scanning seventeen identical green rows will approve the eighteenth
 without reading it, so high-risk users are listed first, their reasons are shown
 inline, and the card states plainly when it is asking about production.
 
-The card's buttons carry a signed, expiring token bound to this thread and this
-plan hash. It is not a bearer capability to approve anything else, and it stops
-working the moment the plan changes. The link lands on the Cloud Run approval
-endpoint behind Identity-Aware Proxy, so the approver is authenticated by Google
-before the request reaches this service - which is what makes the audit row's
-approver field trustworthy.
+The card cannot approve anything. Its one button opens the run in the
+console, where the approver is signed in (OIDC or IAP), holds the approver role,
+ticks the users they approve, and decides. A link in a chat message is not an
+identity; the console is - which is what makes the audit row's approver field
+trustworthy.
 """
 from __future__ import annotations
 
@@ -52,8 +51,7 @@ def _user_widget(item) -> dict:
     }
 
 
-def build_card(request: ApprovalRequest, *, approve_url: str, reject_url: str,
-               review_url: str = "") -> dict:
+def build_card(request: ApprovalRequest, *, review_url: str, needed: int = 1) -> dict:
     """A Google Chat cards v2 message for an incoming webhook."""
     is_prod = request.environment.upper() == "PROD"
     high = [i for i in request.items if i.risk == RiskLevel.HIGH]
@@ -63,7 +61,8 @@ def build_card(request: ApprovalRequest, *, approve_url: str, reject_url: str,
             "textParagraph": {
                 "text": (f"<b>{request.user_count}</b> user(s) across "
                          f"<b>{request.work_item_count}</b> work item(s) &middot; "
-                         f"environment <b>{request.environment}</b><br>"
+                         f"environment <b>{request.environment}</b> &middot; "
+                         f"<b>{needed}</b> approver(s) needed<br>"
                          f"Expires {request.expires_at:%Y-%m-%d %H:%M} UTC")
             }
         }]
@@ -85,13 +84,10 @@ def build_card(request: ApprovalRequest, *, approve_url: str, reject_url: str,
     }
 
     buttons = [
-        {"text": "Approve all", "onClick": {"openLink": {"url": approve_url}},
+        {"text": "Review and decide in the console",
+         "onClick": {"openLink": {"url": review_url}},
          "color": {"red": 0.05, "green": 0.43, "blue": 0.42, "alpha": 1}},
-        {"text": "Reject", "onClick": {"openLink": {"url": reject_url}}},
     ]
-    if review_url:
-        buttons.append({"text": "Review in browser",
-                        "onClick": {"openLink": {"url": review_url}}})
 
     return {
         "cardsV2": [{
@@ -113,8 +109,8 @@ def build_card(request: ApprovalRequest, *, approve_url: str, reject_url: str,
 def post_card(webhook_url: str, payload: dict, *, timeout: float = 15.0) -> bool:
     """Deliver the card. Failure is logged, never fatal.
 
-    A card that does not send must not lose the run: the approval is still
-    reachable at its URL, and the run stays parked at the interrupt.
+    A card that does not send must not lose the run: it stays parked at the
+    interrupt and listed in the console as awaiting approval.
     """
     if not webhook_url:
         log.info("chat_not_configured", reason="no ALM_CHAT_WEBHOOK_URL")

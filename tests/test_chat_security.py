@@ -75,13 +75,14 @@ def test_build_card_highlights_high_risk_users():
         plan_hash="hashabc123",
     )
 
-    card = build_card(
-        request,
-        approve_url="https://alm.example.com/approve?tok=1",
-        reject_url="https://alm.example.com/reject?tok=1",
-    )
+    card = build_card(request, review_url="https://alm.example.com/?run=th-001", needed=2)
 
     card_str = str(card)
+    # The card cannot approve: its only link opens the console.
+    buttons = card["cardsV2"][0]["card"]["sections"][-1]["widgets"][0]["buttonList"]["buttons"]
+    assert [b["onClick"]["openLink"]["url"] for b in buttons] == [
+        "https://alm.example.com/?run=th-001"]
+    assert "approve?" not in card_str and "2</b> approver(s) needed" in card_str
     assert "PRODUCTION" in card_str
     assert "AB12345" in card_str
     assert "need a closer look" in card_str

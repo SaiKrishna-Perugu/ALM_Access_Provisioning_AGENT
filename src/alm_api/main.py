@@ -3,8 +3,9 @@
 Endpoints:
 
     POST /webhooks/ewm              HMAC-authenticated trigger for one work item
-    POST /approvals/{thread}        a human's decision; queues the run's resume
-    GET  /approvals/{thread}        the fallback approval page
+    GET  /approvals/{thread}        the card, the votes, how many approvers it needs
+    POST /approvals/{thread}        an approver's decision; the run resumes when
+                                    the two-person rule is satisfied
     GET  /runs                      the run registry, newest first
     GET  /runs/{thread}             one run: registry row, approval, audit trail
     POST /runs/{thread}/stop        stop a run after its current step
@@ -30,18 +31,17 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
-from typing import Any
 
 from alm_core.credentials import build_resolver
 from alm_core.logging import configure, get_logger
-from alm_core.models import ApprovalDecision
+from alm_core.models import AuditEvent, Outcome
 
 from . import auth
-from .security import caller_identity, verify_approval_token, verify_webhook
+from .security import caller_identity, verify_webhook
 
 try:
     from fastapi import Depends, FastAPI, Header, HTTPException, Request
-    from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+    from fastapi.responses import JSONResponse, RedirectResponse
     from pydantic import BaseModel, Field
 except ImportError as err:  # pragma: no cover
     raise ImportError("alm_api needs the cloud extras: "
@@ -52,9 +52,8 @@ log = get_logger("alm.api")
 
 class ApprovalPayload(BaseModel):
     approved: bool
-    token: str = ""
-    comment: str = ""
-    approved_userids: list[str] = Field(default_factory=list)
+    comment: str = Field(default="", max_length=500)
+    approved_userids: list[str] = Field(default_factory=list, max_length=200)
 
 
 class WebhookPayload(BaseModel):
@@ -265,108 +264,78 @@ async def ewm_webhook(payload: WebhookPayload, request: Request,
 async def _load_approval(thread_id: str):
     request, decision = await runtime.store.get_approval(thread_id)
     if request is None:
-        raise HTTPException(status_code=404, detail="no approval for that thread")
+        raise HTTPException(status_code=404, detail="no approval for that run")
     return request, decision
 
 
-@app.get("/approvals/{thread_id}", response_class=HTMLResponse)
-async def approval_page(thread_id: str, request: Request, token: str = "",
-                        decision: str = "") -> Any:
-    """The browser fallback for approving, and the target of the card's buttons."""
-    from html import escape
+async def _approval_view(thread_id: str) -> dict:
+    from alm_agents import approval_policy
 
-    approval_request, existing = await _load_approval(thread_id)
-    secret = runtime.secret(runtime.settings.approval_signing_secret_name)
-    ok, reason, _claims = verify_approval_token(
-        secret, token, thread_id=thread_id, plan_hash=approval_request.plan_hash)
-    if not ok:
-        return HTMLResponse(f"<h1>Link no longer valid</h1><p>{escape(reason)}.</p>"
-                            "<p>Ask for a fresh approval card.</p>", status_code=403)
+    request, decision = await _load_approval(thread_id)
+    needed = approval_policy.approvers_needed(request, runtime.settings)
+    votes = await runtime.store.votes(thread_id, request.plan_hash)
+    return {"card": request.model_dump(mode="json"), "needed": needed, "votes": votes,
+            "tally": approval_policy.tally(votes, needed).public(),
+            "decision": decision.model_dump(mode="json") if decision else None}
 
-    if decision in ("approve", "reject"):
-        if existing is not None:
-            raise HTTPException(status_code=409,
-                                detail=f"already decided by {existing.approver}")
-        recorded = await _record_decision(
-            thread_id, approved=decision == "approve",
-            approver=caller_identity(request.headers),
-            plan_hash=approval_request.plan_hash, comment="via approval link")
-        return HTMLResponse(
-            f"<h1>{'Approved' if recorded.approved else 'Rejected'}</h1>"
-            f"<p>{approval_request.user_count} user(s) on "
-            f"{approval_request.work_item_count} work item(s).</p>"
-            f"<p>Recorded against {escape(recorded.approver)}.</p>")
 
-    if existing is not None:
-        return HTMLResponse(
-            f"<h1>Already decided</h1><p>{'Approved' if existing.approved else 'Rejected'} "
-            f"by {escape(existing.approver)} at {existing.decided_at:%Y-%m-%d %H:%M} UTC.</p>")
-
-    rows = "".join(
-        f"<tr><td>{escape(i.userid)}</td><td>{escape(i.display_name)}</td>"
-        f"<td>{escape(i.action)}</td><td>{escape(i.risk.value)}</td>"
-        f"<td>{escape('; '.join(i.risk_reasons))}</td></tr>"
-        for i in approval_request.items)
-    safe_token = escape(token, quote=True)
-    return HTMLResponse(f"""
-<h1>ALM access provisioning - {escape(approval_request.environment)}</h1>
-<p>{approval_request.user_count} user(s), {approval_request.work_item_count} work item(s).
-   Expires {approval_request.expires_at:%Y-%m-%d %H:%M} UTC.</p>
-<table border="1" cellpadding="6" cellspacing="0">
-<tr><th>User</th><th>Name</th><th>Action</th><th>Risk</th><th>Flags</th></tr>{rows}
-</table>
-<p>
-  <a href="?decision=approve&token={safe_token}">Approve all</a> |
-  <a href="?decision=reject&token={safe_token}">Reject</a>
-</p>""")
+@app.get("/approvals/{thread_id}")
+async def approval(thread_id: str, _user=Depends(require("viewer"))) -> dict:
+    """The card, the votes so far, and how many approvers it needs."""
+    return await _approval_view(thread_id)
 
 
 @app.post("/approvals/{thread_id}")
-async def submit_approval(thread_id: str, payload: ApprovalPayload,
-                          request: Request) -> dict:
-    """Record a decision and queue the parked run's resume."""
-    approval_request, existing = await _load_approval(thread_id)
-    if existing is not None:
-        raise HTTPException(status_code=409,
-                            detail=f"already decided by {existing.approver}")
-
-    secret = runtime.secret(runtime.settings.approval_signing_secret_name)
-    identity = caller_identity(request.headers)
-    if payload.token:
-        ok, reason, _ = verify_approval_token(
-            secret, payload.token, thread_id=thread_id,
-            plan_hash=approval_request.plan_hash)
-        if not ok:
-            raise HTTPException(status_code=403, detail=reason)
-    elif identity == "unknown":
-        # Neither a signed token nor an authenticated identity: there would be
-        # nobody to name in the audit row, so there is no approval to record.
-        raise HTTPException(status_code=401,
-                            detail="an approval token or an authenticated caller is required")
-
-    decision = await _record_decision(
-        thread_id, approved=payload.approved, approver=identity,
-        plan_hash=approval_request.plan_hash, comment=payload.comment,
-        approved_userids=payload.approved_userids)
-    return {"recorded": True, "approved": decision.approved,
-            "approver": decision.approver, "thread_id": thread_id}
-
-
-async def _record_decision(thread_id: str, *, approved: bool, approver: str,
-                           plan_hash: str, comment: str = "",
-                           approved_userids: list[str] | None = None) -> ApprovalDecision:
+async def vote(thread_id: str, payload: ApprovalPayload,
+               user=Depends(require("approver"))) -> dict:
+    """One approver's decision. The run resumes once the policy is satisfied:
+    enough distinct approvers, none of them the person who started a run that
+    needs two, or one rejection."""
+    from alm_agents import approval_policy
     from alm_agents.worker import submit_decision
 
-    decision = ApprovalDecision(thread_id=thread_id, approved=approved,
-                                approver=approver, plan_hash=plan_hash,
-                                comment=comment,
-                                approved_userids=approved_userids or [])
-    await runtime.store.save_approval_decision(decision)
-    log.info("approval_recorded", thread_id=thread_id, approved=approved,
-             approver=approver)
-    # The resume is a job: whichever worker claims it continues the run.
-    await submit_decision(runtime.store, thread_id, decision)
-    return decision
+    request, decided = await _load_approval(thread_id)
+    if decided is not None:
+        raise HTTPException(status_code=409, detail=f"already decided by {decided.approver}")
+    run = await runtime.store.get_run(thread_id) or {}
+    if run and run.get("status") != "awaiting_approval":
+        raise HTTPException(status_code=409, detail="this run is not waiting for a decision")
+    needed = approval_policy.approvers_needed(request, runtime.settings)
+    votes = await runtime.store.votes(thread_id, request.plan_hash)
+    try:
+        approval_policy.check_vote(approver=user.identity,
+                                   requested_by=run.get("requested_by", ""),
+                                   needed=needed, votes=votes)
+    except approval_policy.VoteRefused as err:
+        raise HTTPException(status_code=403, detail=str(err)) from None
+    shown = [i.userid for i in request.items]
+    chosen = [u for u in shown if u.upper() in {x.upper() for x in payload.approved_userids}]
+    if payload.approved and not chosen:
+        raise HTTPException(status_code=422, detail="tick at least one user, or reject")
+    if not await runtime.store.add_vote(thread_id, request.plan_hash, user.identity,
+                                        approved=payload.approved, userids=chosen,
+                                        comment=payload.comment):
+        raise HTTPException(status_code=409, detail="you have already decided this card")
+    await runtime.store.record(AuditEvent(
+        run_id=request.run_id, thread_id=thread_id, environment=request.environment,
+        step="approval_vote", outcome=Outcome.OK if payload.approved else Outcome.SKIPPED,
+        approver=user.identity, message="approved" if payload.approved else "rejected",
+        detail={"userids": chosen, "plan_hash": request.plan_hash,
+                "comment": payload.comment[:200]}))
+    log.info("approval_vote", thread_id=thread_id, approver=user.identity,
+             approved=payload.approved)
+
+    tally = approval_policy.tally(await runtime.store.votes(thread_id, request.plan_hash),
+                                  needed)
+    if tally.complete:
+        decision = approval_policy.decision(tally, thread_id=thread_id,
+                                            plan_hash=request.plan_hash, shown=shown)
+        await runtime.store.save_approval_decision(decision)
+        # The resume is a job: whichever worker claims it continues the run.
+        await submit_decision(runtime.store, thread_id, decision)
+        log.info("approval_decided", thread_id=thread_id, approved=decision.approved,
+                 approvers=decision.approver)
+    return await _approval_view(thread_id)
 
 
 # ---------------------------------------------------------------------- runs

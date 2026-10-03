@@ -36,6 +36,19 @@ written by newer code is refused until you update.
 - **Fixed: the Windows worker would never have added anyone in the cloud design.** It claimed the same ledger entry the run had already marked "submitted", so it skipped every job. The worker now has its own ledger entry, still idempotent across redeliveries.
 - **Fixed: a database URL with the password inline was ignored** when IAM database login was on, and a token was minted anyway.
 
+## 2026-10-03: enterprise track, part 4 (two approvers)
+
+**Do after pulling:** give approvers the `approver` role in `ALM_ROLE_MAP`. Production now needs two of them. In the GCP Terraform, the secret `alm-approval-signing-key` is replaced by `alm-session-signing-key`.
+
+- **Two-person rule.** Production cards, and cards with a high-risk user, need two different approvers, and the person who started the run cannot be one of them.
+  - Each approver votes once, and each vote is an audit row with their name.
+  - One rejection rejects the card.
+  - Only users that every approver ticked are written.
+  - Set the numbers with `ALM_APPROVERS_REQUIRED_PROD` and `ALM_APPROVERS_REQUIRED_HIGH_RISK`.
+- **Only a signed-in approver can decide.** The approve and reject links with tokens are gone.
+  - Announcements go to Google Chat, Teams or e-mail (`ALM_NOTIFY_CHANNELS`).
+  - Each carries one link to the run in the console, and none of them can approve anything.
+
 ## 2026-10-03: enterprise track, part 3 (sign-in and roles)
 
 **Do after pulling:** set `ALM_ROLE_MAP` (or the Terraform `role_map`) before deploying. Without it nobody holds a role, and the API refuses everyone except the webhook.

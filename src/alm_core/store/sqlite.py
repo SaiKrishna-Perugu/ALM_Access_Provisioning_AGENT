@@ -163,6 +163,19 @@ CREATE TABLE IF NOT EXISTS alm_trace_event (
 );
 CREATE INDEX IF NOT EXISTS alm_trace_thread ON alm_trace_event (thread_id, seq);
 """),
+    # Version 3: one row per approver per plan, for the two-person rule.
+    (3, """
+CREATE TABLE IF NOT EXISTS alm_approval_vote (
+    thread_id    TEXT NOT NULL,
+    plan_hash    TEXT NOT NULL,
+    approver     TEXT NOT NULL,
+    approved     INTEGER NOT NULL,
+    userids      TEXT NOT NULL DEFAULT '[]',
+    comment      TEXT NOT NULL DEFAULT '',
+    at           TEXT NOT NULL,
+    PRIMARY KEY (thread_id, plan_hash, approver)
+);
+"""),
 ]
 SCHEMA_VERSION = MIGRATIONS[-1][0]
 
@@ -624,3 +637,24 @@ class SqliteStore:
             "SELECT id, record FROM alm_trace_event WHERE thread_id = ? AND id > ? "
             "ORDER BY id LIMIT ?", (thread_id, after, limit))
         return [{**json.loads(record), "cursor": cursor} for cursor, record in rows]
+
+    # --------------------------------------------------------------- votes
+
+    async def add_vote(self, thread_id: str, plan_hash: str, approver: str, *,
+                       approved: bool, userids: list[str], comment: str = "") -> bool:
+        """Record one approver's vote on one plan. False if they already voted."""
+        async with self._lock:
+            cursor = await self._conn().execute(
+                "INSERT INTO alm_approval_vote (thread_id, plan_hash, approver, approved, "
+                "userids, comment, at) VALUES (?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (thread_id, plan_hash, approver) DO NOTHING",
+                (thread_id, plan_hash, approver.lower(), int(approved), _json(userids),
+                 comment[:500], _ts(_now())))
+            return (cursor.rowcount or 0) > 0
+
+    async def votes(self, thread_id: str, plan_hash: str) -> list[dict]:
+        rows = await self._fetchall(
+            "SELECT approver, approved, userids, comment, at FROM alm_approval_vote "
+            "WHERE thread_id = ? AND plan_hash = ? ORDER BY at", (thread_id, plan_hash))
+        return [{"approver": r[0], "approved": bool(r[1]), "userids": json.loads(r[2]),
+                 "comment": r[3], "at": r[4]} for r in rows]

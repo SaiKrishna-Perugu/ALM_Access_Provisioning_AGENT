@@ -1,4 +1,4 @@
-"""Webhook authentication and signed approval tokens.
+"""Webhook authentication, and who an identity-aware proxy says the caller is.
 
 Two independent problems:
 
@@ -10,10 +10,11 @@ cannot be replayed later. The delivery id is recorded in the store
 (``remember_delivery``), so a replay inside the window is refused by every
 replica, not only the one that saw it first.
 
-**Outbound approval links.** A Teams card carries a URL a human clicks. That URL
-must not be a bearer capability to approve anything: the token is bound to one
-thread and one plan hash, expires, and carries no privilege of its own - the API
-still records who the caller was.
+**Caller identity behind a proxy.** With ``ALM_AUTH_MODE=iap`` the proxy signs
+people in; :func:`caller_identity` reads - and with ``ALM_IAP_AUDIENCE``,
+verifies - what it asserts. (With ``oidc`` the service signs people in
+itself: see ``alm_api.auth``.) Approval cards carry no capability at all: they
+link to the console, where a signed-in approver decides.
 
 Every comparison here is constant-time. A timing oracle on an HMAC is a real
 attack, not a theoretical one.
@@ -23,7 +24,6 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
-import json
 import os
 import time
 
@@ -79,46 +79,7 @@ def verify_webhook(secret: str, *, body: bytes, signature: str,
     return True, "ok"
 
 
-# ------------------------------------------------------------ approval tokens
-
-def issue_approval_token(secret: str, *, thread_id: str, plan_hash: str,
-                         expires_at: float, audience: str = "approval") -> str:
-    """A short-lived token bound to one approval batch."""
-    claims = {"tid": thread_id, "ph": plan_hash, "exp": int(expires_at), "aud": audience}
-    payload = _b64e(json.dumps(claims, separators=(",", ":")).encode("utf-8"))
-    return f"{payload}.{sign_payload(secret, payload.encode('ascii'))}"
-
-
-def verify_approval_token(secret: str, token: str, *, thread_id: str = "",
-                          plan_hash: str = "", audience: str = "approval"
-                          ) -> tuple[bool, str, dict]:
-    """Validate a token. Returns ``(ok, reason, claims)``."""
-    if not secret:
-        return False, "no approval signing key is configured", {}
-    try:
-        payload, signature = token.split(".", 1)
-    except ValueError:
-        return False, "malformed token", {}
-
-    if not hmac.compare_digest(sign_payload(secret, payload.encode("ascii")), signature):
-        return False, "signature mismatch", {}
-    try:
-        claims = json.loads(_b64d(payload))
-    except (ValueError, TypeError):
-        return False, "unreadable claims", {}
-
-    if claims.get("aud") != audience:
-        return False, "wrong audience", claims
-    if float(claims.get("exp", 0)) < time.time():
-        return False, "token expired", claims
-    if thread_id and claims.get("tid") != thread_id:
-        return False, "token is for a different approval", claims
-    # Binding to the plan hash is what stops a token approving a batch that
-    # changed after the card was sent.
-    if plan_hash and claims.get("ph") != plan_hash:
-        return False, "the plan changed after this token was issued", claims
-    return True, "ok", claims
-
+# --------------------------------------------------------------- identity
 
 IAP_CERTS_URL = "https://www.gstatic.com/iap/verify/public_key"
 

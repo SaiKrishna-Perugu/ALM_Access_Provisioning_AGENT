@@ -4,11 +4,11 @@ Run it with:
 
     uvicorn alm_api.main:app --host 0.0.0.0 --port 8080
 
-Authentication is layered. Webhooks are HMAC-signed and replay-protected here;
-human traffic is authenticated by Identity-Aware Proxy before it reaches this
-process, and the approval endpoints additionally require a signed token bound to
-one approval batch.
+Authentication is layered. Webhooks are HMAC-signed and replay-protected;
+people are signed in by an identity-aware proxy (``ALM_AUTH_MODE=iap``) or by
+the service itself against the company IdP (``oidc``), and every endpoint
+checks their role (``alm_api.auth``).
 """
-from .security import issue_approval_token, verify_approval_token, verify_webhook
+from .security import caller_identity, verify_webhook
 
-__all__ = ["issue_approval_token", "verify_approval_token", "verify_webhook"]
+__all__ = ["caller_identity", "verify_webhook"]

@@ -281,3 +281,20 @@ def test_a_worker_claims_only_the_kinds_it_handles(store_factory):
     run_job, nothing, ad_job = with_store(store_factory, scenario)
     assert run_job["kind"] == "start" and nothing is None
     assert ad_job["kind"] == "ad_job" and ad_job["payload"] == {"userid": "AB12345"}
+
+
+def test_one_vote_per_approver_per_plan(store_factory):
+    async def scenario(store):
+        first = await store.add_vote("wi-1", "p1", "Alice@example.com", approved=True,
+                                     userids=["AB12345"], comment="ok")
+        again = await store.add_vote("wi-1", "p1", "alice@example.com", approved=False,
+                                     userids=[])
+        other_plan = await store.add_vote("wi-1", "p2", "alice@example.com", approved=True,
+                                          userids=[])
+        await store.add_vote("wi-1", "p1", "bob@example.com", approved=False, userids=[])
+        return first, again, other_plan, await store.votes("wi-1", "p1")
+
+    first, again, other_plan, votes = with_store(store_factory, scenario)
+    assert (first, again, other_plan) == (True, False, True)
+    assert [(v["approver"], v["approved"], v["userids"]) for v in votes] == [
+        ("alice@example.com", True, ["AB12345"]), ("bob@example.com", False, [])]

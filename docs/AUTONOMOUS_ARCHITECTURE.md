@@ -38,8 +38,8 @@ graph TD
     S <--> RM[remediator]
 
     RO -.requests.-> GATE{{Approval gate<br/>interrupt + checkpoint}}
-    GATE -->|Chat card| H[Human approver]
-    H -->|signed token| API
+    GATE -->|Chat / Teams / e-mail link| H[Human approver]
+    H -->|signed in, approver role| API
     GATE --> S
 
     T & E & V & RO & P & VF & EV & C & RM --> POL[Policy engine<br/>every tool call]
@@ -263,11 +263,15 @@ The gate is **binding**, not advisory:
   of the defect that once swept two unreviewed work items into a production
   commit.
 - Approvals expire (`ALM_APPROVAL_TTL_MINUTES`, default 4 hours).
-- The card's buttons carry a signed token bound to one thread and one plan hash.
-  It is not a bearer capability to approve anything else.
-- The approver's identity comes from IAP (Identity-Aware Proxy headers). When it cannot
-  be determined it is recorded as `unknown` rather than invented — an audit row
-  naming the wrong person is worse than one admitting it does not know.
+- The announcement (Google Chat, Teams or e-mail) cannot approve anything: it
+  links to the run in the console, where a signed-in person with the approver
+  role decides (`alm_api.auth`: IAP or the company IdP over OIDC).
+- **Two-person rule** (`alm_agents/approval_policy.py`): production cards and
+  cards with a high-risk user need two distinct approvers
+  (`ALM_APPROVERS_REQUIRED_PROD`, `ALM_APPROVERS_REQUIRED_HIGH_RISK`), and
+  the person who started the run cannot be one of them. Each approver votes
+  once; one rejection rejects; only users every approver ticked are written.
+  Each vote is an audit row naming its approver.
 - `ALM_AUTO_APPROVE_LOW_RISK` can skip the wait, but **only** for a batch that
   creates and reactivates nothing. Provisioning always goes to a person.
 

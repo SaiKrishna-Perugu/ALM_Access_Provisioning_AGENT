@@ -1,4 +1,4 @@
-"""Tests for alm_api.security: webhook HMAC verification and approval tokens."""
+"""Tests for alm_api.security: webhook HMAC verification and caller identity."""
 from __future__ import annotations
 
 import time
@@ -10,9 +10,7 @@ pytest.importorskip("pydantic")
 
 from alm_api.security import (  # noqa: E402
     caller_identity,
-    issue_approval_token,
     sign_payload,
-    verify_approval_token,
     verify_webhook,
 )
 
@@ -77,68 +75,6 @@ def test_verify_webhook_expired_timestamp_rejected():
     ok, reason = verify_webhook(secret, body=body, signature=sig, timestamp=old_ts)
     assert ok is False
     assert "away from now" in reason
-
-
-def test_approval_token_issue_and_verify_valid():
-    secret = "approval-secret"  # pragma: allowlist secret
-    thread_id = "thread-abc"
-    plan_hash = "phash123456"
-    expires = time.time() + 600
-
-    token = issue_approval_token(
-        secret, thread_id=thread_id, plan_hash=plan_hash, expires_at=expires
-    )
-    ok, reason, claims = verify_approval_token(
-        secret, token, thread_id=thread_id, plan_hash=plan_hash
-    )
-    assert ok is True
-    assert reason == "ok"
-    assert claims["tid"] == thread_id
-    assert claims["ph"] == plan_hash
-
-
-def test_approval_token_tampered_signature_rejected():
-    secret = "approval-secret"  # pragma: allowlist secret
-    token = issue_approval_token(
-        secret, thread_id="t1", plan_hash="p1", expires_at=time.time() + 600
-    )
-    payload, _ = token.split(".", 1)
-    tampered = f"{payload}.badsig12345"
-
-    ok, reason, _ = verify_approval_token(secret, tampered)
-    assert ok is False
-    assert reason == "signature mismatch"
-
-
-def test_approval_token_expired_rejected():
-    secret = "approval-secret"  # pragma: allowlist secret
-    past = time.time() - 30
-    token = issue_approval_token(
-        secret, thread_id="t1", plan_hash="p1", expires_at=past
-    )
-
-    ok, reason, _ = verify_approval_token(secret, token)
-    assert ok is False
-    assert reason == "token expired"
-
-
-def test_approval_token_plan_hash_mismatch_rejected():
-    secret = "approval-secret"  # pragma: allowlist secret
-    token = issue_approval_token(
-        secret, thread_id="t1", plan_hash="original-hash", expires_at=time.time() + 600
-    )
-
-    ok, reason, _ = verify_approval_token(
-        secret, token, thread_id="t1", plan_hash="changed-hash"
-    )
-    assert ok is False
-    assert "the plan changed" in reason
-
-
-def test_approval_token_missing_secret_fails_closed():
-    ok, reason, _ = verify_approval_token("", "some.token")
-    assert ok is False
-    assert "no approval signing key is configured" in reason
 
 
 def test_caller_identity_iap_headers(monkeypatch):
