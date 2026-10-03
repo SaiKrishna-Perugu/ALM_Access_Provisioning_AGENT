@@ -292,6 +292,9 @@ change, reviewed like any other code.
 | Closed the terminal at the approval prompt | Nothing was written. `--resume last --commit` (or `--resume <thread-id> --commit`) brings the prompt back |
 | A second run reports `(replay)` | Correct: the ledger recorded the first write. Nothing was repeated |
 | AD step: `GPT may or may not have accepted` | The page failed after Modify, or GPT's reply was unreadable. It is **not** retried. Check GPT Pending Requests: if the request is there, do nothing; if it is not, clear the ledger entry and re-run: `UPDATE alm_idempotency SET status='failed' WHERE userid='<ID>' AND operation='ad_group_add' AND status='completed';` in `out/local/alm.db` |
+| AD step (Graph): `mastered in on-premises AD, so Microsoft Graph cannot change it` | The group is synced from on-premises AD. Set `ALM_AD_DIRECTORY=gpt`; nothing was written |
+| AD step (Graph): `the app registration may not change this group's members` | Grant the app `GroupMember.ReadWrite.All` (or make it an owner of the group), then re-run; the ledger replays everything else |
+| AD step (Graph): `not found (or not unique) in Entra ID` | The user ID is not a synced `onPremisesSamAccountName`. Check the account, or use `ALM_GRAPH_USER_LOOKUP=upn` with `ALM_GRAPH_UPN_SUFFIX` |
 | `the local ledger is locked by another process` | Two local runs at once. Let the other finish; the write was not attempted |
 | `setup: Python package '...' is not installed` | The agent packages are missing from that Python. Run `.\scripts\setup.ps1 -Agents`, then use `.\.venv\Scripts\python.exe` (or activate the venv) |
 | `the agent model is unavailable` with `429` or `RESOURCE_EXHAUSTED` | Gemini quota. Lower `ALM_LLM_REQUESTS_PER_MINUTE` (or pass `--rpm`), wait for the daily quota to reset, or use a paid key. Then `--resume last` (add `--commit` if the run had it) |

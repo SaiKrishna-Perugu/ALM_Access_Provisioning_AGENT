@@ -89,8 +89,6 @@ def make_local_backend(*, cdp_url: str, gpt_url: str, ad_label: str):
 
         def _add_member(self, userid: str, group: str, domain: str) -> tuple[bool, str]:
             from alm_core import trace
-            from alm_core.errors import OutcomeUnknown
-            from alm_worker.gpt import submit_outcome
 
             if self._session is None:
                 if not cdp_reachable(cdp_url):
@@ -105,40 +103,18 @@ def make_local_backend(*, cdp_url: str, gpt_url: str, ad_label: str):
                     session = GptSession(url=gpt_url, ad_label=ad_label)
                     session.attach(cdp_url)
                 self._session = session
-            session = self._session
             try:
-                with trace.span("gpt", "open_group", group=group):
-                    session.open_group(group)
-                with trace.span("gpt", "stage_user", userid=userid, domain=domain) as step:
-                    staged = session.stage_user(userid, domain)
-                    step["ok"] = bool(staged)
-                if not staged:
-                    return False, f"{userid} did not appear in the staging grid"
+                # The same steps, and the same "outcome unknown after Modify"
+                # rule, as the Windows worker: one implementation in GptSession.
+                return self._session.add_member(userid=userid, group=group, domain=domain)
             except Exception:
-                # Nothing was submitted yet, so this failure is safe to retry.
-                self._reset_session()
+                self._reset_session()   # the page is in an unknown state
                 raise
-            try:
-                with trace.span("gpt", "modify", userid=userid, group=group) as step:
-                    outcome, text = submit_outcome(session.click_modify())
-                    step.update(ok=outcome == "ok", outcome=outcome, reply=str(text)[:500])
-            except Exception as err:
-                self._reset_session()
-                raise OutcomeUnknown(
-                    f"GPT may or may not have accepted {userid} for {group}: the page "
-                    f"failed after Modify was clicked ({type(err).__name__}). Check GPT "
-                    "Pending Requests before doing anything; this will not be retried "
-                    "automatically.") from err
-            if outcome == "ok":
-                return True, "GPT accepted the request; AD provisioning is queued"
-            if outcome == "rejected":
-                return False, f"GPT rejected the request: {text}"
-            raise OutcomeUnknown(
-                f"GPT's reply for {userid} shows neither success nor a failure count: "
-                f"{text!r}. Check GPT Pending Requests; this will not be retried "
-                "automatically.")
 
         async def request_group_membership(self, ctx, user, *, group, domain):
+            if getattr(ctx.settings, "ad_directory", "gpt") == "graph":
+                return await super().request_group_membership(ctx, user, group=group,
+                                                              domain=domain)
             work_item_id = user.work_item_ids[0] if user.work_item_ids else ""
 
             async def submit():

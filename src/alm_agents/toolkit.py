@@ -325,6 +325,11 @@ class LiveBackend:
         return await jts.provision_user(ctx, user, status)
 
     async def request_group_membership(self, ctx, user, *, group, domain):
+        if getattr(ctx.settings, "ad_directory", "gpt") == "graph":
+            from alm_core.tools import directory
+
+            return await directory.request_group_membership(ctx, user, group=group,
+                                                             domain=domain)
         return await gpt_queue.request_group_membership(ctx, user, group=group,
                                                         domain=domain)
 

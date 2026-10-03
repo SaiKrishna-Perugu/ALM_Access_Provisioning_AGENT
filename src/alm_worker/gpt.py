@@ -33,9 +33,9 @@ DEFAULT_URL = ((os.getenv("GPT_URL") or "").strip()
 def submit_outcome(body: str) -> tuple[str, str]:
     """"ok", "rejected" or "unknown" for GPT's page after Modify.
 
-    Unlike :func:`parse_submit_body`, a page with neither a failure count nor
-    the confirmation is "unknown", not "rejected": GPT may well have accepted
-    the request, and retrying it would add the user twice.
+    A page with neither a failure count nor the confirmation is "unknown", not
+    "rejected": GPT may well have accepted the request, and retrying it would
+    add the user twice.
     """
     body = " ".join((body or "").split())
     match = re.search(r"Failed Requests:\s*(\d+)", body)
@@ -44,20 +44,6 @@ def submit_outcome(body: str) -> tuple[str, str]:
     if "submitted correctly" in body.lower():
         return "ok", body[:200]
     return "unknown", body[:200]
-
-
-def parse_submit_body(body: str) -> tuple[bool, str]:
-    """Interpret GPT's page text after Modify. Pure, so it can be reasoned about.
-
-    A page that reports a failure count is believed on the number; a page with
-    neither a count nor the confirmation sentence is *not* treated as success.
-    Silence is not consent.
-    """
-    body = " ".join((body or "").split())
-    match = re.search(r"Failed Requests:\s*(\d+)", body)
-    if match:
-        return int(match.group(1)) == 0, body[:200]
-    return "submitted correctly" in body.lower(), body[:200]
 
 
 class GptSession:
@@ -204,15 +190,6 @@ class GptSession:
         time.sleep(2)
         return page.inner_text("body") or ""
 
-    def submit(self) -> tuple[bool, str]:
-        """Click Modify and read GPT's own confirmation."""
-        page = self._page
-        page.once("dialog", lambda dialog: dialog.accept())
-        page.locator("input[value='Modify']").click()
-        page.wait_for_load_state("networkidle")
-        time.sleep(2)
-        return parse_submit_body(page.inner_text("body") or "")
-
     # ---------------------------------------------------------------- public
 
     def add_member(self, *, userid: str, group: str, domain: str) -> tuple[bool, str]:
@@ -220,11 +197,38 @@ class GptSession:
 
         ``submitted`` means GPT accepted the request, not that the user is in
         the group - AD provisioning is asynchronous and confirmed elsewhere.
+
+        A failure *before* Modify is clicked raises as it is: nothing was
+        submitted, so a retry is safe. A failure *after* it, or a reply that
+        shows neither success nor a failure count, raises ``OutcomeUnknown``:
+        GPT may have accepted the request, the ledger closes the write instead
+        of retrying it, and a human checks GPT Pending Requests.
         """
-        self.open_group(group)
-        if not self.stage_user(userid, domain):
+        from alm_core import trace
+        from alm_core.errors import OutcomeUnknown
+
+        with trace.span("gpt", "open_group", group=group):
+            self.open_group(group)
+        with trace.span("gpt", "stage_user", userid=userid, domain=domain) as step:
+            staged = self.stage_user(userid, domain)
+            step["ok"] = bool(staged)
+        if not staged:
             return False, f"{userid} did not appear in the staging grid"
-        ok, message = self.submit()
-        if ok:
+        try:
+            with trace.span("gpt", "modify", userid=userid, group=group) as step:
+                outcome, text = submit_outcome(self.click_modify())
+                step.update(ok=outcome == "ok", outcome=outcome, reply=text[:500])
+        except Exception as err:
+            raise OutcomeUnknown(
+                f"GPT may or may not have accepted {userid} for {group}: the page "
+                f"failed after Modify was clicked ({type(err).__name__}). Check GPT "
+                "Pending Requests before doing anything; this will not be retried "
+                "automatically.") from err
+        if outcome == "ok":
             return True, "GPT accepted the request; AD provisioning is queued"
-        return False, f"GPT rejected the request: {message}"
+        if outcome == "rejected":
+            return False, f"GPT rejected the request: {text}"
+        raise OutcomeUnknown(
+            f"GPT's reply for {userid} shows neither success nor a failure count: "
+            f"{text!r}. Check GPT Pending Requests; this will not be retried "
+            "automatically.")

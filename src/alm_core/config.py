@@ -132,6 +132,24 @@ class Settings(BaseSettings):
                      "The agents never need them: the e-mail-vs-LDAP check runs in code."))
 
     # ------------------------------------------------------------ pub/sub
+    ad_directory: Literal["gpt", "graph"] = Field(
+        default="gpt",
+        description=("How a user joins the AD group. gpt: the GPT web UI, driven by the "
+                     "Windows worker (or the debug Chrome locally). graph: Microsoft "
+                     "Graph, directly from the run - only for groups mastered in Entra "
+                     "ID; a group synced from on-premises AD must stay on gpt."))
+    graph_tenant_id: str = Field(default="", description="Entra ID tenant id.")
+    graph_client_id: str = Field(default="", description="App registration (client) id.")
+    graph_client_secret_name: str = Field(
+        default="alm-graph-client-secret",
+        description="Secret holding the app registration's client secret.")
+    graph_group_id: str = Field(
+        default="", description="Object id of the group; looked up by name when empty.")
+    graph_user_lookup: Literal["sam", "upn"] = Field(
+        default="sam",
+        description=("How a user ID is found in Entra ID. sam: onPremisesSamAccountName "
+                     "(synced accounts). upn: <userid>@<graph_upn_suffix>."))
+    graph_upn_suffix: str = Field(default="", description="e.g. example.com, for upn lookup.")
     ad_job_transport: Literal["store", "pubsub"] = Field(
         default="store",
         description=("How AD jobs reach the Windows worker. store: the shared Postgres "

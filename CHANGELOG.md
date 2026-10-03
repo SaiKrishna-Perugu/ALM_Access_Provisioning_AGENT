@@ -36,6 +36,17 @@ written by newer code is refused until you update.
 - **Fixed: the Windows worker would never have added anyone in the cloud design.** It claimed the same ledger entry the run had already marked "submitted", so it skipped every job. The worker now has its own ledger entry, still idempotent across redeliveries.
 - **Fixed: a database URL with the password inline was ignored** when IAM database login was on, and a token was minted anyway.
 
+## 2026-10-03: enterprise track, part 2 (AD membership)
+
+**Do after pulling:** nothing.
+
+- **Microsoft Graph can add users to the AD group** (`ALM_AD_DIRECTORY=graph`): one call from the run, no browser and no Windows worker.
+  - It works only for groups mastered in Entra ID. For a group synced from on-premises AD, it says so and the run stays on GPT.
+  - User and group lookups, throttling retries, and "already a member" are handled. Every call is in the run's trace.
+- **Fixed: the cloud GPT worker could submit the same request twice.** If the page failed after Modify was clicked, the job was retried. Now the outcome is recorded as unknown and never retried, the same as on a laptop, and a human checks GPT Pending Requests.
+  - GPT's steps are now one implementation, shared by the laptop and the Windows worker.
+- **Fixed: a redelivered AD job was logged as a fresh attempt.** It is now reported as a replay.
+
 ## 2026-10-01: stop control and full tracing
 
 **Do after pulling:** nothing. On the client network, start the console **without** `--sandbox`.

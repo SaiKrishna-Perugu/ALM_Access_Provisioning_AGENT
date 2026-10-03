@@ -525,8 +525,9 @@ Still open:
 - **The audit table's grants** are described but not applied; `alm_audit` is
   append-only by construction (and by trigger in SQLite), not yet by
   permission in Postgres.
-- **Directory API.** AD membership still goes through the GPT web UI. A
-  Microsoft Graph adapter would retire the Windows worker.
+- **Directory API for on-premises groups.** Microsoft Graph is available
+  (`ALM_AD_DIRECTORY=graph`) for groups mastered in Entra ID. A group synced
+  from on-premises AD still needs the GPT web UI and the Windows worker.
 - **Sign-in and roles.** The API trusts IAP (or a signed approval link); there
   is no OIDC sign-in or role model for other clouds yet.
 - **AWS and Azure infrastructure.** The code runs on either - secrets (Secrets
