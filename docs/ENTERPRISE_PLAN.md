@@ -16,8 +16,8 @@ gives the detail; what changed for operators is in [CHANGELOG.md](../CHANGELOG.m
 | M6b hosted console (roles, votes, live activity, trace) | Done |
 | M8 service credentials, status | Done |
 | M9 directory port (Graph + GPT) | Done |
-| M10 AI governance, eval gate, cost caps | Next |
-| M11 OpenTelemetry | Planned |
+| M10 AI governance, eval gate, cost caps | Done |
+| M11 OpenTelemetry | Next |
 | M12-M14 images, supply chain, DR, per-cloud IaC, pipeline | Planned |
 | M15 PROD shadow and staged enablement | Needs the client network |
 
@@ -32,7 +32,7 @@ What exists today, and is solid:
 | Durability | Checkpointed runs (SQLite locally, Postgres in the cloud design); resume after crash; idempotency ledger with replay |
 | Control | Stop from the UI, Ctrl+C, or `--stop`; a write in progress always finishes |
 | Visibility | Per-run JSONL trace of every model, tool, service, HTTP, ledger and log event; audit table |
-| Quality | ~300 offline tests, eval suite (5 scenarios, record/replay of real runs), CI with security and secret scanning |
+| Quality | Offline test suite, eval suite (built-in and prompt-injection scenarios, record/replay of real runs, nightly against the real model), CI with security and secret scanning |
 | Cloud design | GCP Terraform: Cloud Run, Cloud SQL (IAM auth), Pub/Sub, Secret Manager, Vertex AI, IAP, private DNS, no public ingress, WIF for CI and the worker |
 
 What stops it from being an enterprise system:
@@ -198,7 +198,7 @@ roughly halves calendar time from Phase 2 on.
   retention confirmed in writing, region pinned.
 - Keep the redaction (exists); add a field-level allowlist of what may enter a
   prompt, and record in each trace which fields were sent.
-- Evals as a release gate: the five built-in scenarios plus every recorded
+- Evals as a release gate: the built-in scenarios plus every recorded
   pilot run must pass in CI on each prompt, roster, model or policy change.
   Track pass rate, tokens and hops per scenario over time.
 - Prompt and roster versioning: the version is stored with each run and shown
@@ -211,6 +211,17 @@ roughly halves calendar time from Phase 2 on.
   add each attempt as an eval.
 - **Exit:** evals gate CI; the injection suite passes; the cost per work item is
   known and alerting.
+- **Built (M10):**
+  - the provider allowlist;
+  - withheld fields, kept from every model and named in the trace;
+  - the version on every run, report and eval result;
+  - token budgets per run and per day, with the fixed-order fallback;
+  - three injection scenarios, plus a "writes only for requested users" check on every scenario;
+  - the nightly eval workflow against the real model.
+- **Still open:**
+  - alerting at 80% of a budget (arrives with the metrics, M11);
+  - zero data retention and the region, confirmed by the client (D2);
+  - recorded pilot runs in the PR gate (M0, from the client network).
 
 ### Phase 5: Observability and operations (2 weeks) - fixes G8
 

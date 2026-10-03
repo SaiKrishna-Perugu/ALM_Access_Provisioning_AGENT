@@ -523,7 +523,7 @@ machine, and `--purge-older-than DAYS` deletes it with the other run data.
 To check the agents after a prompt, roster or model change, with no VPN:
 
 ```powershell
-python src/agent_eval.py                                # five built-in scenarios, real model, simulated estate
+python src/agent_eval.py                                # every built-in scenario (prompt injection included), real model, simulated estate
 python src/agent_eval.py --recorded out/evals/recorded  # replay runs saved with --record
 ```
 

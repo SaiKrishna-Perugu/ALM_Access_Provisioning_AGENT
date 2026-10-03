@@ -645,6 +645,7 @@ function renderOutcome(run) {
   const m = report.metrics || {};
   const metrics = el("div", "metrics");
   [["model calls", m.model_calls], ["tool calls", m.tool_calls],
+   ["tokens", m.tokens ? m.tokens.toLocaleString() : undefined],
    ["seconds", m.wall_seconds !== undefined ? Math.round(m.wall_seconds) : undefined]]
     .forEach(([label, value]) => {
       const cell = el("div", "metric");
@@ -652,6 +653,9 @@ function renderOutcome(run) {
       metrics.append(cell);
     });
   box.append(metrics);
+  if (report.version) {
+    box.append(el("p", "muted version", `Prompts and models: ${report.version}`));
+  }
 }
 
 // ------------------------------------------------------------------ boot

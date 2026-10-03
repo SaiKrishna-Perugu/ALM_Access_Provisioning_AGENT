@@ -485,6 +485,14 @@ class PostgresStore:
             rows = await cur.fetchall()
         return [run_row(r) for r in rows]
 
+    async def tokens_since(self, since: datetime) -> int:
+        async with self._conn() as conn, conn.cursor() as cur:
+            await cur.execute(
+                "SELECT COALESCE(SUM((report->'metrics'->>'tokens')::bigint), 0) "
+                "FROM alm_run WHERE created_at >= %s AND report IS NOT NULL", (since,))
+            row = await cur.fetchone()
+        return int(row[0] or 0) if row else 0
+
     # --------------------------------------------------------------- queue
 
     async def enqueue_job(self, kind: str, thread_id: str, payload: dict | None = None,

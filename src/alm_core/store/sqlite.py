@@ -455,6 +455,12 @@ class SqliteStore:
             "ORDER BY created_at DESC LIMIT ?", (limit,))
         return [run_row(r) for r in rows]
 
+    async def tokens_since(self, since: datetime) -> int:
+        row = await self._fetchone(
+            "SELECT COALESCE(SUM(CAST(json_extract(report, '$.metrics.tokens') AS INTEGER)), 0) "
+            "FROM alm_run WHERE created_at >= ? AND report IS NOT NULL", (_ts(since),))
+        return int(row[0] or 0) if row else 0
+
     # --------------------------------------------------------------- queue
 
     async def enqueue_job(self, kind: str, thread_id: str, payload: dict | None = None,

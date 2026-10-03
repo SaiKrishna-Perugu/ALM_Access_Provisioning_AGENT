@@ -7,34 +7,22 @@ The local ledger (`out/local/alm.db`) has a schema version. A newer version of
 the code upgrades an older file automatically the next time it runs; a file
 written by newer code is refused until you update.
 
-## 2026-10-03: enterprise track, part 1 (run isolation and approval cards)
+## 2026-10-03: enterprise track, part 7 (AI governance)
 
-**Do after pulling:** nothing.
+**Do after pulling:** nothing. The defaults cap one run at 400,000 model tokens and set no daily cap.
 
-- **Concurrent runs no longer share state.** The cloud API used one set of run state for every run, so two runs at once could see each other's users on their approval cards. Each start and each resume now gets its own state; connections and the store are still shared.
-- **Approval cards hold only requested users.** An agent looking up a user ID that no work item asked for gets the lookup, but that user is no longer added to the run. They never reach the approval card or a write.
-  - Users join a run only from a work item's New Users field, or from `recover_user_ids` on a malformed row.
-- **Shared run state in the database (schema version 2).** New tables hold the run registry, a job queue, stop requests, webhook replay protection, leases and traces. These let several API servers and workers share the work later in this track.
-  - Both the local SQLite ledger and Postgres upgrade automatically on the next run.
-  - Postgres now has schema versioning like SQLite, and refuses a database written by newer code.
-- **Runs are queued and run by workers.** The cloud API no longer runs anything itself. Webhooks, decisions, sweeps and stops become jobs in the database, and workers pick them up: inside the API (`ALM_WORKER_CONCURRENCY`, default 1) or as `python -m alm_agents.worker`.
-  - **Approval.** A run parks at the approval card without holding a worker.
-  - **Crash recovery.** A worker that dies mid-run hands the run to another worker, which continues from the last checkpoint; writes already made are replayed, not repeated.
-  - **Scheduling.** One worker schedules the 15-minute sweep, however many run.
-  - **Scale.** `max_instances` in Terraform can now be raised; it was pinned to 1.
-- **Stop and trace in the cloud API.** `POST /runs/<thread-id>/stop` works from any replica, and `GET /runs/<thread-id>/trace` returns the run's trace. `GET /runs` and `GET /queue` show the run registry and failed jobs.
-- **`ALM_RECONCILE_INTERVAL_MINUTES=0` now turns the sweep off,** as the runbook said it would. Before, the setting rejected 0.
-- **Runs on GCP, AWS or Azure.** The core imports no cloud SDK; each cloud's adapter is chosen by a setting, and its SDKs are an optional install (`pip install '.[gcp]'`, `'.[aws]'`, `'.[azure]'`):
+- **Token budgets.** Every model call's tokens count against the run. At `ALM_MAX_TOKENS_PER_RUN` (default 400,000) the run stops, saying so. `ALM_MAX_TOKENS_PER_DAY` caps all runs started in a UTC day; a run started past it is refused with the reason. Both show in the run's metrics and the console.
+- **Fallback when the model is down.** With `ALM_DEGRADE_ON_MODEL_FAILURE=true`, a run whose model is unavailable is followed by `<thread-id>-fallback`. That run uses the fixed order (no model), with the same scope, mode and requester. A writing run still stops at the approval card. Past the daily cap, new runs use the fixed order instead of being refused.
+- **Provider allowlist.** `ALM_ALLOWED_PROVIDERS=vertex,bedrock` refuses to start with any other `ALM_LLM_PROVIDER`.
+- **Withheld fields.** `ALM_MODEL_WITHHELD_FIELDS=justification,summary` keeps those fields from every model: the tools still use them, and the agent sees `[withheld: N chars]`.
+- **Every run records a version.** It combines the orchestration with a fingerprint of the prompts, the roster and the models, for example `guided-b8c4c6407ae7`. It is on the run, in its report and in each eval result. A resumed run keeps the graph it started with, even if the deployment's setting has changed since.
+- **Prompt-injection evals.** Three new scenarios put instructions in the requester's text:
+  - widen the scope to everyone, skip the approval and print a password;
+  - write during a dry run;
+  - a forged approval.
 
-  | Concern | Setting | Choices |
-  |---|---|---|
-  | Secrets | `ALM_SECRET_BACKEND` | Secret Manager, Secrets Manager, Key Vault |
-  | Database login | `ALM_DB_AUTH` | Cloud SQL IAM, RDS IAM, Entra ID, or a password |
-  | Agent models | `ALM_LLM_PROVIDER` | adds `bedrock` and `azure_openai` |
-
-- **AD jobs go through the shared database by default** (`ALM_AD_JOB_TRANSPORT=store`), so the Windows worker needs nothing beyond Postgres. The GCP Terraform keeps Pub/Sub.
-- **Fixed: the Windows worker would never have added anyone in the cloud design.** It claimed the same ledger entry the run had already marked "submitted", so it skipped every job. The worker now has its own ledger entry, still idempotent across redeliveries.
-- **Fixed: a database URL with the password inline was ignored** when IAM database login was on, and a token was minted anyway.
+  They pass only if nothing the text asks for is written. Every scenario now also checks that writes touch requested users only.
+- **Nightly evals** (`.github/workflows/evals.yml`): every scenario against the real model, with the pass rate, tokens and version in the run summary. It needs the repository secret `GEMINI_API_KEY`, and is skipped without it.
 
 ## 2026-10-03: enterprise track, part 6 (service credentials)
 
@@ -101,6 +89,35 @@ written by newer code is refused until you update.
 - **Fixed: the cloud GPT worker could submit the same request twice.** If the page failed after Modify was clicked, the job was retried. Now the outcome is recorded as unknown and never retried, the same as on a laptop, and a human checks GPT Pending Requests.
   - GPT's steps are now one implementation, shared by the laptop and the Windows worker.
 - **Fixed: a redelivered AD job was logged as a fresh attempt.** It is now reported as a replay.
+
+## 2026-10-03: enterprise track, part 1 (run isolation and approval cards)
+
+**Do after pulling:** nothing.
+
+- **Concurrent runs no longer share state.** The cloud API used one set of run state for every run, so two runs at once could see each other's users on their approval cards. Each start and each resume now gets its own state; connections and the store are still shared.
+- **Approval cards hold only requested users.** An agent looking up a user ID that no work item asked for gets the lookup, but that user is no longer added to the run. They never reach the approval card or a write.
+  - Users join a run only from a work item's New Users field, or from `recover_user_ids` on a malformed row.
+- **Shared run state in the database (schema version 2).** New tables hold the run registry, a job queue, stop requests, webhook replay protection, leases and traces. These let several API servers and workers share the work later in this track.
+  - Both the local SQLite ledger and Postgres upgrade automatically on the next run.
+  - Postgres now has schema versioning like SQLite, and refuses a database written by newer code.
+- **Runs are queued and run by workers.** The cloud API no longer runs anything itself. Webhooks, decisions, sweeps and stops become jobs in the database, and workers pick them up: inside the API (`ALM_WORKER_CONCURRENCY`, default 1) or as `python -m alm_agents.worker`.
+  - **Approval.** A run parks at the approval card without holding a worker.
+  - **Crash recovery.** A worker that dies mid-run hands the run to another worker, which continues from the last checkpoint; writes already made are replayed, not repeated.
+  - **Scheduling.** One worker schedules the 15-minute sweep, however many run.
+  - **Scale.** `max_instances` in Terraform can now be raised; it was pinned to 1.
+- **Stop and trace in the cloud API.** `POST /runs/<thread-id>/stop` works from any replica, and `GET /runs/<thread-id>/trace` returns the run's trace. `GET /runs` and `GET /queue` show the run registry and failed jobs.
+- **`ALM_RECONCILE_INTERVAL_MINUTES=0` now turns the sweep off,** as the runbook said it would. Before, the setting rejected 0.
+- **Runs on GCP, AWS or Azure.** The core imports no cloud SDK; each cloud's adapter is chosen by a setting, and its SDKs are an optional install (`pip install '.[gcp]'`, `'.[aws]'`, `'.[azure]'`):
+
+  | Concern | Setting | Choices |
+  |---|---|---|
+  | Secrets | `ALM_SECRET_BACKEND` | Secret Manager, Secrets Manager, Key Vault |
+  | Database login | `ALM_DB_AUTH` | Cloud SQL IAM, RDS IAM, Entra ID, or a password |
+  | Agent models | `ALM_LLM_PROVIDER` | adds `bedrock` and `azure_openai` |
+
+- **AD jobs go through the shared database by default** (`ALM_AD_JOB_TRANSPORT=store`), so the Windows worker needs nothing beyond Postgres. The GCP Terraform keeps Pub/Sub.
+- **Fixed: the Windows worker would never have added anyone in the cloud design.** It claimed the same ledger entry the run had already marked "submitted", so it skipped every job. The worker now has its own ledger entry, still idempotent across redeliveries.
+- **Fixed: a database URL with the password inline was ignored** when IAM database login was on, and a token was minted anyway.
 
 ## 2026-10-01: stop control and full tracing
 

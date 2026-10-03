@@ -85,8 +85,11 @@ class PolicyEngine:
     prod_confirmed: bool = False
     max_writes: int = 50
     max_tool_calls: int = 400
+    # Model tokens (input + output) this run may spend; 0 = no cap.
+    max_tokens: int = 0
     writes_performed: int = 0
     tool_calls: int = 0
+    tokens: int = 0
     denials: list[dict] = field(default_factory=list)
 
     # ------------------------------------------------------------- accounting
@@ -96,6 +99,16 @@ class PolicyEngine:
 
     def note_write(self) -> None:
         self.writes_performed += 1
+
+    def note_tokens(self, response) -> None:
+        """Count a model response's tokens (input + output) against the run."""
+        usage = getattr(response, "usage_metadata", None) or {}
+        self.tokens += int(usage.get("input_tokens") or 0) + int(
+            usage.get("output_tokens") or 0)
+
+    @property
+    def tokens_exhausted(self) -> bool:
+        return bool(self.max_tokens) and self.tokens >= self.max_tokens
 
     def _deny(self, tool: str, reason: str, **context) -> Verdict:
         record = {"tool": tool, "reason": reason, **context}
@@ -170,6 +183,7 @@ class PolicyEngine:
         return {
             "tool_calls": self.tool_calls,
             "writes": self.writes_performed,
+            "tokens": self.tokens,
             "prod_confirmed": self.prod_confirmed,
             "denials": len(self.denials),
             "denial_reasons": [d["reason"][:120] for d in self.denials[:10]],

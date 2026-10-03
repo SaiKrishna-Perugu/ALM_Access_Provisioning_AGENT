@@ -32,6 +32,7 @@ import socket
 import tempfile
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from alm_core.errors import ConfigError
@@ -40,6 +41,8 @@ from alm_core.logging import get_logger, scrub_secrets
 log = get_logger("alm.worker")
 
 START, RESUME, RECONCILE = "start", "resume", "reconcile"
+FALLBACK = "fallback"                # the trigger of a run re-done without a model
+MODEL_DOWN = "the agent model is unavailable"
 RUN_KINDS = (START, RESUME, RECONCILE)
 STOP_POLL_SECONDS = 1.0
 TRACE_FLUSH_SECONDS = 1.0
@@ -50,19 +53,26 @@ SCHEDULER_LEASE = "scheduler"
 
 async def submit_run(store, *, thread_id: str, work_item_ids: list[str] | None,
                      mode: str, requested_by: str, trigger: str,
-                     operator_request: str = "", environment: str = "") -> int | None:
+                     operator_request: str = "", environment: str = "",
+                     orchestration: str = "") -> int | None:
     """Register a run and queue its start. Returns the job id, or None when the
-    same run is already queued or running (a redelivered trigger)."""
+    same run is already queued or running (a redelivered trigger).
+
+    ``orchestration`` pins the run to one (the fallback run is deterministic);
+    empty means the deployment's.
+    """
     if await store.get_run(thread_id) and await _unfinished(store, thread_id):
         return None
     await store.clear_stop(thread_id)
     await store.upsert_run(thread_id, status="queued", mode=mode,
                            scope=list(work_item_ids or []), requested_by=requested_by,
                            trigger=trigger, operator_request=operator_request,
-                           environment=environment, error="", report=None)
-    return await store.enqueue_job(START, thread_id, {
-        "work_item_ids": list(work_item_ids or []), "trigger": trigger,
-        "operator_request": operator_request, "mode": mode}, dedupe=True)
+                           environment=environment, error="", report=None, version="")
+    payload = {"work_item_ids": list(work_item_ids or []), "trigger": trigger,
+               "operator_request": operator_request, "mode": mode}
+    if orchestration:
+        payload["orchestration"] = orchestration
+    return await store.enqueue_job(START, thread_id, payload, dedupe=True)
 
 
 async def submit_decision(store, thread_id: str, decision) -> int | None:
@@ -245,6 +255,7 @@ class Worker:
     async def _drive(self, job: dict, control, trace) -> None:
         from .graph import resume_run, run_config, run_session, start_run
         from .runner import build_report, pending_interrupt
+        from .version import orchestration_of, run_version
 
         thread_id = job["thread_id"]
         run = await self.store.get_run(thread_id) or {}
@@ -252,6 +263,14 @@ class Worker:
         if stop:
             control.request_stop(stop["by"])
         mode = run.get("mode") or job["payload"].get("mode") or ""
+        settings = self.services.settings
+        # A run keeps the graph it started with: its checkpoint belongs to it.
+        orchestration = (orchestration_of(run.get("version", ""))
+                         or job["payload"].get("orchestration", ""))
+        if job["kind"] in (START, RECONCILE) and not orchestration:
+            orchestration = await self._within_daily_budget(thread_id, trace)
+            if orchestration is None:
+                return
 
         def on_event(kind: str, data: dict) -> None:
             trace.event(kind, data)
@@ -259,8 +278,9 @@ class Worker:
                 self.on_event(thread_id, kind, data)
 
         graph, ctx = run_session(self.services, control=control, on_event=on_event,
-                                 backend=self.backend, mode=mode,
+                                 backend=self.backend, mode=mode, orchestration=orchestration,
                                  shots_dir=str(self.trace_dir / "evidence" / thread_id))
+        version = run.get("version") or run_version(settings, orchestration)
         config = run_config(thread_id)
         snapshot = await graph.aget_state(config)
         started = time.monotonic()
@@ -270,7 +290,7 @@ class Worker:
                 await self.store.upsert_run(thread_id, status="stopped",
                                             error=f"stopped by {stop['by']} before it started")
                 return
-            await self.store.upsert_run(thread_id, status="running")
+            await self.store.upsert_run(thread_id, status="running", version=version)
             if not snapshot.values:
                 payload = job["payload"]
                 await start_run(graph, ctx, thread_id=thread_id,
@@ -325,13 +345,64 @@ class Worker:
         report = await build_report(graph, ctx, thread_id=thread_id, approvals=None,
                                     wall_seconds=time.monotonic() - started)
         report.pop("audit_events", None)
+        report["version"] = version
         reason = report.get("halt_reason", "") or ""
         status = "stopped" if report["halted"] and reason.startswith("stopped") else "done"
         await self.store.upsert_run(thread_id, status=status, report=report,
                                     run_id=report.get("run_id") or ctx.run_id)
         trace.write({"service": "run", "kind": "finished", "status": status,
                      "halted": report["halted"], "halt_reason": reason,
-                     "metrics": report.get("metrics") or {}})
+                     "version": version, "metrics": report.get("metrics") or {}})
+        if reason.startswith(MODEL_DOWN):
+            await self._fall_back(run, thread_id, trace)
+
+    async def _within_daily_budget(self, thread_id: str, trace) -> str | None:
+        """The orchestration a new run may use under the daily token cap.
+
+        Empty: the deployment's. ``"deterministic"``: the cap is spent and the
+        deployment degrades rather than stops. None: the cap is spent and the
+        run is refused (recorded on the run, not retried).
+        """
+        settings = self.services.settings
+        cap = int(getattr(settings, "max_tokens_per_day", 0) or 0)
+        if not cap or not self.services.agentic:
+            return ""
+        midnight = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0,
+                                                      microsecond=0)
+        used = await self.store.tokens_since(midnight)
+        if used < cap:
+            return ""
+        trace.write({"service": "run", "kind": "token_cap", "used": used, "cap": cap})
+        if getattr(settings, "degrade_on_model_failure", False):
+            log.warning("daily_token_cap_degraded", thread_id=thread_id, used=used, cap=cap)
+            return "deterministic"
+        log.warning("daily_token_cap_refused", thread_id=thread_id, used=used, cap=cap)
+        await self.store.upsert_run(
+            thread_id, status="failed",
+            error=f"the daily model token budget is used ({used} of {cap}); the run "
+                  "was not started. It resets at 00:00 UTC (ALM_MAX_TOKENS_PER_DAY).")
+        return None
+
+    async def _fall_back(self, run: dict, thread_id: str, trace) -> None:
+        """The model was down: re-do the run without it, if the deployment says so.
+
+        A new run (``<thread>-fallback``) with the fixed node sequence, the same
+        scope, mode and requester. Writes the first run made are replays in the
+        ledger, and a writing run still stops at the approval card.
+        """
+        settings = self.services.settings
+        if (not getattr(settings, "degrade_on_model_failure", False)
+                or run.get("trigger") == FALLBACK):
+            return
+        fallback = f"{thread_id}-fallback"
+        job = await submit_run(
+            self.store, thread_id=fallback, work_item_ids=run.get("scope") or None,
+            mode=run.get("mode") or "", requested_by=run.get("requested_by") or "",
+            trigger=FALLBACK, operator_request=run.get("operator_request") or "",
+            environment=run.get("environment") or "", orchestration="deterministic")
+        trace.write({"service": "run", "kind": "fallback_queued", "thread_id": fallback,
+                     "queued": job is not None})
+        log.warning("model_down_fallback", thread_id=thread_id, fallback=fallback)
 
 
     @staticmethod

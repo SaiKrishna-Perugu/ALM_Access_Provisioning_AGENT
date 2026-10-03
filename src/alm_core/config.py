@@ -206,6 +206,28 @@ class Settings(BaseSettings):
         description="Turn the extraction fallback and comment drafting off entirely.")
     llm_max_output_tokens: int = Field(default=800, ge=1)
 
+    # ------------------------------------------------------ AI governance
+    allowed_providers: str = Field(
+        default="",
+        description=("Comma-separated model providers this deployment may use; empty "
+                     "allows any. A client data policy belongs here, e.g. 'vertex' or "
+                     "'bedrock,azure_openai'."))
+    model_withheld_fields: str = Field(
+        default="",
+        description=("Comma-separated fields never shown to a model, e.g. "
+                     "'justification,summary'. Tools still use them; the model sees "
+                     "'[withheld]'."))
+    max_tokens_per_run: int = Field(
+        default=400_000, ge=0, description="Model tokens one run may spend; 0 = no cap.")
+    max_tokens_per_day: int = Field(
+        default=0, ge=0, description="Model tokens all runs may spend per UTC day; 0 = no cap.")
+    degrade_on_model_failure: bool = Field(
+        default=False,
+        description=("When the model is unavailable, re-run the same work items in the "
+                     "fixed order (deterministic orchestration), which needs no model; "
+                     "past the daily token cap, start new runs that way instead of "
+                     "refusing them."))
+
     # --------------------------------------------- user-ID recovery (TypeSafe)
     extraction_provider: Literal["auto", "typesafe", "gemini"] = Field(
         default="auto",
@@ -344,6 +366,11 @@ class Settings(BaseSettings):
                 "ALM_LLM_PROVIDER=vertex needs GOOGLE_CLOUD_PROJECT: the Vertex AI "
                 "client is project-scoped. Set it, use ALM_LLM_PROVIDER=gemini_api "
                 "with a GEMINI_API_KEY, or run with ALM_ORCHESTRATION=deterministic.")
+        allowed = {p.strip() for p in self.allowed_providers.split(",") if p.strip()}
+        if allowed and self.llm_enabled and self.llm_provider not in allowed:
+            raise ValueError(
+                f"ALM_LLM_PROVIDER={self.llm_provider} is not in ALM_ALLOWED_PROVIDERS "
+                f"({', '.join(sorted(allowed))}): this deployment's data policy forbids it")
         models = [m.lower() for m in (self.agent_model, self.supervisor_model) if m]
         if self.llm_provider in ("gemini_api", "vertex_express") and any(
                 m.startswith("claude") for m in models):

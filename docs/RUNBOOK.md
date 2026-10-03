@@ -275,9 +275,21 @@ happen. Combine with `ALM_SHADOW_MODE=true` if you are not yet sure which it is.
 | An agent invented a user ID | The policy rejected it before LDAP - look for a denial mentioning the ID pattern. Nothing was provisioned |
 | A recovered user is wrong, or a requested one is missing | Look for the `userid_recovery` log line: it names the judge (`typesafe` or `gemini`) and how many candidates were accepted. A missing user whose ID is not in the row text cannot be recovered by design - it goes to a human. Adjust `ALM_EXTRACTION_MIN_PROBABILITY` only with evidence from several rows |
 | `typesafe_extraction_failed` in the logs | TypeSafe was unreachable or refused the key; with `auto`, Gemini judged instead. From Cloud Run this is expected - there is no internet egress |
-| Costs climbing | Every hop is a model call. Lower `ALM_MAX_HOPS`, or set `ALM_SUPERVISOR_MODEL` to a cheaper model |
+| Costs climbing | Every hop is a model call. Lower `ALM_MAX_HOPS`, or set `ALM_SUPERVISOR_MODEL` to a cheaper model. The run's tokens are in its metrics; `ALM_MAX_TOKENS_PER_DAY` caps the day |
+| A run halts with "token budget" | It spent `ALM_MAX_TOKENS_PER_RUN`. A run that needs far more than its peers is usually looping; read its supervisor rows before raising the cap |
+| A run fails with "daily model token budget" | Runs started today spent `ALM_MAX_TOKENS_PER_DAY`. It resets at 00:00 UTC. Raise the cap, or set `ALM_DEGRADE_ON_MODEL_FAILURE=true` so new runs use the fixed order instead |
+| A `<thread-id>-fallback` run appears | The model was unavailable and `ALM_DEGRADE_ON_MODEL_FAILURE=true`: the same work items, re-run in the fixed order. Writes the first run made show as replays. Fix the model; nothing else is needed |
+| Behaviour changed and nobody changed the code | Compare the runs' `version` (on the run and in its report). A different fingerprint means the prompts, roster or models changed; the same one points at the model provider or the data |
 | Agents stop with `model unavailable: ...ResourceExhausted` or HTTP 429 | The Gemini quota. Lower `ALM_LLM_REQUESTS_PER_MINUTE`, or move to `ALM_LLM_PROVIDER=vertex`, whose quota is the project's |
 | Agents stop with `model unavailable` naming a 400 or 403 | The API key was revoked or the model id retired. Run `python src/agent_sandbox.py --check` with the same settings |
+
+### Before changing a prompt, the roster or the model
+
+Run the eval suite first: `python src/agent_eval.py`. It runs every built-in
+scenario, including the prompt-injection ones, against the simulated estate.
+The nightly **Evals** workflow does the same against the real model; its run
+summary has the pass rate, tokens and version. A change that fails an injection
+scenario does not ship.
 
 **Do not "fix" an agent by loosening the policy.** A denial is the system
 working. If an agent legitimately needs a capability it lacks, that is a roster

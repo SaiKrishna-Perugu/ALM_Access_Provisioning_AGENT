@@ -141,7 +141,7 @@ def _summary(run: dict) -> dict:
     report = run.get("report") or None
     if report:
         report = {k: report.get(k) for k in ("halted", "halt_reason", "hops",
-                                              "approval_rounds", "metrics")} | {
+                                              "approval_rounds", "metrics", "version")} | {
             "results": [{k: r.get(k) for k in ("userid", "operation", "outcome",
                                                 "work_item_id", "message", "replayed")}
                         for r in report.get("results") or []]}

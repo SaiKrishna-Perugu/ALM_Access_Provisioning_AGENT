@@ -134,6 +134,9 @@ layers, because one of them is new.
   agents.
 - **Writes** (`ALM_MAX_WRITES_PER_RUN`, default 50) - a hard ceiling regardless
   of what any agent concludes.
+- **Tokens** (`ALM_MAX_TOKENS_PER_RUN`, default 400,000; `ALM_MAX_TOKENS_PER_DAY`,
+  default none) - every model call's usage counts against the run; at the cap
+  the run stops and says so. The daily cap refuses new runs once spent.
 - **Wall clock** - per agent run.
 - **Explicit termination** - "done" is a `finish` call an agent makes, not
   something inferred from silence.
@@ -144,6 +147,13 @@ The supervisor falls back to the nominal sequence, so a routing-model outage
 degrades the system to the deterministic workflow rather than stopping it. The
 agents themselves need a model; if none can be built, `ALM_ORCHESTRATION=deterministic`
 runs the fixed graph with identical tools and guarantees.
+
+With `ALM_DEGRADE_ON_MODEL_FAILURE=true` this happens per run, automatically:
+a run that stops because its agent model is unavailable is followed by
+`<thread-id>-fallback`, the same work items in the fixed order. Past the daily
+token cap, new runs start that way instead of being refused. Every run records
+which graph it used in its version (`guided-<fingerprint>`,
+`deterministic-<fingerprint>`), and a resumed run keeps it.
 
 ---
 
@@ -467,10 +477,15 @@ All settings are `ALM_`-prefixed and validated once at startup
 | `ALM_APPROVAL_TTL_MINUTES` | `240` | How long an approval stays valid |
 | `ALM_AUTO_APPROVE_LOW_RISK` | `false` | Phase 9 step 3; never covers provisioning |
 | `ALM_RECONCILE_INTERVAL_MINUTES` | `15` | Queue sweep interval |
-| `ALM_ORCHESTRATION` | `agentic` | `agentic` or `deterministic` |
+| `ALM_ORCHESTRATION` | `agentic` | `guided`, `agentic` or `deterministic` (`.env.example` sets `guided`) |
 | `ALM_MAX_HOPS` | `24` | Routing decisions per run |
 | `ALM_MAX_WRITES_PER_RUN` | `50` | Hard write ceiling |
 | `ALM_MAX_TOOL_CALLS_PER_RUN` | `400` | Shared tool-call budget |
+| `ALM_MAX_TOKENS_PER_RUN` | `400000` | Model tokens one run may spend; `0` = no cap |
+| `ALM_MAX_TOKENS_PER_DAY` | `0` | Model tokens for all runs started in a UTC day; `0` = no cap |
+| `ALM_DEGRADE_ON_MODEL_FAILURE` | `false` | Re-run in the fixed order when the model is down or the daily cap is spent |
+| `ALM_ALLOWED_PROVIDERS` | (any) | Model providers this deployment may use; others refused at start-up |
+| `ALM_MODEL_WITHHELD_FIELDS` | (none) | Tool-result fields never shown to a model, e.g. `justification` |
 | `ALM_AGENT_TEMPERATURE` | `0.0` | Agent sampling; routing is always 0 |
 | `ALM_SUPERVISOR_MODEL` | (agent model) | Optional cheaper model for routing |
 
@@ -515,8 +530,15 @@ Done since this section was first written:
   SQLite and Postgres), the workers, the API and the web console. An eval suite
   (`src/agent_eval.py`) replays scenarios and recorded real runs against a real
   model and grades outcomes and safety invariants.
-- **Cost is measured.** Every run reports model calls, tool calls, hops and
-  time, and its trace records the tokens of every model call.
+- **Cost is measured and capped.** Every run reports model calls, tool calls,
+  tokens, hops and time. Token budgets per run and per day stop a run that
+  overspends (section 2).
+- **AI governance.** A provider allowlist, withheld fields, and a version
+  fingerprint of the prompts, roster and models on every run. Prompt-injection
+  scenarios are in the eval suite, which runs nightly against the real model.
+- **Sign-in and roles.** OIDC (any provider) or IAP, with viewer, operator,
+  approver, auditor and admin roles. PROD and high-risk runs need two
+  approvers, and approval happens only in the signed-in console.
 - **Postgres IAM authentication** is implemented for Cloud SQL (`PostgresStore`
   mints a fresh token per connection).
 - **Scale-out.** Runs are jobs in a Postgres queue, driven by workers; any
@@ -532,8 +554,6 @@ Still open:
 - **Directory API for on-premises groups.** Microsoft Graph is available
   (`ALM_AD_DIRECTORY=graph`) for groups mastered in Entra ID. A group synced
   from on-premises AD still needs the GPT web UI and the Windows worker.
-- **Sign-in and roles.** The API trusts IAP (or a signed approval link); there
-  is no OIDC sign-in or role model for other clouds yet.
 - **AWS and Azure infrastructure.** The code runs on either - secrets (Secrets
   Manager, Key Vault), database tokens (RDS IAM, Entra ID), models (Bedrock,
   Azure OpenAI) and the AD job queue (the shared Postgres store) all have
