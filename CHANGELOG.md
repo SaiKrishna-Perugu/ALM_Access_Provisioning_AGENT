@@ -36,6 +36,16 @@ written by newer code is refused until you update.
 - **Fixed: the Windows worker would never have added anyone in the cloud design.** It claimed the same ledger entry the run had already marked "submitted", so it skipped every job. The worker now has its own ledger entry, still idempotent across redeliveries.
 - **Fixed: a database URL with the password inline was ignored** when IAM database login was on, and a token was minted anyway.
 
+## 2026-10-03: enterprise track, part 6 (service credentials)
+
+**Do after pulling:** nothing.
+
+- **Cloud services never prompt.** A missing secret is reported by name, instead of waiting for a terminal that does not exist.
+- **Workers refuse to start without the service account and its password.** Before, every run failed at sign-in, one retry at a time.
+- **New `GET /status` (viewer)** shows whether the database, EWM, JTS and the model are reachable. A failed Jazz sign-in is retried only after ten minutes, so probing cannot lock the account.
+- **Configuration errors name the real variable** (`CID`, `GOOGLE_CLOUD_PROJECT`) instead of a made-up `ALM_` name.
+- **The runbook has a credential rotation table** (section 7c).
+
 ## 2026-10-03: enterprise track, part 5 (the console in the cloud)
 
 **Do after pulling:** nothing.

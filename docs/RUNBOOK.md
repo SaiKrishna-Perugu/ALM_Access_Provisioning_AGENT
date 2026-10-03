@@ -335,6 +335,26 @@ Everything a local run did is in `out/local/run-<run_id>.json` and in the
 `alm_audit` table of `out/local/alm.db` (the SQL in section 1 works unchanged in
 any SQLite client).
 
+## 7c. Credentials and their rotation
+
+Cloud services never prompt for anything. Each secret comes from the
+environment, a mounted file, or the cloud secret store
+(`ALM_SECRET_BACKEND`), by name.
+
+| Secret (default name) | Used for | How to rotate |
+|---|---|---|
+| `alm-service-account-password` | The Jazz functional account (`CID`) on EWM and JTS | Change it in Jazz, add a new version of the secret, then nothing else: a 401 makes the service re-read the secret and sign in again. The cache is 15 minutes at most |
+| `alm-webhook-hmac-key` | The EWM bridge's webhook signature | Add the new version, then update the bridge. Deliveries signed with the old key are refused once it is gone |
+| `alm-session-signing-key` | Console session cookies (OIDC) | Add a new version and restart the instances. Everyone signs in again |
+| `alm-oidc-client-secret` | The console's OIDC app registration | Add the new secret in the IdP, then the new version here, then remove the old one in the IdP |
+| `alm-graph-client-secret` | Microsoft Graph (`ALM_AD_DIRECTORY=graph`) | Same as the OIDC secret |
+| `alm-gemini-api-key` | Keyed Gemini providers only | Create a new key, add the version, delete the old key |
+
+A worker refuses to start without the service account and its password, and
+says which is missing. `GET /status` (viewer) shows whether the database, EWM,
+JTS and the model are reachable. A failed Jazz sign-in there is retried only
+after ten minutes, so a wrong password cannot lock the account by probing.
+
 ## 8. Connectivity
 
 The failure that looks like everything else.

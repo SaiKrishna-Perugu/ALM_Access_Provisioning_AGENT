@@ -443,9 +443,14 @@ class Settings(BaseSettings):
         """Fail fast, naming every missing setting at once rather than one per restart."""
         missing = [n for n in names if not getattr(self, n, None)]
         if missing:
-            raise ConfigError(
-                "missing required configuration: "
-                + ", ".join(f"ALM_{n.upper()}" for n in missing))
+            raise ConfigError("missing required configuration: "
+                              + ", ".join(self.env_name(n) for n in missing))
+
+    @classmethod
+    def env_name(cls, field_name: str) -> str:
+        """The environment variable a setting is read from (CID, not ALM_SERVICE_ACCOUNT)."""
+        alias = cls.model_fields[field_name].validation_alias if             field_name in cls.model_fields else None
+        return alias if isinstance(alias, str) else f"ALM_{field_name.upper()}"
 
 
 @lru_cache(maxsize=1)

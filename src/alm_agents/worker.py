@@ -360,9 +360,32 @@ async def serve(settings=None, *, stopping: asyncio.Event | None = None) -> None
 
     settings = settings or get_settings()
     stopping = stopping or asyncio.Event()
-    notifier = make_notifier(settings, build_resolver(settings))
-    async with build_services(settings, notifier=notifier) as services:
+    resolver = build_resolver(settings, interactive=False)
+    preflight(settings, resolver)
+    notifier = make_notifier(settings, resolver)
+    async with build_services(settings, notifier=notifier, resolver=resolver) as services:
         await Worker(services).run_forever(stopping)
+
+
+def preflight(settings, resolver) -> None:
+    """Refuse to start a worker that could only fail every run.
+
+    A worker drives EWM and JTS as the service account; without its CID and
+    password every run would fail at sign-in, one retry at a time. Checked
+    once, at start-up, naming what is missing - never the value.
+    """
+    from alm_core.errors import CredentialError
+
+    if getattr(settings, "orchestration", "") == "deterministic" and not settings.ewm_server:
+        return  # a smoke or test configuration with no estate to reach
+    settings.require("service_account", "ewm_server", "jts_server")
+    try:
+        resolver.get(settings.password_secret_name)
+    except CredentialError as err:
+        raise ConfigError(
+            f"no password for the service account {settings.service_account}: set the "
+            f"secret {settings.password_secret_name!r} (cloud secret store, mounted "
+            "file, or EWM_PASSWORD)") from err
 
 
 def main() -> int:

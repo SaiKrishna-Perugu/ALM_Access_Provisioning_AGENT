@@ -15,6 +15,7 @@ Endpoints:
     POST /admin/reconcile           queue a reconciliation sweep now (admin)
     GET  /auth/login /auth/callback /auth/logout   OIDC sign-in (ALM_AUTH_MODE=oidc)
     GET  /me                        who you are and what you may do
+    GET  /status                    database, EWM, JTS and model health (viewer)
     GET  /  and /api/*              the web console (``alm_api.console``)
     GET  /healthz /readyz           liveness and readiness
 
@@ -185,11 +186,12 @@ async def lifespan(_app: FastAPI):
     configure()
     settings = get_settings()
     runtime.settings = settings
-    runtime.resolver = build_resolver(settings)
+    runtime.resolver = build_resolver(settings, interactive=False)
 
     stack = contextlib.AsyncExitStack()
     runtime.services = await stack.enter_async_context(
-        build_services(settings, notifier=make_notifier(settings, runtime.resolver)))
+        build_services(settings, notifier=make_notifier(settings, runtime.resolver),
+                       resolver=runtime.resolver))
     runtime.stack = stack
 
     if settings.worker_concurrency > 0:
@@ -442,6 +444,68 @@ async def force_reconcile(user=Depends(require("admin"))) -> dict:
                      requested_by=identity, trigger="reconcile",
                      environment=runtime.settings.environment)
     return {"accepted": True, "thread_id": thread_id}
+
+
+# ------------------------------------------------------------------- status
+
+STATUS_OK_SECONDS = 60
+# A failed sign-in is not retried for ten minutes: probing every minute with a
+# wrong password would lock the service account.
+STATUS_FAILED_SECONDS = 600
+_status: dict = {}
+
+
+async def _check(name: str, probe) -> dict:
+    cached = _status.get(name)
+    if cached and time.time() < cached["until"]:
+        return cached["result"]
+    started = time.perf_counter()
+    try:
+        detail = await probe()
+        result = {"ok": True, "detail": detail or "ok"}
+    except Exception as err:  # noqa: BLE001 - reported, never raised
+        from alm_core.logging import scrub_secrets
+
+        result = {"ok": False, "detail": scrub_secrets(f"{type(err).__name__}: {err}")[:300]}
+    result["ms"] = int((time.perf_counter() - started) * 1000)
+    _status[name] = {"result": result, "until": time.time() + (
+        STATUS_OK_SECONDS if result["ok"] else STATUS_FAILED_SECONDS)}
+    return result
+
+
+@app.get("/status")
+async def status(_user=Depends(require("viewer"))) -> dict:
+    """What this deployment can reach: the database, EWM, JTS, the model.
+    Unlike /readyz, a dependency being down does not take the API out of
+    rotation - people still need to see their runs."""
+    services, settings = runtime.services, runtime.settings
+
+    async def database():
+        depth = await runtime.store.queue_depth()
+        return f"queue {depth}"
+
+    def jazz(server: str, kind: str):
+        async def probe():
+            if not server:
+                raise RuntimeError(f"{kind.upper()} server is not configured")
+            # Reuses the signed-in session; signs in only when there is none.
+            await asyncio.to_thread(services.client.session, server, kind=kind)
+            return urlsplit(server).hostname
+        return probe
+
+    async def model():
+        if getattr(services, "agent_llm", None) is None:
+            if getattr(settings, "orchestration", "") == "deterministic":
+                return "not used (deterministic orchestration)"
+            raise RuntimeError("no model client could be built; check the provider settings")
+        return f"{settings.llm_provider}:{settings.agent_model}"
+
+    checks = {"database": await _check("database", database),
+              "ewm": await _check("ewm", jazz(settings.ewm_server, "ewm")),
+              "jts": await _check("jts", jazz(settings.jts_server, "jts")),
+              "model": await _check("model", model)}
+    return {"ok": all(c["ok"] for c in checks.values()), "checks": checks,
+            "environment": settings.environment, "writes": not settings.shadow_mode}
 
 
 # ------------------------------------------------------------------ sign-in

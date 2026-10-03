@@ -14,9 +14,9 @@ gives the detail; what changed for operators is in [CHANGELOG.md](../CHANGELOG.m
 | M6 sign-in (OIDC or IAP) and roles on the API | Done |
 | M7 two approvers, console-only approval, Chat/Teams/e-mail | Done |
 | M6b hosted console (roles, votes, live activity, trace) | Done |
-| M8 service credentials | Next |
+| M8 service credentials, status | Done |
 | M9 directory port (Graph + GPT) | Done |
-| M10 AI governance, eval gate, cost caps | Planned |
+| M10 AI governance, eval gate, cost caps | Next |
 | M11 OpenTelemetry | Planned |
 | M12-M14 images, supply chain, DR, per-cloud IaC, pipeline | Planned |
 | M15 PROD shadow and staged enablement | Needs the client network |
