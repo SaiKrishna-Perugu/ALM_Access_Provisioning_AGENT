@@ -255,7 +255,8 @@ class Services:
 
 
 @asynccontextmanager
-async def build_services(settings=None, *, notifier=None, skip_ad: bool = False):
+async def build_services(settings=None, *, notifier=None, skip_ad: bool = False,
+                         resolver=None):
     """Open everything runs share, and close it afterwards. Yields :class:`Services`.
 
     Which graph the runs get depends on ``ALM_ORCHESTRATION``:
@@ -275,7 +276,9 @@ async def build_services(settings=None, *, notifier=None, skip_ad: bool = False)
         settings = get_settings()
 
     store = await get_store(settings)
-    resolver = build_resolver(settings)
+    # A service never prompts: it has no terminal. Secrets come from the
+    # environment, a mounted file or the cloud store, or the run says so.
+    resolver = resolver or build_resolver(settings, interactive=False)
     client = JazzClient(settings, resolver)
 
     try:
