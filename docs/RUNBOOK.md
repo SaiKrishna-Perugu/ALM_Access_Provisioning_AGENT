@@ -457,7 +457,7 @@ back on.
 | Step | What happens | Gate |
 |---|---|---|
 | Pull request | Tests (with Postgres), lint, security (ruff `S`, Semgrep, pip-audit), secrets, image build, scan and read-only checks, Terraform validation on all three clouds | Every check green; a review |
-| Merge to `main` | Deploy to **TEST**: build `api` and `worker`, scan, SBOM, sign, verify the signatures, `terraform apply` (`infra/gcp`), connectivity smoke, synthetic dry run | Automatic |
+| Merge to `main` | Deploy to **TEST**: build `api` and `worker`, scan, SBOM, sign, verify the signatures, `terraform apply` (`infra/gcp`), connectivity smoke, synthetic dry run | Automatic once the repository variable `DEPLOY_ENABLED` is `true`; until the cloud project and its secrets exist, a merge only verifies |
 | Promote to **PROD** | Actions → Deploy → Run workflow → `prod`, from `main` | The `prod` environment's required reviewers |
 
 - **Schema.** By default each service migrates on start. Migrations only add, so the old revision keeps working while the new one starts. Where the services must not change the schema (`ALM_AUTO_MIGRATE=false`), run `python -m alm_core.store.migrate` as the owner before the new revision takes traffic. `--check` reports whether the schema is current.

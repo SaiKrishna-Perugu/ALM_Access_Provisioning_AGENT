@@ -9,7 +9,7 @@ written by newer code is refused until you update.
 
 ## 2026-10-03: enterprise track, part 12 (staged go-live)
 
-**Do after pulling:** nothing. Nothing changes until you set the new settings.
+**Do after pulling:** nothing. Nothing changes until you set the new settings. When the cloud project and its secrets exist, set the repository variable `DEPLOY_ENABLED=true` so that merges deploy to TEST.
 
 - **Staged enablement.** `ALM_ALLOWED_OPERATIONS` lists the write operations a deployment performs. The rest are planned, shown on the card and skipped with the reason, in dry runs too. The pilot order is in [docs/DECISIONS.md](docs/DECISIONS.md):
   1. reactivations, comments and evidence;
@@ -24,6 +24,7 @@ written by newer code is refused until you update.
   The CSV has two columns to fill in from what the CLI did.
 - **[docs/DECISIONS.md](docs/DECISIONS.md)** sets out D1–D8: what was decided, what is open, and how to retire the CLI safely.
 - **[docs/THREAT_MODEL.md](docs/THREAT_MODEL.md)** gives STRIDE with the controls in the code, and the data classification of everything that leaves the client network.
+- **Merges no longer fail at the deploy step while no cloud is connected.** A push deploys only when `DEPLOY_ENABLED` is `true`; otherwise it runs the verify job (tests and Terraform for all three clouds) and stops. Manual runs are unchanged.
 
 ## 2026-10-03: enterprise track, part 11 (every cloud, and the release path)
 
