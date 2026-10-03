@@ -248,6 +248,7 @@ def run_metrics(state: dict, wall_seconds: float) -> dict:
         "agent_model_calls": agent_calls,
         "supervisor_model_calls": supervisor_calls,
         "tool_calls": sum(r["tool_calls"] for r in per_agent.values()),
+        "tokens": int((state.get("policy") or {}).get("tokens") or 0),
         "hops": int(state.get("hops") or 0),
         "wall_seconds": round(wall_seconds, 1),
         "per_agent": per_agent,

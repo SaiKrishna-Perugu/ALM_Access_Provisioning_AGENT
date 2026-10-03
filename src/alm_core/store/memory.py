@@ -155,6 +155,11 @@ class MemoryStore:
         runs = sorted(self._runs.values(), key=lambda r: r["created_at"], reverse=True)
         return [dict(r) for r in runs[:limit]]
 
+    async def tokens_since(self, since: datetime) -> int:
+        cutoff = _iso(since)
+        return sum(int(((r["report"] or {}).get("metrics") or {}).get("tokens") or 0)
+                   for r in self._runs.values() if r["created_at"] >= cutoff)
+
     # --------------------------------------------------------------- queue
 
     async def enqueue_job(self, kind: str, thread_id: str, payload: dict | None = None,

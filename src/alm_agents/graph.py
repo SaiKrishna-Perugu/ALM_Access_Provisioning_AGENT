@@ -315,7 +315,7 @@ async def build_services(settings=None, *, notifier=None, skip_ad: bool = False,
 
 
 def run_session(services: Services, *, control=None, on_event=None, backend=None,
-                shots_dir: str = "", mode: str = ""):
+                shots_dir: str = "", mode: str = "", orchestration: str = ""):
     """A graph and tool context for exactly one run. Returns ``(graph, ctx)``.
 
     Cheap to call: it builds in-memory objects and compiles the graph, and
@@ -326,6 +326,10 @@ def run_session(services: Services, *, control=None, on_event=None, backend=None
     ``mode`` is ``"dry"`` or ``"commit"`` for this run; empty means the
     deployment's default. A deployment configured not to write
     (``ALM_SHADOW_MODE=true``) refuses ``"commit"``.
+
+    ``orchestration`` overrides the deployment's for this run: a run resumes
+    with the graph it started with, and a run whose model failed is re-run
+    with ``"deterministic"``. Empty means the deployment's.
     """
     settings = services.settings
     if mode not in ("", "dry", "commit"):
@@ -335,9 +339,16 @@ def run_session(services: Services, *, control=None, on_event=None, backend=None
                           "a writing run is refused")
     if mode == "dry" and not settings.shadow_mode:
         settings = settings.model_copy(update={"shadow_mode": True})
+    agentic = services.agentic
+    if orchestration and orchestration != getattr(settings, "orchestration", ""):
+        agentic = orchestration in ("agentic", "guided")
+        if agentic and services.agent_llm is None:
+            raise ConfigError(f"this run needs {orchestration} orchestration and this "
+                              "deployment has no model client")
+        settings = settings.model_copy(update={"orchestration": orchestration})
     ctx = ToolContext(settings=settings, client=services.client,
                       store=services.store, run_id="", semaphore=services.write_limit)
-    if not services.agentic:
+    if not agentic:
         return build_graph(ctx, checkpointer=services.checkpointer,
                            notifier=services.notifier, skip_ad=services.skip_ad), ctx
 
@@ -346,7 +357,7 @@ def run_session(services: Services, *, control=None, on_event=None, backend=None
 
     runtime = AgenticRuntime(
         ctx, llm=services.agent_llm, supervisor_llm=services.supervisor_llm,
-        memory=MemoryStore(services.store), max_hops=services.settings.max_hops,
+        memory=MemoryStore(services.store), max_hops=settings.max_hops,
         notifier=services.notifier, backend=backend, on_event=on_event,
         control=control, shots_dir=shots_dir)
     return build_agentic_graph(runtime, checkpointer=services.checkpointer), ctx

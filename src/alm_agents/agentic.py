@@ -75,6 +75,7 @@ class AgenticRuntime:
             environment=ctx.environment,
             max_writes=getattr(ctx.settings, "max_writes_per_run", 50),
             max_tool_calls=getattr(ctx.settings, "max_tool_calls_per_run", 400),
+            max_tokens=getattr(ctx.settings, "max_tokens_per_run", 0),
         )
 
     def sync_from(self, state: PipelineState) -> None:
@@ -95,6 +96,7 @@ class AgenticRuntime:
                                      int(saved.get("tool_calls") or 0))
         self.policy.writes_performed = max(self.policy.writes_performed,
                                            int(saved.get("writes") or 0))
+        self.policy.tokens = max(self.policy.tokens, int(saved.get("tokens") or 0))
         self.ctx.run_id = state.get("run_id", "") or self.ctx.run_id
         self.ctx.thread_id = state.get("thread_id", "") or self.ctx.thread_id
 
@@ -147,6 +149,11 @@ def make_supervisor_node(runtime: AgenticRuntime):
 
         if runtime.stop_requested():
             return runtime.stopped("before the next routing decision")
+        if runtime.policy.tokens_exhausted:
+            log.warning("token_budget_exhausted", tokens=runtime.policy.tokens)
+            return {**halt(f"the run used its token budget ({runtime.policy.tokens} of "
+                           f"{runtime.policy.max_tokens} tokens)"), "next_agent": "DONE",
+                    "policy": runtime.policy.summary()}
         if hops >= runtime.max_hops:
             log.warning("hop_budget_exhausted", hops=hops)
             return {**halt(f"the run used its {runtime.max_hops} routing hops"),
@@ -167,7 +174,8 @@ def make_supervisor_node(runtime: AgenticRuntime):
                     history=history,
                     board_snapshot=snapshot,
                     policy_summary=runtime.policy.summary(),
-                    hint=state.get("handoff_hint", "")))
+                    hint=state.get("handoff_hint", ""),
+                    on_response=runtime.policy.note_tokens))
             except StopRequested:
                 return runtime.stopped("during a routing decision")
 
@@ -209,7 +217,10 @@ def make_agent_node(runtime: AgenticRuntime):
             thread_id=state.get("thread_id", ""),
             environment=runtime.ctx.environment, on_event=runtime.on_event,
             redact=getattr(runtime.ctx.settings, "redact_for_model", True),
-            known_names=runtime.board.known_names, control=runtime.control)
+            known_names=runtime.board.known_names, control=runtime.control,
+            withhold={f.strip() for f in getattr(runtime.ctx.settings,
+                                                  "model_withheld_fields", "").split(",")
+                      if f.strip()})
 
         subjects = sorted(runtime.board.users) + sorted(runtime.board.work_items)
         brief = await runtime.memory.brief(subjects, tags=[name])

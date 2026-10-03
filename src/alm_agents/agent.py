@@ -247,12 +247,14 @@ class AgentRunner:
                  on_event: Callable[[str, dict], None] | None = None,
                  redact: bool = True,
                  known_names: Callable[[], Any] | None = None,
-                 control=None):
+                 control=None, withhold: set[str] | frozenset[str] = frozenset()):
         self.llm = llm
         # The run's stop switch (alm_agents.control.RunControl), checked before
         # every model call and every tool call. A tool call already running -
         # a write in particular - is always allowed to finish.
         self.control = control
+        # Fields a client's data policy keeps from every model (ALM_MODEL_WITHHELD_FIELDS).
+        self.withhold = frozenset(withhold)
         # Strip e-mail addresses, and the personal names this run holds, from
         # what the model reads. User IDs stay: they are what the agents work
         # with. The console and audit keep the original.
@@ -381,6 +383,11 @@ class AgentRunner:
             if self._stopping():
                 result.stopped_because = self._stop_reason()
                 break
+            if self.policy.tokens_exhausted:
+                result.stopped_because = (
+                    f"token budget exhausted ({self.policy.tokens} of "
+                    f"{self.policy.max_tokens})")
+                break
 
             try:
                 response: AIMessage = await self._ask(
@@ -398,6 +405,7 @@ class AgentRunner:
                 self._emit("model_error", agent=agent.name, error=reason)
                 break
 
+            self.policy.note_tokens(response)
             # The AIMessage goes back into the history unchanged: Gemini 3 attaches
             # thought signatures to its function calls and rejects the next turn
             # if they are missing.
@@ -429,9 +437,10 @@ class AgentRunner:
                 result.calls.append(record)
                 # name= matters for Gemini, which pairs a function response with
                 # its call by name rather than by id.
-                model_view = observation
+                withheld: list[str] = []
+                model_view = withhold_fields(observation, self.withhold, found=withheld)
                 if self.redact:
-                    model_view = redact_pii(observation, keep_userids=True)
+                    model_view = redact_pii(model_view, keep_userids=True)
                     if self.known_names is not None:
                         # Read now: the tool that just ran may have added names.
                         model_view = redact_names(model_view, self.known_names())
@@ -442,7 +451,8 @@ class AgentRunner:
                 spec = self.registry.get(name)
                 self._emit("tool_call", agent=agent.name, tool=name, args=args,
                            observation=observation, denied=denied, ms=record.ms,
-                           write=bool(spec is not None and spec.is_write))
+                           write=bool(spec is not None and spec.is_write),
+                           **({"withheld": sorted(set(withheld))} if withheld else {}))
 
                 if spec is not None and spec.terminal and not denied:
                     if name == "handoff":
@@ -465,6 +475,39 @@ class AgentRunner:
         if not result.output:
             result.output = f"({agent.name} stopped: {result.stopped_because})"
         return result
+
+
+def withhold_fields(observation: str, fields: frozenset[str],
+                    found: list[str] | None = None) -> str:
+    """The observation with the named fields' values replaced, wherever they occur.
+
+    Only JSON observations have fields; anything else passes unchanged. The
+    agent is told what was withheld, not what it said. The names of the fields
+    withheld are appended to ``found``, for the trace.
+    """
+    if not fields:
+        return observation
+    try:
+        data = json.loads(observation)
+    except ValueError:
+        return observation
+    hits = found if found is not None else []
+
+    def scrub(node):
+        if isinstance(node, dict):
+            out = {}
+            for k, v in node.items():
+                if k in fields and v:
+                    hits.append(k)
+                    out[k] = f"[withheld: {len(str(v))} chars]"
+                else:
+                    out[k] = scrub(v)
+            return out
+        if isinstance(node, list):
+            return [scrub(v) for v in node]
+        return node
+
+    return json.dumps(scrub(data), indent=2, default=str)
 
 
 def _text(message) -> str:

@@ -156,7 +156,7 @@ def deterministic_next(history: list[dict], board_snapshot: dict) -> Decision:
 
 
 async def decide(llm, *, history: list[dict], board_snapshot: dict,
-                 policy_summary: dict, hint: str = "") -> Decision:
+                 policy_summary: dict, hint: str = "", on_response=None) -> Decision:
     """Ask the supervisor model who should act next; fall back if it cannot."""
     fallback = deterministic_next(history, board_snapshot)
     if llm is None:
@@ -180,6 +180,8 @@ Who acts next?"""
 
         response = await llm.ainvoke([SystemMessage(content=prompt),
                                       HumanMessage(content=context)])
+        if on_response is not None:
+            on_response(response)       # the run counts the routing model's tokens
         # Gemini may answer with a list of content parts, not a string.
         text = _text(response) or ""
     except Exception as err:  # noqa: BLE001 - a model outage must not stop the run

@@ -5,6 +5,7 @@ an in-memory stand-in for shadow mode and local development.
 """
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Protocol, runtime_checkable
 
 from ..errors import ConfigError
@@ -45,6 +46,8 @@ class Store(Protocol):
     async def upsert_run(self, thread_id: str, **fields) -> None: ...
     async def get_run(self, thread_id: str) -> dict | None: ...
     async def list_runs(self, limit: int = 50) -> list[dict]: ...
+    # Model tokens spent by the runs created since ``since`` (the daily cap).
+    async def tokens_since(self, since: datetime) -> int: ...
 
     # The job queue workers pull from. One running job per thread, ever.
     async def enqueue_job(self, kind: str, thread_id: str, payload: dict | None = None,
