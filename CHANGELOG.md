@@ -36,6 +36,26 @@ written by newer code is refused until you update.
 - **Fixed: the Windows worker would never have added anyone in the cloud design.** It claimed the same ledger entry the run had already marked "submitted", so it skipped every job. The worker now has its own ledger entry, still idempotent across redeliveries.
 - **Fixed: a database URL with the password inline was ignored** when IAM database login was on, and a token was minted anyway.
 
+## 2026-10-03: enterprise track, part 3 (sign-in and roles)
+
+**Do after pulling:** set `ALM_ROLE_MAP` (or the Terraform `role_map`) before deploying. Without it nobody holds a role, and the API refuses everyone except the webhook.
+
+- **Company sign-in** (`ALM_AUTH_MODE=oidc`): the service signs people in against your IdP (Entra ID, Okta, Ping...).
+  - It uses the authorization code flow with PKCE, state and nonce.
+  - The session cookie is HttpOnly and SameSite=Strict, signed with a key every replica shares.
+  - Every change also needs a CSRF token.
+  - `iap` stays the default for the GCP deployment.
+- **Roles** from IdP groups or e-mail addresses: viewer, operator, approver, auditor, admin.
+
+  | Endpoint | Role needed |
+  |---|---|
+  | Run lists, details and traces | viewer |
+  | Start (new `POST /runs`) and stop runs | operator |
+  | The manual sweep | admin |
+
+  - Traces and audit events show e-mail addresses only to auditors.
+  - Someone with no role is refused at sign-in.
+
 ## 2026-10-03: enterprise track, part 2 (AD membership)
 
 **Do after pulling:** nothing.

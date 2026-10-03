@@ -150,6 +150,16 @@ variable "github_repository" {
   default     = ""
 }
 
+variable "role_map" {
+  description = "ALM_ROLE_MAP: JSON of IAP e-mail address (or '*') to role - viewer, operator, approver, auditor, admin."
+  type        = string
+  default     = "{}"
+  validation {
+    condition     = can(jsondecode(var.role_map))
+    error_message = "role_map must be a JSON object."
+  }
+}
+
 variable "max_instances" {
   description = "Most API+worker instances. Run state is in Postgres, so this may grow; each instance runs ALM_WORKER_CONCURRENCY runs at once."
   type        = number

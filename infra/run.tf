@@ -126,6 +126,14 @@ resource "google_cloud_run_v2_service" "api" {
         value = "gcp"
       }
       env {
+        name  = "ALM_AUTH_MODE"
+        value = "iap"
+      }
+      env {
+        name  = "ALM_ROLE_MAP"
+        value = var.role_map
+      }
+      env {
         name  = "ALM_DB_AUTH"
         value = "gcp_iam"
       }

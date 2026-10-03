@@ -9,9 +9,15 @@ Endpoints:
     GET  /runs/{thread}             one run: registry row, approval, audit trail
     POST /runs/{thread}/stop        stop a run after its current step
     GET  /runs/{thread}/trace       the run's trace records (cursor-paged)
+    POST /runs                      start a run (operator)
     GET  /queue                     job counts by status, and dead jobs
-    POST /admin/reconcile           queue a reconciliation sweep now
+    POST /admin/reconcile           queue a reconciliation sweep now (admin)
+    GET  /auth/login /auth/callback /auth/logout   OIDC sign-in (ALM_AUTH_MODE=oidc)
+    GET  /me                        who you are and what you may do
     GET  /healthz /readyz           liveness and readiness
+
+Everything except the webhook (HMAC), the health checks and sign-in needs a
+signed-in person with the right role - see ``alm_api.auth``.
 
 Nothing here runs a run. Every trigger becomes a job in the store's queue,
 and workers - embedded in this process (``ALM_WORKER_CONCURRENCY``, default 1)
@@ -30,11 +36,12 @@ from alm_core.credentials import build_resolver
 from alm_core.logging import configure, get_logger
 from alm_core.models import ApprovalDecision
 
+from . import auth
 from .security import caller_identity, verify_approval_token, verify_webhook
 
 try:
-    from fastapi import FastAPI, Header, HTTPException, Request
-    from fastapi.responses import HTMLResponse, JSONResponse
+    from fastapi import Depends, FastAPI, Header, HTTPException, Request
+    from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
     from pydantic import BaseModel, Field
 except ImportError as err:  # pragma: no cover
     raise ImportError("alm_api needs the cloud extras: "
@@ -60,6 +67,12 @@ class WebhookPayload(BaseModel):
 
 class StopPayload(BaseModel):
     reason: str = Field(default="", max_length=200)
+
+
+class StartPayload(BaseModel):
+    prompt: str = Field(min_length=1, max_length=2000)
+    mode: str = Field(default="dry", pattern="^(dry|commit)$")
+    confirm: str = Field(default="", max_length=20)
 
 
 class Runtime:
@@ -100,6 +113,59 @@ def thread_for(work_item_id: str) -> str:
 
 def _mode() -> str:
     return "dry" if runtime.settings.shadow_mode else "commit"
+
+
+# --------------------------------------------------------------- identity
+
+def current_user(request: Request) -> auth.User | None:
+    """The signed-in person, or None. Never trusts a header the proxy did not set."""
+    settings = runtime.settings
+    if getattr(settings, "auth_mode", "iap") == "oidc":
+        secret = runtime.secret(settings.session_secret_name)
+        if not secret:
+            return None
+        return auth.user_from_session(secret, request.cookies.get(auth.SESSION_COOKIE, ""))
+    identity = caller_identity(request.headers)
+    if identity == "unknown":
+        return None
+    return auth.User(subject=identity, email=identity,
+                     roles=auth.roles_for(email=identity,
+                                          role_map=getattr(settings, "role_map", "{}")))
+
+
+def require(role: str):
+    """A dependency: a signed-in person holding ``role``. In OIDC mode a request
+    that changes something must also carry the session's CSRF token."""
+
+    def check(request: Request) -> auth.User:
+        user = current_user(request)
+        if user is None:
+            raise HTTPException(status_code=401, detail="sign in first")
+        if not user.has(role):
+            raise HTTPException(status_code=403, detail=f"this needs the {role} role")
+        if (request.method not in ("GET", "HEAD") and
+                getattr(runtime.settings, "auth_mode", "iap") == "oidc" and
+                not secrets_equal(request.headers.get("x-csrf-token", ""), user.csrf)):
+            raise HTTPException(status_code=403, detail="missing or wrong CSRF token")
+        return user
+
+    return check
+
+
+def secrets_equal(a: str, b: str) -> bool:
+    import hmac
+
+    return bool(a) and bool(b) and hmac.compare_digest(a, b)
+
+
+def _masked(record: dict) -> dict:
+    """A trace record with e-mail addresses removed, for people without the
+    auditor role. User IDs stay: they are what an operator works with."""
+    import json
+
+    from alm_core.logging import redact_pii
+
+    return json.loads(redact_pii(json.dumps(record, default=str), keep_userids=True))
 
 
 @contextlib.asynccontextmanager
@@ -306,17 +372,19 @@ async def _record_decision(thread_id: str, *, approved: bool, approver: str,
 # ---------------------------------------------------------------------- runs
 
 @app.get("/runs")
-async def list_runs(limit: int = 50) -> dict:
+async def list_runs(limit: int = 50, _user=Depends(require("viewer"))) -> dict:
     return {"runs": await runtime.store.list_runs(min(max(limit, 1), 200))}
 
 
 @app.get("/runs/{thread_id}")
-async def get_run(thread_id: str) -> dict:
+async def get_run(thread_id: str, user=Depends(require("viewer"))) -> dict:
     run = await runtime.store.get_run(thread_id)
     if run is None:
         raise HTTPException(status_code=404, detail="unknown run")
     approval_request, decision = await runtime.store.get_approval(thread_id)
     events = await runtime.store.run_events(run["run_id"]) if run["run_id"] else []
+    if not user.has("auditor"):
+        events = [_masked(e) for e in events]
     return {**run,
             "approval": approval_request.model_dump(mode="json") if approval_request else None,
             "decision": decision.model_dump(mode="json") if decision else None,
@@ -324,14 +392,12 @@ async def get_run(thread_id: str) -> dict:
 
 
 @app.post("/runs/{thread_id}/stop", status_code=202)
-async def stop_run(thread_id: str, request: Request,
-                   payload: StopPayload | None = None) -> dict:
+async def stop_run(thread_id: str, payload: StopPayload | None = None,
+                   user=Depends(require("operator"))) -> dict:
     """Stop a run after its current step. A write in progress always finishes."""
     from alm_agents.worker import request_stop
 
-    identity = caller_identity(request.headers)
-    if identity == "unknown":
-        raise HTTPException(status_code=401, detail="an authenticated caller is required")
+    identity = user.identity
     try:
         status = await request_stop(runtime.store, thread_id, identity)
     except LookupError:
@@ -342,30 +408,135 @@ async def stop_run(thread_id: str, request: Request,
 
 
 @app.get("/runs/{thread_id}/trace")
-async def run_trace(thread_id: str, after: int = 0, limit: int = 500) -> dict:
+async def run_trace(thread_id: str, after: int = 0, limit: int = 500,
+                    user=Depends(require("viewer"))) -> dict:
     if await runtime.store.get_run(thread_id) is None:
         raise HTTPException(status_code=404, detail="unknown run")
     records = await runtime.store.trace_since(thread_id, after=max(after, 0),
                                               limit=min(max(limit, 1), 2000))
-    return {"records": records, "next": records[-1]["cursor"] if records else after}
+    following = records[-1]["cursor"] if records else after
+    if not user.has("auditor"):
+        records = [_masked(r) for r in records]
+    return {"records": records, "next": following}
+
+
+@app.post("/runs", status_code=201)
+async def start_run(payload: StartPayload, user=Depends(require("operator"))) -> dict:
+    """Start a run from a request in plain words. Work items are the numbers in
+    it; writing needs 1-5 of them and the confirmation word. The words never
+    choose the mode or widen the scope."""
+    import uuid
+
+    from alm_agents.web import RequestRefused, parse_request
+    from alm_agents.worker import submit_run
+
+    settings = runtime.settings
+    if payload.mode == "commit" and settings.shadow_mode:
+        raise HTTPException(status_code=422, detail="this deployment does not write")
+    try:
+        work_items = parse_request(payload.prompt, payload.mode, payload.confirm,
+                                   settings.environment)
+    except RequestRefused as err:
+        raise HTTPException(status_code=422, detail=str(err)) from None
+    thread_id = (thread_for(work_items[0]) if len(work_items) == 1
+                 else f"console-{uuid.uuid4().hex[:10]}")
+    job = await submit_run(runtime.store, thread_id=thread_id, work_item_ids=work_items,
+                           mode=payload.mode, requested_by=user.identity, trigger="console",
+                           operator_request=payload.prompt.strip(),
+                           environment=settings.environment)
+    if job is None:
+        raise HTTPException(status_code=409, detail=f"{thread_id} is already queued or running")
+    return {"thread_id": thread_id, "work_items": work_items, "mode": payload.mode}
 
 
 @app.get("/queue")
-async def queue() -> dict:
+async def queue(_user=Depends(require("viewer"))) -> dict:
     return {"depth": await runtime.store.queue_depth(),
             "dead": await runtime.store.list_jobs(status="dead", limit=50)}
 
 
 @app.post("/admin/reconcile", status_code=202)
-async def force_reconcile(request: Request) -> dict:
+async def force_reconcile(user=Depends(require("admin"))) -> dict:
     """Queue a sweep of the active queue now, without waiting for the schedule."""
     from alm_agents.worker import submit_run
 
-    identity = caller_identity(request.headers)
-    if identity == "unknown":
-        raise HTTPException(status_code=401, detail="an authenticated caller is required")
+    identity = user.identity
     thread_id = f"reconcile-manual-{int(time.time())}"
     await submit_run(runtime.store, thread_id=thread_id, work_item_ids=None, mode=_mode(),
                      requested_by=identity, trigger="reconcile",
                      environment=runtime.settings.environment)
     return {"accepted": True, "thread_id": thread_id}
+
+
+# ------------------------------------------------------------------ sign-in
+
+def _base_url(request: Request) -> str:
+    return (runtime.settings.approval_base_url or str(request.base_url)).rstrip("/")
+
+
+def _oidc() -> auth.Oidc:
+    settings = runtime.settings
+    if getattr(settings, "auth_mode", "iap") != "oidc":
+        raise HTTPException(status_code=404, detail="sign-in is handled by the proxy")
+    client_secret = runtime.secret(settings.oidc_client_secret_name)
+    if not (settings.oidc_issuer and settings.oidc_client_id and client_secret and
+            runtime.secret(settings.session_secret_name)):
+        raise HTTPException(status_code=503, detail="OIDC sign-in is not configured")
+    return auth.Oidc(settings, client_secret)
+
+
+@app.get("/auth/login")
+async def login(request: Request) -> RedirectResponse:
+    oidc = _oidc()
+    url, pending = oidc.start(f"{_base_url(request)}/auth/callback")
+    response = RedirectResponse(url, status_code=303)
+    response.set_cookie(auth.LOGIN_COOKIE,
+                        auth.sign(runtime.secret(runtime.settings.session_secret_name),
+                                  pending),
+                        max_age=auth.LOGIN_SECONDS, httponly=True, secure=True,
+                        samesite="lax", path="/auth")
+    return response
+
+
+@app.get("/auth/callback")
+async def callback(request: Request, code: str = "", state: str = "") -> RedirectResponse:
+    oidc = _oidc()
+    secret = runtime.secret(runtime.settings.session_secret_name)
+    pending = auth.unsign(secret, request.cookies.get(auth.LOGIN_COOKIE, ""))
+    if pending is None or not state or not secrets_equal(state, pending.get("state", "")):
+        raise HTTPException(status_code=400, detail="sign-in expired or was not started here")
+    try:
+        claims = oidc.finish(code=code, redirect_uri=f"{_base_url(request)}/auth/callback",
+                             login=pending)
+    except PermissionError as err:
+        log.warning("sign_in_refused", reason=str(err))
+        raise HTTPException(status_code=401, detail=str(err)) from None
+    user = oidc.user(claims)
+    if not user.roles:
+        log.warning("sign_in_without_role", identity=user.identity)
+        raise HTTPException(status_code=403, detail=f"{user.identity} has no role here")
+    log.info("signed_in", identity=user.identity, roles=sorted(user.roles))
+    response = RedirectResponse("/", status_code=303)
+    response.delete_cookie(auth.LOGIN_COOKIE, path="/auth")
+    response.set_cookie(auth.SESSION_COOKIE,
+                        auth.session_for(secret, user, runtime.settings.session_hours),
+                        max_age=int(runtime.settings.session_hours * 3600), httponly=True,
+                        secure=True, samesite="strict", path="/")
+    return response
+
+
+@app.get("/auth/logout")
+async def logout() -> RedirectResponse:
+    response = RedirectResponse("/", status_code=303)
+    response.delete_cookie(auth.SESSION_COOKIE, path="/")
+    return response
+
+
+@app.get("/me")
+async def me(request: Request) -> dict:
+    user = current_user(request)
+    if user is None:
+        raise HTTPException(status_code=401, detail="sign in first")
+    return {**user.public(), "csrf": user.csrf,
+            "environment": runtime.settings.environment,
+            "writes": not runtime.settings.shadow_mode}
