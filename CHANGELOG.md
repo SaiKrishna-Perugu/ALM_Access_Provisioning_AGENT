@@ -36,6 +36,18 @@ written by newer code is refused until you update.
 - **Fixed: the Windows worker would never have added anyone in the cloud design.** It claimed the same ledger entry the run had already marked "submitted", so it skipped every job. The worker now has its own ledger entry, still idempotent across redeliveries.
 - **Fixed: a database URL with the password inline was ignored** when IAM database login was on, and a token was minted anyway.
 
+## 2026-10-03: enterprise track, part 5 (the console in the cloud)
+
+**Do after pulling:** nothing.
+
+- **The cloud API serves the web console at `/`** to signed-in people.
+  - It is the same page as the laptop console, backed by the shared database, so any replica shows any run live.
+  - It shows the activity, the Trace tab (with download), and Stop.
+- **The page follows roles.** Viewers don't see the request box, only operators see Stop, and only approvers can vote.
+- **The approval card shows the votes so far** and how many are needed. An announcement link (`?run=<thread-id>`) opens that run.
+- **Cloud dry runs no longer park for approval.** A dry run's card is a preview: it is recorded in the trace and the run carries on to its end, as on a laptop. Nobody is asked to vote on a run that cannot write.
+- **Requests from another site are refused,** whatever the sign-in mode.
+
 ## 2026-10-03: enterprise track, part 4 (two approvers)
 
 **Do after pulling:** give approvers the `approver` role in `ALM_ROLE_MAP`. Production now needs two of them. In the GCP Terraform, the secret `alm-approval-signing-key` is replaced by `alm-session-signing-key`.

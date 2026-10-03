@@ -15,6 +15,7 @@ Endpoints:
     POST /admin/reconcile           queue a reconciliation sweep now (admin)
     GET  /auth/login /auth/callback /auth/logout   OIDC sign-in (ALM_AUTH_MODE=oidc)
     GET  /me                        who you are and what you may do
+    GET  /  and /api/*              the web console (``alm_api.console``)
     GET  /healthz /readyz           liveness and readiness
 
 Everything except the webhook (HMAC), the health checks and sign-in needs a
@@ -31,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
+from urllib.parse import urlsplit
 
 from alm_core.credentials import build_resolver
 from alm_core.logging import configure, get_logger
@@ -142,6 +144,11 @@ def require(role: str):
             raise HTTPException(status_code=401, detail="sign in first")
         if not user.has(role):
             raise HTTPException(status_code=403, detail=f"this needs the {role} role")
+        origin = request.headers.get("origin", "")
+        if (request.method not in ("GET", "HEAD") and origin and
+                urlsplit(origin).netloc != request.headers.get("host", "")):
+            # A browser on another site riding the proxy's or our session cookie.
+            raise HTTPException(status_code=403, detail="request from another site")
         if (request.method not in ("GET", "HEAD") and
                 getattr(runtime.settings, "auth_mode", "iap") == "oidc" and
                 not secrets_equal(request.headers.get("x-csrf-token", ""), user.csrf)):
@@ -509,3 +516,10 @@ async def me(request: Request) -> dict:
     return {**user.public(), "csrf": user.csrf,
             "environment": runtime.settings.environment,
             "writes": not runtime.settings.shadow_mode}
+
+
+# ------------------------------------------------------------------ console
+
+from .console import router as console_router  # noqa: E402 - routes use this module
+
+app.include_router(console_router)

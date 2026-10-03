@@ -35,7 +35,10 @@ async function api(path, options = {}) {
   });
   let data = {};
   try { data = await response.json(); } catch (_) { /* empty body */ }
-  if (!response.ok) throw new Error(data.error || `request failed (${response.status})`);
+  if (!response.ok) {
+    // The laptop console says {error}, the cloud API {detail}.
+    throw new Error(data.error || data.detail || `request failed (${response.status})`);
+  }
   return data;
 }
 
@@ -129,10 +132,16 @@ function statusPill(status) {
 }
 
 // The Stop button shows while the selected run can still be stopped.
+function can(role) {
+  // The laptop console has one person, who may do everything.
+  const roles = state.session && state.session.roles;
+  return !roles || roles.includes(role) || roles.includes("admin");
+}
+
 function renderStop(status) {
   state.status = status;
   const stop = $("stop");
-  stop.hidden = !ACTIVE.includes(status);
+  stop.hidden = !ACTIVE.includes(status) || !can("operator");
   stop.disabled = status === "stopping";
   stop.textContent = status === "stopping" ? "Stopping…" : "Stop run";
 }
@@ -529,6 +538,18 @@ function renderApproval(card, preview) {
   });
   box.append(list);
   if (preview) return;
+  if (card.needed) {
+    // The cloud console: the two-person rule, and who has voted.
+    const votes = card.votes || [];
+    const approvals = votes.filter((v) => v.approved).map((v) => v.approver);
+    box.append(el("p", "reason", `${approvals.length} of ${card.needed} approval(s)` +
+      (approvals.length ? `: ${approvals.join(", ")}` : "") +
+      (card.needed > 1 ? ". Two different people, neither the one who started the run." : "")));
+  }
+  if (card.can_vote === false) {
+    box.append(el("p", "muted", "Deciding needs the approver role."));
+    return;
+  }
   const actions = el("div", "decide");
   const approve = el("button", "approve", "Approve selected");
   const reject = el("button", "reject", "Reject");
@@ -537,8 +558,13 @@ function renderApproval(card, preview) {
     const userids = [...list.querySelectorAll("input:checked")].map((i) => i.value);
     approve.disabled = reject.disabled = true;
     try {
-      await api(`/api/runs/${encodeURIComponent(state.current)}/decision`,
+      const answer = await api(`/api/runs/${encodeURIComponent(state.current)}/decision`,
         { method: "POST", body: { approved, userids } });
+      if (answer.tally && !answer.tally.complete) {
+        actions.remove();
+        box.append(el("p", "reason",
+          `Your decision is recorded. Waiting for ${answer.tally.needed - answer.tally.approvals.length} more approver(s).`));
+      }
     } catch (err) {
       approve.disabled = reject.disabled = false;
       box.append(el("p", "form-error", err.message));
@@ -645,7 +671,17 @@ async function boot() {
     $("hosts").title = `EWM ${s.ewm_host}, JTS ${s.jts_host}`;
   }
   $("model").textContent = `${s.model} · ${s.orchestration}`;
-  $("operator").textContent = s.operator;
+  $("operator").textContent = s.roles ? `${s.operator} · ${s.roles.join(", ")}` : s.operator;
+  if (s.hosted && s.auth_mode === "oidc") $("signout").hidden = false;
+  if (s.hosted) $("runs-label").textContent = "Recent runs";
+  if (!can("operator")) {
+    // A viewer or approver sees runs; starting them is the operator's.
+    $("request").hidden = true;
+    $("composer-help").hidden = true;
+    $("ask").textContent = "Runs";
+    $("composer-note").hidden = false;
+  }
+  if (s.hosted && !s.writes) $("write-mode").disabled = true;
   $("confirm-word").textContent = s.confirm_word;
   $("confirm-env").textContent = s.sandbox ? "the simulated estate" : s.environment;
   examples();
@@ -660,7 +696,9 @@ async function boot() {
   $("request").addEventListener("submit", submit);
   resetTrace();
   const runs = await refreshRuns();
-  const active = runs.find((r) => ACTIVE.includes(r.status));
+  // A link from an approval announcement: <console>/?run=<thread-id>.
+  const linked = new URLSearchParams(window.location.search).get("run");
+  const active = runs.find((r) => r.id === linked) || runs.find((r) => ACTIVE.includes(r.status));
   if (active) selectRun(active.id);
   setInterval(() => { refreshRuns().catch(() => {}); }, 8000);
 }

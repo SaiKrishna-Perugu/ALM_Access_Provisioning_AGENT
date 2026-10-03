@@ -117,6 +117,7 @@ button, input, textarea { font: inherit; color: inherit; }
   padding: 5px 9px; cursor: pointer; color: var(--ink-2);
 }
 .iconbtn:hover { border-color: var(--rule-strong); color: var(--ink); }
+a.iconbtn { text-decoration: none; display: inline-flex; align-items: center; }
 
 /* -------------------------------------------------------------- layout */
 .layout {
