@@ -429,6 +429,15 @@ vulnerability. Read which package it is in the log:
 
 ---
 
+## 7f. Recovery
+
+The restore procedure, the drill and why a restored run is safe to resume are
+in [DR.md](DR.md). In short: switch to shadow mode, clone the database to the
+last good point, repoint the services, re-run as a dry run, then turn writes
+back on.
+
+---
+
 ## 8. Connectivity
 
 The failure that looks like everything else.
@@ -466,7 +475,20 @@ is what makes the rest of the investigation possible.
 
 ## 10. Data Retention and Cleanup (30-Day Policy)
 
-Local runs and CLI executions generate operational files in `out/` and `out/local/` that may contain transient personal data (usernames, screenshots, query responses).
+**In the cloud** the workers do it. Once a day, the worker holding the
+scheduler lease queues `retention-<date>`. That job deletes finished runs
+(done, stopped, failed) that last changed more than `ALM_RETENTION_DAYS` ago
+(default 30), together with:
+- their checkpoints, traces, approval cards, votes, stop requests and finished jobs;
+- old webhook deliveries;
+- agent memory older than the cutoff.
+
+The ledger and the audit trail are never touched. A run still parked at the
+approval gate is never purged. The counts are on the `retention-<date>` run in
+the console. If the job failed, its error is there too, and tomorrow's job
+tries again. Backups keep purged rows for up to 35 days ([DR.md](DR.md)).
+
+**On a laptop**, local runs and CLI executions generate operational files in `out/` and `out/local/` that may contain transient personal data (usernames, screenshots, query responses).
 
 ### Retention Policy
 - **Maximum Retention:** 30 days for the agents' checkpoints, approval cards, memory, reports and evidence, and for the CLI's screenshots (`out/screenshots`), user caches (`out/alm_users*.json`) and `comment_capture.json`.

@@ -22,6 +22,11 @@ JOB_SELECT = ("id", "kind", "thread_id", "payload", "status", "attempts", "avail
 
 RUN_STATUSES = ("queued", "running", "awaiting_approval", "stopping", "done", "stopped",
                 "failed")
+# Runs retention may delete: nothing more will happen to them.
+FINISHED = ("done", "stopped", "failed")
+# What goes with a purged run: (table, count name). Never the ledger or audit.
+PURGED_WITH_RUN = (("alm_trace_event", "traces"), ("alm_approval_vote", "votes"),
+                   ("alm_approval", "approvals"), ("alm_run_control", "stops"))
 
 
 def log_audit(log, event) -> None:

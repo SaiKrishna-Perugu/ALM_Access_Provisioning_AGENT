@@ -1,17 +1,64 @@
-// Cloud Run service, and the internal load balancer with IAP in front of it.
+// Cloud Run services, and the internal load balancer with IAP in front of the API.
 //
-// The API process also runs the run workers (ALM_WORKER_CONCURRENCY): they
-// claim jobs from the Postgres queue, and the one holding the scheduler lease
-// queues the reconciliation sweep. Two settings follow from that:
+// Two shapes, chosen by var.worker_image:
 //
-//   min_instance_count = 1  something must be up to claim jobs and schedule
-//                           the sweep. Scaled to zero, queued runs wait.
-//   cpu_idle = false        Cloud Run throttles CPU between requests by default,
-//                           which would freeze the workers, the scheduler and
-//                           any run waiting on a 30-minute permission poll.
+//   empty (default)  one service, the all-in-one image: the API process also
+//                    runs the run workers (ALM_WORKER_CONCURRENCY).
+//   set              the API (the api image, no browser, no workers) plus a
+//                    worker service (the worker image) that scales on its own,
+//                    from var.worker_min_instances to var.worker_max_instances.
+//
+// Whichever runs the workers needs two settings:
+//
+//   min_instance_count >= 1  something must be up to claim jobs and schedule
+//                            the sweep and the retention purge.
+//   cpu_idle = false         Cloud Run throttles CPU between requests by
+//                            default, which would freeze the workers, the
+//                            scheduler and any run waiting on a permission poll.
 //
 // Instances can scale out: run state lives in Postgres, a thread is never
 // handed to two workers, and a dead instance's runs are taken over by another.
+
+locals {
+  split_workers = var.worker_image != ""
+
+  // Every setting the API and the workers share.
+  run_env = {
+    ALM_ENVIRONMENT      = upper(var.environment)
+    ALM_SHADOW_MODE      = tostring(var.shadow_mode)
+    ALM_ORCHESTRATION    = var.orchestration
+    ALM_REGION           = var.region
+    ALM_LLM_PROVIDER     = var.llm_provider
+    ALM_AGENT_MODEL      = var.agent_model
+    ALM_SUPERVISOR_MODEL = var.supervisor_model
+    EWM_SERVER           = var.ewm_server
+    JTS_SERVER           = var.jts_server
+    ALM_IAP_AUDIENCE     = var.iap_audience
+    CID                  = var.service_account_cid
+    ALM_CA_BUNDLE        = "/etc/ssl/certs/corporate-ca.pem"
+    ALM_AD_JOB_TRANSPORT = "pubsub"
+    ALM_PUBSUB_TOPIC     = google_pubsub_topic.ad_jobs.name
+    ALM_SECRET_BACKEND   = "gcp" // pragma: allowlist secret - names the secret store, holds no secret
+    ALM_AUTH_MODE        = "iap"
+    ALM_ROLE_MAP         = var.role_map
+    ALM_RETENTION_DAYS   = tostring(var.retention_days)
+    // Spans and metrics over OTLP/HTTP, to a collector that forwards them to
+    // Cloud Trace and Managed Prometheus. Off when no endpoint is set.
+    ALM_OTEL_ENABLED            = tostring(var.otel_endpoint != "")
+    OTEL_EXPORTER_OTLP_ENDPOINT = var.otel_endpoint
+    ALM_DB_AUTH                 = "gcp_iam"
+    ALM_APPROVAL_BASE_URL       = "https://${local.api_hostname}"
+    // IAM database authentication: no password in the DSN. The application
+    // appends a short-lived access token at connect time.
+    ALM_POSTGRES_DSN = join("", [
+      "postgresql://",
+      trimsuffix(google_service_account.run.email, ".gserviceaccount.com"),
+      "@", google_sql_database_instance.main.private_ip_address,
+      ":5432/", google_sql_database.alm.name,
+      "?sslmode=require",
+    ])
+  }
+}
 
 resource "google_cloud_run_v2_service" "api" {
   name     = "${local.prefix}-api"
@@ -61,107 +108,17 @@ resource "google_cloud_run_v2_service" "api" {
         container_port = 8080
       }
 
-      env {
-        name  = "ALM_ENVIRONMENT"
-        value = upper(var.environment)
-      }
-      env {
-        name  = "ALM_SHADOW_MODE"
-        value = tostring(var.shadow_mode)
-      }
-      env {
-        name  = "ALM_WORKER_CONCURRENCY"
-        value = tostring(var.worker_concurrency)
-      }
-      env {
-        name  = "ALM_ORCHESTRATION"
-        value = var.orchestration
-      }
-      env {
-        name  = "ALM_REGION"
-        value = var.region
-      }
-      env {
-        name  = "ALM_LLM_PROVIDER"
-        value = var.llm_provider
-      }
-      env {
-        name  = "ALM_AGENT_MODEL"
-        value = var.agent_model
-      }
-      env {
-        name  = "ALM_SUPERVISOR_MODEL"
-        value = var.supervisor_model
-      }
-      env {
-        name  = "EWM_SERVER"
-        value = var.ewm_server
-      }
-      env {
-        name  = "JTS_SERVER"
-        value = var.jts_server
-      }
-      env {
-        name  = "ALM_IAP_AUDIENCE"
-        value = var.iap_audience
-      }
-      env {
-        name  = "CID"
-        value = var.service_account_cid
-      }
-      env {
-        name  = "ALM_CA_BUNDLE"
-        value = "/etc/ssl/certs/corporate-ca.pem"
-      }
-      env {
-        name  = "ALM_AD_JOB_TRANSPORT"
-        value = "pubsub"
-      }
-      env {
-        name  = "ALM_PUBSUB_TOPIC"
-        value = google_pubsub_topic.ad_jobs.name
-      }
-      env {
-        name  = "ALM_SECRET_BACKEND"
-        value = "gcp"
-      }
-      env {
-        name  = "ALM_AUTH_MODE"
-        value = "iap"
-      }
-      env {
-        name  = "ALM_ROLE_MAP"
-        value = var.role_map
-      }
-      env {
-        // Spans and metrics over OTLP/HTTP, to a collector that forwards them
-        // to Cloud Trace and Managed Prometheus. Off when no endpoint is set.
-        name  = "ALM_OTEL_ENABLED"
-        value = tostring(var.otel_endpoint != "")
-      }
-      env {
-        name  = "OTEL_EXPORTER_OTLP_ENDPOINT"
-        value = var.otel_endpoint
-      }
-      env {
-        name  = "ALM_DB_AUTH"
-        value = "gcp_iam"
-      }
-      env {
-        name  = "ALM_APPROVAL_BASE_URL"
-        value = "https://${local.api_hostname}"
-      }
-      env {
-        // IAM database authentication: no password in the DSN. The application
-        // appends a short-lived access token at connect time.
-        name = "ALM_POSTGRES_DSN"
-        value = join("", [
-          "postgresql://",
-          trimsuffix(google_service_account.run.email, ".gserviceaccount.com"),
-          "@", google_sql_database_instance.main.private_ip_address,
-          ":5432/", google_sql_database.alm.name,
-          "?sslmode=require",
-        ])
+      // The same settings as the worker service (local.run_env), so the two
+      // cannot drift. This service runs workers only when there is no worker
+      // service.
+      dynamic "env" {
+        for_each = merge(local.run_env, {
+          ALM_WORKER_CONCURRENCY = local.split_workers ? "0" : tostring(var.worker_concurrency)
+        })
+        content {
+          name  = env.key
+          value = env.value
+        }
       }
 
       // The service account password is mounted as a file rather than an
@@ -178,7 +135,108 @@ resource "google_cloud_run_v2_service" "api" {
         }
         initial_delay_seconds = 10
         period_seconds        = 10
-        failure_threshold     = 12 // Playwright's chromium makes cold start slow
+        failure_threshold     = 12 // the all-in-one image's Chromium makes cold start slow
+      }
+
+      liveness_probe {
+        http_get {
+          path = "/healthz"
+          port = 8080
+        }
+        period_seconds = 30
+      }
+    }
+
+    volumes {
+      name = "secrets"
+      secret {
+        secret = google_secret_manager_secret.secrets["password"].secret_id
+        items {
+          version = "latest"
+          path    = local.secret_ids.password
+          mode    = 0400
+        }
+      }
+    }
+  }
+
+  depends_on = [
+    google_project_iam_member.run,
+    google_secret_manager_secret_iam_member.run,
+  ]
+}
+
+// ------------------------------------------------------------ run workers
+// Only with var.worker_image. Nothing calls it: no ingress beyond the VPC and
+// no invoker binding. It answers its own liveness probe on /healthz.
+resource "google_cloud_run_v2_service" "worker" {
+  count    = local.split_workers ? 1 : 0
+  name     = "${local.prefix}-worker"
+  location = var.region
+  labels   = local.labels
+  ingress  = "INGRESS_TRAFFIC_INTERNAL_ONLY"
+
+  deletion_protection = var.environment == "prod"
+
+  template {
+    service_account = google_service_account.run.email
+
+    scaling {
+      min_instance_count = var.worker_min_instances
+      max_instance_count = var.worker_max_instances
+    }
+
+    vpc_access {
+      network_interfaces {
+        network    = google_compute_network.vpc.id
+        subnetwork = google_compute_subnetwork.run.id
+      }
+      egress = "ALL_TRAFFIC"
+    }
+
+    // A worker drains on SIGTERM: Cloud Run allows ten seconds, so a step in
+    // progress may be cut short. Its run is taken over from the checkpoint and
+    // the ledger turns any finished write into a replay.
+    containers {
+      image = var.worker_image
+
+      resources {
+        limits = {
+          cpu    = "2"
+          memory = "4Gi"
+        }
+        cpu_idle          = false // workers poll the queue between requests
+        startup_cpu_boost = true
+      }
+
+      ports {
+        container_port = 8080
+      }
+
+      dynamic "env" {
+        for_each = merge(local.run_env, {
+          ALM_WORKER_CONCURRENCY = tostring(var.worker_concurrency)
+          ALM_WORKER_HEALTH_PORT = "8080"
+        })
+        content {
+          name  = env.key
+          value = env.value
+        }
+      }
+
+      volume_mounts {
+        name       = "secrets"
+        mount_path = "/secrets"
+      }
+
+      startup_probe {
+        http_get {
+          path = "/healthz"
+          port = 8080
+        }
+        initial_delay_seconds = 5
+        period_seconds        = 10
+        failure_threshold     = 12
       }
 
       liveness_probe {

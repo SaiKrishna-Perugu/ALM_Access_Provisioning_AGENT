@@ -28,7 +28,9 @@ from ..logging import get_logger
 from ..models import ApprovalDecision, ApprovalRequest, AuditEvent, Operation, ProvisionResult
 from .postgres import CLAIM_LEASE
 from .runs import (
+    FINISHED,
     JOB_SELECT,
+    PURGED_WITH_RUN,
     RUN_SELECT,
     job_row,
     next_job_status,
@@ -599,6 +601,40 @@ class SqliteStore:
         async with self._lock:
             await self._conn().execute("DELETE FROM alm_run_control WHERE thread_id = ?",
                                        (thread_id,))
+
+    async def purge_before(self, cutoff: datetime) -> dict:
+        since = _ts(cutoff)
+        async with self._lock:
+            db = self._conn()
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                marks = ", ".join("?" for _ in FINISHED)
+                rows = await self._fetchall(
+                    f"SELECT thread_id FROM alm_run WHERE status IN ({marks}) "  # noqa: S608 - placeholders only
+                    "AND updated_at < ?", (*FINISHED, since))
+                threads = [row[0] for row in rows]
+                counts: dict = {"runs": len(threads)}
+                within = ", ".join("?" for _ in threads) or "NULL"
+                for table, key in PURGED_WITH_RUN:
+                    cursor = await db.execute(
+                        f"DELETE FROM {table} WHERE thread_id IN ({within})",  # noqa: S608 - fixed table names, placeholders
+                        tuple(threads))
+                    counts[key] = cursor.rowcount or 0
+                cursor = await db.execute(
+                    "DELETE FROM alm_run_job WHERE status IN ('done', 'dead') AND "  # noqa: S608 - placeholders only
+                    f"(thread_id IN ({within}) OR created_at < ?)",
+                    (*threads, since))
+                counts["jobs"] = cursor.rowcount or 0
+                await db.execute(f"DELETE FROM alm_run WHERE thread_id IN ({within})",  # noqa: S608
+                                 tuple(threads))
+                cursor = await db.execute("DELETE FROM alm_webhook_seen WHERE seen_at < ?",
+                                          (since,))
+                counts["deliveries"] = cursor.rowcount or 0
+                await db.execute("COMMIT")
+            except BaseException:
+                await db.execute("ROLLBACK")
+                raise
+        return {"threads": threads, **counts}
 
     # ------------------------------------------------- replay and leadership
 

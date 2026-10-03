@@ -104,15 +104,19 @@ FROM base AS worker
 
 RUN playwright install --with-deps chromium \
  && rm -rf /var/lib/apt/lists/*
+# GET /healthz for the platform's liveness probe. Beyond that, a worker that
+# dies stops renewing its job leases and another worker takes its runs over.
+ENV ALM_WORKER_HEALTH_PORT=8080
 USER alm
-# No port and no health endpoint: a worker that dies stops renewing its job
-# leases, and another worker takes its runs over.
+EXPOSE 8080
 CMD ["python", "-m", "alm_agents.worker"]
 
 
 # ============================================================== all-in-one
 FROM worker AS all-in-one
 
+# The API serves 8080 here; its embedded workers need no listener of their own.
+ENV ALM_WORKER_HEALTH_PORT=0
 USER alm
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \

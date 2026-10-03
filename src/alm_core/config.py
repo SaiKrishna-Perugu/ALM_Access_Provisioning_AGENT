@@ -336,6 +336,15 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------- polls
     reconcile_interval_minutes: int = Field(
         default=15, ge=0, description="Minutes between queue sweeps; 0 turns the sweep off.")
+    retention_days: int = Field(
+        default=30, ge=0,
+        description=("Delete finished runs' data (checkpoints, traces, approval cards, "
+                     "votes, agent memory) this many days after they last changed, once a "
+                     "day. The ledger and the audit trail are kept. 0 keeps everything."))
+    worker_health_port: int = Field(
+        default=0, ge=0, le=65535,
+        description=("A run worker answers GET /healthz on this port, for a platform's "
+                     "liveness probe. 0: no listener."))
     permission_wait_minutes: int = Field(default=30, ge=0)
     permission_interval_minutes: int = Field(default=5, ge=1)
     jazz_role: str = Field(default="JazzUsers")

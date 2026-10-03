@@ -19,7 +19,8 @@ gives the detail; what changed for operators is in [CHANGELOG.md](../CHANGELOG.m
 | M10 AI governance, eval gate, cost caps | Done |
 | M11 OpenTelemetry, metrics, alerts, append-only audit | Done |
 | M12 images and supply chain (targets, scan, SBOM, signing, Semgrep) | Done |
-| M13-M14 DR, retention, worker scaling, per-cloud IaC, pipeline | Next |
+| M13 DR, cloud retention, separate worker service, CMEK option | Done |
+| M14 per-cloud IaC (AWS, Azure skeletons), pipeline | Next |
 | M15 PROD shadow and staged enablement | Needs the client network |
 
 ## 1. Where we are
@@ -273,6 +274,15 @@ roughly halves calendar time from Phase 2 on.
   controls): access reviews, change records, audit retention, DR tests.
 - **Exit:** clean pen test (or accepted findings), signed images only, security
   sign-off from the client.
+- **Built (M13):**
+  - [DR.md](DR.md): state inventory, RPO and RTO, restore procedure, drill, and resume safety after a restore;
+  - the daily cloud retention job (the ledger and audit are kept);
+  - a separate, independently scaled worker service with a health probe;
+  - the CMEK option on Cloud SQL.
+- **Still open (M13):**
+  - the first restore drill on TEST, which measures the real RTO;
+  - CMEK key creation and the service-agent grant (client-owned);
+  - WAF on the internal load balancer.
 - **Built (M12):**
   - Dockerfile targets `api` (no browser), `worker` and `all-in-one`. Each is non-root, runs with a read-only root (only /tmp writable) and has no pip, on a base pinned by digest.
   - The `image.yml` PR workflow builds both targets, gates on a Trivy scan (any fixable HIGH or CRITICAL), and proves the api runs read-only and Chromium starts.

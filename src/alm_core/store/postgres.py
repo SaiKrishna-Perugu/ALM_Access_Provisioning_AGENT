@@ -34,7 +34,9 @@ from ..errors import ConfigError, IdempotencyViolation
 from ..logging import get_logger
 from ..models import ApprovalDecision, ApprovalRequest, AuditEvent, Operation, ProvisionResult
 from .runs import (
+    FINISHED,
     JOB_SELECT,
+    PURGED_WITH_RUN,
     RUN_SELECT,
     job_row,
     log_audit,
@@ -638,6 +640,27 @@ class PostgresStore:
     async def clear_stop(self, thread_id: str) -> None:
         async with self._conn() as conn, conn.cursor() as cur:
             await cur.execute("DELETE FROM alm_run_control WHERE thread_id = %s", (thread_id,))
+
+    async def purge_before(self, cutoff: datetime) -> dict:
+        async with self._conn() as conn, conn.cursor() as cur:
+            await cur.execute(
+                "SELECT thread_id FROM alm_run WHERE status = ANY(%s) AND updated_at < %s",
+                (list(FINISHED), cutoff))
+            threads = [row[0] for row in await cur.fetchall()]
+            counts: dict = {"runs": len(threads)}
+            for table, key in PURGED_WITH_RUN:
+                await cur.execute(
+                    f"DELETE FROM {table} WHERE thread_id = ANY(%s)",  # noqa: S608 - fixed table names
+                    (threads,))
+                counts[key] = cur.rowcount
+            await cur.execute(
+                "DELETE FROM alm_run_job WHERE status IN ('done', 'dead') "
+                "AND (thread_id = ANY(%s) OR created_at < %s)", (threads, cutoff))
+            counts["jobs"] = cur.rowcount
+            await cur.execute("DELETE FROM alm_run WHERE thread_id = ANY(%s)", (threads,))
+            await cur.execute("DELETE FROM alm_webhook_seen WHERE seen_at < %s", (cutoff,))
+            counts["deliveries"] = cur.rowcount
+        return {"threads": threads, **counts}
 
     # ------------------------------------------------- replay and leadership
 

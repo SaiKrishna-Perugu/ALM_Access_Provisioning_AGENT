@@ -150,6 +150,40 @@ variable "github_repository" {
   default     = ""
 }
 
+variable "worker_image" {
+  description = "Image (by digest) for a separate run-worker service: the Dockerfile's worker target. Empty: one service runs the API and the workers (container_image is then the all-in-one target)."
+  type        = string
+  default     = ""
+}
+
+variable "worker_min_instances" {
+  description = "Run workers always up when worker_image is set. At least 1: something must claim jobs and run the scheduler."
+  type        = number
+  default     = 1
+  validation {
+    condition     = var.worker_min_instances >= 1
+    error_message = "worker_min_instances must be at least 1."
+  }
+}
+
+variable "worker_max_instances" {
+  description = "Upper bound on run-worker instances when worker_image is set."
+  type        = number
+  default     = 3
+}
+
+variable "db_kms_key" {
+  description = "Cloud KMS key (projects/.../cryptoKeys/...) for Cloud SQL encryption at rest (CMEK). Empty: Google-managed keys. Only takes effect when the instance is created."
+  type        = string
+  default     = ""
+}
+
+variable "retention_days" {
+  description = "ALM_RETENTION_DAYS: finished runs' data (checkpoints, traces, cards, memory) is deleted after this many days. The ledger and audit trail are kept. 0 keeps everything."
+  type        = number
+  default     = 30
+}
+
 variable "otel_endpoint" {
   description = "OTLP/HTTP endpoint of an OpenTelemetry collector (a sidecar, or a shared collector on the VPC) that forwards to Cloud Trace and Managed Prometheus, e.g. http://localhost:4318. Empty turns telemetry off."
   type        = string

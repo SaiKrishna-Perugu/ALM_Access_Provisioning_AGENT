@@ -48,6 +48,11 @@ class Store(Protocol):
     async def list_runs(self, limit: int = 50) -> list[dict]: ...
     # Model tokens spent by the runs created since ``since`` (the daily cap).
     async def tokens_since(self, since: datetime) -> int: ...
+    # Retention: delete finished runs last touched before ``cutoff``, with their
+    # traces, approvals, votes, stops and finished jobs, and old webhook
+    # deliveries. The ledger and the audit trail are never touched. Returns the
+    # counts and the purged ``threads`` (whose checkpoints the caller deletes).
+    async def purge_before(self, cutoff: datetime) -> dict: ...
 
     # The job queue workers pull from. One running job per thread, ever.
     async def enqueue_job(self, kind: str, thread_id: str, payload: dict | None = None,

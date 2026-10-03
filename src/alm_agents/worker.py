@@ -8,6 +8,7 @@ A job moves one run forward to its next pause or its end:
 * ``start``     - begin a run over the work items in the payload
 * ``resume``    - continue a run parked at the approval gate with a decision
 * ``reconcile`` - begin a run over the whole active queue (the sweep)
+* ``retention`` - delete finished runs' data past ``ALM_RETENTION_DAYS``
 
 What makes several workers on several machines safe together:
 
@@ -22,18 +23,20 @@ What makes several workers on several machines safe together:
   worker holding the run reads it within a second and the run ends after its
   current step - a write in progress always finishes.
 * **One scheduler.** The worker holding the ``scheduler`` lease enqueues the
-  reconcile sweep, once per interval, whatever the number of workers.
+  reconcile sweep once per interval, and the retention purge once a day,
+  whatever the number of workers.
 """
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import os
 import socket
 import tempfile
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from alm_core import telemetry
@@ -42,10 +45,10 @@ from alm_core.logging import get_logger, scrub_secrets
 
 log = get_logger("alm.worker")
 
-START, RESUME, RECONCILE = "start", "resume", "reconcile"
+START, RESUME, RECONCILE, RETENTION = "start", "resume", "reconcile", "retention"
 FALLBACK = "fallback"                # the trigger of a run re-done without a model
 MODEL_DOWN = "the agent model is unavailable"
-RUN_KINDS = (START, RESUME, RECONCILE)
+RUN_KINDS = (START, RESUME, RECONCILE, RETENTION)
 STOP_POLL_SECONDS = 1.0
 TRACE_FLUSH_SECONDS = 1.0
 SCHEDULER_LEASE = "scheduler"
@@ -178,11 +181,17 @@ class Worker:
             await asyncio.wait(self._tasks)
 
     async def schedule(self) -> None:
-        """The scheduler lease holder queues one reconcile sweep per interval."""
+        """The scheduler lease holder queues one reconcile sweep per interval and
+        one retention purge per day."""
         await self._read_depth()
-        if self.reconcile_minutes <= 0:
+        retention = int(getattr(self.services.settings, "retention_days", 0) or 0)
+        if self.reconcile_minutes <= 0 and retention <= 0:
             return
         if not await self.store.try_lease(SCHEDULER_LEASE, self.worker_id, self.lease):
+            return
+        if retention > 0:
+            await self._schedule_retention(retention)
+        if self.reconcile_minutes <= 0:
             return
         interval = self.reconcile_minutes * 60
         bucket = int(time.time() // interval)
@@ -195,6 +204,18 @@ class Worker:
                          requested_by="scheduler", trigger=RECONCILE,
                          environment=getattr(settings, "environment", ""))
         log.info("reconcile_scheduled", thread_id=thread_id, worker=self.worker_id)
+
+    async def _schedule_retention(self, days: int) -> None:
+        """Queue today's purge, once. Its run row is the record that it ran."""
+        thread_id = f"retention-{datetime.now(timezone.utc):%Y%m%d}"
+        if await self.store.get_run(thread_id) is not None:
+            return
+        await self.store.upsert_run(
+            thread_id, status="queued", trigger=RETENTION, requested_by="scheduler",
+            environment=getattr(self.services.settings, "environment", ""),
+            operator_request=f"Retention: delete finished runs' data older than {days} days")
+        await self.store.enqueue_job(RETENTION, thread_id, {"days": days}, dedupe=True)
+        log.info("retention_scheduled", thread_id=thread_id, days=days)
 
     async def _read_depth(self) -> None:
         """Refresh the queue-depth gauge, at most every 15 seconds."""
@@ -212,6 +233,9 @@ class Worker:
         from .control import RunControl
         from .trace import open_run_trace
 
+        if job["kind"] == RETENTION:
+            await self._retention(job)
+            return
         thread_id = job["thread_id"]
         control = RunControl(thread_id=thread_id)
         trace = open_run_trace(self.trace_dir, thread_id, settings=self.services.settings)
@@ -250,6 +274,45 @@ class Worker:
         if otel is not None:
             otel.jobs.add(1, {"kind": job["kind"], "result": str(status or "")})
             otel.busy[self.worker_id] = max(0, len(self._tasks) - 1)
+
+    async def _retention(self, job: dict) -> None:
+        """Delete finished runs' data older than the retention period.
+
+        Runs, traces, approval cards, votes, stops, finished jobs, old webhook
+        deliveries, the purged runs' checkpoints, and agent memory. Never the
+        idempotency ledger or the audit trail: they are the record of what was
+        written and who approved it, and they hold user IDs, not names.
+        """
+        from .memory import MemoryStore
+
+        thread_id = job["thread_id"]
+        days = int(job["payload"].get("days") or 0)
+        try:
+            if days <= 0:
+                raise ValueError("a retention job needs a positive number of days")
+            cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+            counts = await self.store.purge_before(cutoff)
+            threads = counts.pop("threads")
+            removed = 0
+            for thread in threads:
+                try:
+                    await self.services.checkpointer.adelete_thread(thread)
+                    removed += 1
+                except Exception:  # noqa: BLE001 - one thread must not stop the rest
+                    log.exception("retention_checkpoint_failed", thread_id=thread)
+            counts["checkpoints"] = removed
+            counts["memories"] = await MemoryStore(self.store).purge_before(cutoff)
+            await self.store.upsert_run(thread_id, status="done", report={
+                "retention": counts, "days": days, "cutoff": cutoff.isoformat()})
+            log.info("retention_purged", days=days, **counts)
+            outcome = {"ok": True, "error": ""}
+        except Exception as err:  # noqa: BLE001 - recorded on the run and the job
+            message = scrub_secrets(f"{type(err).__name__}: {err}")[:600]
+            log.exception("retention_failed", thread_id=thread_id)
+            await self.store.upsert_run(thread_id, status="failed", error=message)
+            outcome = {"ok": False, "error": message}
+        await self.store.finish_job(job["id"], self.worker_id, ok=outcome["ok"],
+                                    error=outcome["error"], max_attempts=self.max_attempts)
 
     @contextlib.contextmanager
     def _span(self, otel, job: dict):
@@ -481,9 +544,50 @@ async def serve(settings=None, *, stopping: asyncio.Event | None = None) -> None
     telemetry.setup(settings, service="alm-worker")
     try:
         async with build_services(settings, notifier=notifier, resolver=resolver) as services:
-            await Worker(services).run_forever(stopping)
+            worker = Worker(services)
+            port = int(getattr(settings, "worker_health_port", 0) or 0)
+            async with health_server(worker, port):
+                await worker.run_forever(stopping)
     finally:
         telemetry.shutdown()
+
+
+@contextlib.asynccontextmanager
+async def health_server(worker: Worker, port: int):
+    """``GET /healthz`` on ``port`` while the worker runs; nothing when 0.
+
+    For a platform's liveness probe (Cloud Run, ECS, Kubernetes). Healthy means
+    the process is up and its loop is turning; a wedged worker stops renewing
+    its leases and its runs are taken over anyway.
+    """
+    if port <= 0:
+        yield None
+        return
+
+    async def answer(reader, writer) -> None:
+        try:
+            request = await asyncio.wait_for(reader.readline(), 5)
+            ok = request.split(b" ")[1:2] == [b"/healthz"]
+            body = json.dumps({"status": "ok", "worker": worker.worker_id,
+                               "running": len(worker._tasks)} if ok else
+                              {"status": "not found"}).encode()
+            status = b"200 OK" if ok else b"404 Not Found"
+            writer.write(b"HTTP/1.1 " + status + b"\r\nContent-Type: application/json\r\n"
+                         b"Content-Length: " + str(len(body)).encode() +
+                         b"\r\nConnection: close\r\n\r\n" + body)
+            await writer.drain()
+        except (asyncio.TimeoutError, ConnectionError, IndexError):
+            pass
+        finally:
+            writer.close()
+
+    server = await asyncio.start_server(answer, "0.0.0.0", port)  # noqa: S104 - a container's probe port
+    log.info("worker_health_listening", port=port)
+    try:
+        yield server
+    finally:
+        server.close()
+        await server.wait_closed()
 
 
 def preflight(settings, resolver) -> None:

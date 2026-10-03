@@ -128,7 +128,8 @@ jobs:
     runs-on: ubuntu-latest
     environment: ${{ github.event.inputs.target || 'test' }}
     outputs:
-      image: ${{ steps.push.outputs.image }}
+      api_image: ${{ steps.push.outputs.api }}
+      worker_image: ${{ steps.push.outputs.worker }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
@@ -153,56 +154,73 @@ jobs:
 
       - name: Build
         id: build
+        # Two images: the API (no browser, no workers) and the run worker
+        # (Chromium for evidence). Terraform runs them as two services.
         run: |
           TARGET="${{ github.event.inputs.target || 'test' }}"
           REGISTRY="${{ secrets.GCP_REGION }}-docker.pkg.dev"
           REPO="$REGISTRY/${{ secrets.GCP_PROJECT_ID }}/alm-$TARGET-images"
           TAG="${GITHUB_SHA::12}"
-          # all-in-one: the API with its workers and Chromium, the one service
-          # the Terraform runs. image.yml builds and tests the api and worker
-          # targets on every pull request.
-          docker build --target all-in-one --build-arg CA_BUNDLE=certs/corporate-ca.pem \
-            -t "$REPO/$IMAGE_NAME:$TAG" .
-          echo "ref=$REPO/$IMAGE_NAME:$TAG" >> "$GITHUB_OUTPUT"
+          for image in api worker; do
+            docker build --target "$image" --build-arg CA_BUNDLE=certs/corporate-ca.pem \
+              -t "$REPO/$IMAGE_NAME-$image:$TAG" .
+            echo "$image=$REPO/$IMAGE_NAME-$image:$TAG" >> "$GITHUB_OUTPUT"
+          done
           echo "registry=$REGISTRY" >> "$GITHUB_OUTPUT"
 
       - name: Scan - a fixable HIGH or CRITICAL vulnerability stops the deploy
         run: |
-          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock "$TRIVY" image \
-            --quiet --scanners vuln --severity CRITICAL,HIGH --ignore-unfixed \
-            --exit-code 1 "${{ steps.build.outputs.ref }}"
+          for ref in "${{ steps.build.outputs.api }}" "${{ steps.build.outputs.worker }}"; do
+            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock "$TRIVY" image \
+              --quiet --scanners vuln --severity CRITICAL,HIGH --ignore-unfixed \
+              --exit-code 1 "$ref"
+          done
 
-      - name: SBOM
+      - name: SBOMs
+        env:
+          API: ${{ steps.build.outputs.api }}
+          WORKER: ${{ steps.build.outputs.worker }}
         run: |
-          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-            -v "$PWD:/out" "$SYFT" "docker:${{ steps.build.outputs.ref }}" \
-            -o spdx-json=/out/sbom.spdx.json
-          test -s sbom.spdx.json
+          for image in api worker; do
+            ref="$API"; [ "$image" = worker ] && ref="$WORKER"
+            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+              -v "$PWD:/out" "$SYFT" "docker:$ref" -o "spdx-json=/out/sbom-$image.spdx.json"
+            test -s "sbom-$image.spdx.json"
+          done
 
       - name: Push
         id: push
+        env:
+          API: ${{ steps.build.outputs.api }}
+          WORKER: ${{ steps.build.outputs.worker }}
         run: |
-          REF="${{ steps.build.outputs.ref }}"
           gcloud auth configure-docker "${{ steps.build.outputs.registry }}" --quiet
-          docker push "$REF"
-          # Deploy by digest, never by tag: a tag can move under a running
-          # revision, a digest cannot.
-          DIGEST=$(gcloud artifacts docker images describe "$REF" \
-            --format='value(image_summary.digest)')
-          echo "image=${REF%:*}@$DIGEST" >> "$GITHUB_OUTPUT"
+          for image in api worker; do
+            ref="$API"; [ "$image" = worker ] && ref="$WORKER"
+            docker push "$ref"
+            # Deploy by digest, never by tag: a tag can move under a running
+            # revision, a digest cannot.
+            digest=$(gcloud artifacts docker images describe "$ref" \
+              --format='value(image_summary.digest)')
+            echo "$image=${ref%:*}@$digest" >> "$GITHUB_OUTPUT"
+          done
 
-      - name: Sign, and attach the SBOM as a signed attestation
+      - name: Sign, and attach each SBOM as a signed attestation
         # Keyless: the signature is bound to this workflow's GitHub identity
         # through Sigstore. There is no signing key to store or leak.
+        env:
+          API: ${{ steps.push.outputs.api }}
+          WORKER: ${{ steps.push.outputs.worker }}
         run: |
-          cosign sign --yes "${{ steps.push.outputs.image }}"
-          cosign attest --yes --type spdxjson --predicate sbom.spdx.json \
-            "${{ steps.push.outputs.image }}"
+          cosign sign --yes "$API"
+          cosign attest --yes --type spdxjson --predicate sbom-api.spdx.json "$API"
+          cosign sign --yes "$WORKER"
+          cosign attest --yes --type spdxjson --predicate sbom-worker.spdx.json "$WORKER"
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: sbom
-          path: sbom.spdx.json
+          path: sbom-*.spdx.json
           retention-days: 90
 
   deploy:
@@ -223,17 +241,18 @@ jobs:
           terraform_version: 1.9.8
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
-      - name: Verify the image's signature and SBOM attestation
+      - name: Verify both images' signatures and SBOM attestations
         # An image not signed by this workflow on main is not deployed, whoever
         # pushed it to the registry.
         run: |
-          IMAGE="${{ needs.build.outputs.image }}"
-          gcloud auth configure-docker "${IMAGE%%/*}" --quiet
-          cosign verify "$IMAGE" --certificate-identity "$SIGNER" \
-            --certificate-oidc-issuer "$ISSUER" > /dev/null
-          cosign verify-attestation "$IMAGE" --type spdxjson \
-            --certificate-identity "$SIGNER" --certificate-oidc-issuer "$ISSUER" > /dev/null
-          echo "signed by $SIGNER"
+          for IMAGE in "${{ needs.build.outputs.api_image }}" "${{ needs.build.outputs.worker_image }}"; do
+            gcloud auth configure-docker "${IMAGE%%/*}" --quiet
+            cosign verify "$IMAGE" --certificate-identity "$SIGNER" \
+              --certificate-oidc-issuer "$ISSUER" > /dev/null
+            cosign verify-attestation "$IMAGE" --type spdxjson \
+              --certificate-identity "$SIGNER" --certificate-oidc-issuer "$ISSUER" > /dev/null
+            echo "$IMAGE: signed by $SIGNER"
+          done
 
       - name: Terraform apply
         run: |
@@ -246,7 +265,8 @@ jobs:
           terraform -chdir=infra apply -auto-approve -input=false \
             -var-file="envs/$TARGET.tfvars" \
             -var="project_id=${{ secrets.GCP_PROJECT_ID }}" \
-            -var="container_image=${{ needs.build.outputs.image }}" \
+            -var="container_image=${{ needs.build.outputs.api_image }}" \
+            -var="worker_image=${{ needs.build.outputs.worker_image }}" \
             -var="ewm_server=${{ vars.EWM_SERVER }}" \
             -var="jts_server=${{ vars.JTS_SERVER }}" \
             -var="corporate_dns_suffix=${{ vars.CORPORATE_DNS_SUFFIX }}"
@@ -260,7 +280,7 @@ jobs:
           RUN_SA=$(terraform -chdir=infra output -raw run_service_account)
           gcloud run jobs deploy "alm-$TARGET-smoke" \
             --region "${{ secrets.GCP_REGION }}" \
-            --image "${{ needs.build.outputs.image }}" \
+            --image "${{ needs.build.outputs.worker_image }}" \
             --service-account "$RUN_SA" \
             --network "alm-$TARGET-vpc" \
             --subnet "alm-$TARGET-run" \

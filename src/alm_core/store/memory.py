@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from ..errors import IdempotencyViolation
 from ..logging import get_logger
 from ..models import ApprovalDecision, ApprovalRequest, AuditEvent, Operation, ProvisionResult
-from .runs import log_audit, next_job_status, run_values
+from .runs import FINISHED, log_audit, next_job_status, run_values
 
 log = get_logger("alm.store.memory")
 
@@ -241,6 +241,33 @@ class MemoryStore:
 
     async def clear_stop(self, thread_id: str) -> None:
         self._stops.pop(thread_id, None)
+
+    async def purge_before(self, cutoff: datetime) -> dict:
+        since = _iso(cutoff)
+        async with self._lock:
+            threads = [t for t, r in self._runs.items()
+                       if r["status"] in FINISHED and r["updated_at"] < since]
+            gone = set(threads)
+            counts: dict = {"runs": len(threads)}
+            before = len(self._traces)
+            self._traces = [(t, r) for t, r in self._traces if t not in gone]
+            counts["traces"] = before - len(self._traces)
+            votes = [k for k in self._votes if k[0] in gone]
+            counts["votes"] = sum(len(self._votes.pop(k)) for k in votes)
+            counts["approvals"] = sum(1 for t in gone if self._approvals.pop(t, None))
+            counts["stops"] = sum(1 for t in gone if self._stops.pop(t, None))
+            before = len(self._jobs)
+            self._jobs = [j for j in self._jobs if not (
+                j["status"] in ("done", "dead")
+                and (j["thread_id"] in gone or j["created_at"] < since))]
+            counts["jobs"] = before - len(self._jobs)
+            for thread in threads:
+                self._runs.pop(thread, None)
+            old = [d for d, at in self._seen.items() if at < cutoff]
+            for delivery in old:
+                self._seen.pop(delivery)
+            counts["deliveries"] = len(old)
+        return {"threads": threads, **counts}
 
     # ------------------------------------------------- replay and leadership
 
