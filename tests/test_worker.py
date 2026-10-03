@@ -401,3 +401,29 @@ def test_a_worker_answers_its_health_probe(tmp_path):
     assert ok.startswith("HTTP/1.1 200 OK") and '"worker": "w"' in ok
     assert missing.startswith("HTTP/1.1 404")
     assert none is None
+
+
+def test_the_shadow_report_lists_what_dry_runs_would_have_written(tmp_path):
+    from alm_agents import shadow_report
+
+    async def scenario(h):
+        await start(h, "wi-1001", ("1001",), mode="dry")
+        await start(h, "wi-1002", ("1002",), mode="commit")      # not a dry run: left out
+        await h.store.upsert_run("retention-x", status="done", mode="dry",
+                                 trigger="retention")             # system run: left out
+        await h.worker("w").drain()
+        return await shadow_report.collect(h.store, days=14)
+
+    data = run_with(tmp_path, scenario)
+    assert [r["thread_id"] for r in data["runs"]] == ["wi-1001"]
+    # The card the dry run previewed: the user it would import, and one the
+    # scripted validator never looked at, flagged for a human.
+    assert data["planned"]["import into JTS"] == 1
+    imported = [r for r in data["rows"] if r["operation"] == "import into JTS"]
+    assert imported[0]["userid"] == "AB12345" and imported[0]["matches"] == ""
+    text = shadow_report.markdown(data, environment="PROD")
+    assert "# Shadow report: PROD" in text and "AB12345 (import into JTS)" in text
+    path = tmp_path / "shadow.csv"
+    shadow_report.write_csv(data["rows"], path)
+    assert path.read_text(encoding="utf-8").splitlines()[0] == ",".join(
+        shadow_report.CSV_COLUMNS)

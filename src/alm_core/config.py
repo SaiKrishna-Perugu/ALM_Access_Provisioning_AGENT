@@ -336,6 +336,17 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------- polls
     reconcile_interval_minutes: int = Field(
         default=15, ge=0, description="Minutes between queue sweeps; 0 turns the sweep off.")
+    allowed_operations: str = Field(
+        default="",
+        description=("Staged enablement: the write operations this deployment performs, "
+                     "comma-separated (jts_unarchive, workitem_comment, workitem_attach, "
+                     "jts_create, ad_group_add). Empty allows all. Others are planned, "
+                     "shown, and skipped."))
+    writes_disabled_operations: str = Field(
+        default="",
+        description=("Kill switch: write operations turned off now, comma-separated, "
+                     "e.g. 'ad_group_add' while the directory is unhealthy. Wins over "
+                     "ALM_ALLOWED_OPERATIONS."))
     auto_migrate: bool = Field(
         default=True,
         description=("Migrate the schema when a service starts. false: the services only "
@@ -386,6 +397,16 @@ class Settings(BaseSettings):
                 "ALM_LLM_PROVIDER=vertex needs GOOGLE_CLOUD_PROJECT: the Vertex AI "
                 "client is project-scoped. Set it, use ALM_LLM_PROVIDER=gemini_api "
                 "with a GEMINI_API_KEY, or run with ALM_ORCHESTRATION=deterministic.")
+        from .models import Operation
+
+        known = {op.value for op in Operation}
+        for name, value in (("ALM_ALLOWED_OPERATIONS", self.allowed_operations),
+                            ("ALM_WRITES_DISABLED_OPERATIONS", self.writes_disabled_operations)):
+            unknown = {o.strip() for o in value.split(",") if o.strip()} - known
+            if unknown:
+                raise ValueError(f"{name} names unknown operation(s): "
+                                 f"{', '.join(sorted(unknown))}. Known: "
+                                 f"{', '.join(sorted(known))}")
         allowed = {p.strip() for p in self.allowed_providers.split(",") if p.strip()}
         if allowed and self.llm_enabled and self.llm_provider not in allowed:
             raise ValueError(
@@ -456,6 +477,20 @@ class Settings(BaseSettings):
     @property
     def routing_model(self) -> str:
         return self.supervisor_model or self.agent_model
+
+    def operation_blocked(self, operation: str) -> str:
+        """Why this deployment does not perform ``operation`` now; empty if it does."""
+        def listed(value: str) -> set[str]:
+            return {o.strip() for o in value.split(",") if o.strip()}
+
+        if operation in listed(self.writes_disabled_operations):
+            return (f"{operation} is switched off in this deployment "
+                    "(ALM_WRITES_DISABLED_OPERATIONS)")
+        allowed = listed(self.allowed_operations)
+        if allowed and operation not in allowed:
+            return (f"{operation} is not enabled in this deployment yet "
+                    "(ALM_ALLOWED_OPERATIONS)")
+        return ""
 
     @property
     def secret_store(self) -> str:

@@ -546,7 +546,14 @@ IDs only, and a re-run needs them).
 The CLI is unchanged and remains the supported path. The autonomous stack is
 additive - it shares no state with the CLI and cannot interfere with it - and is
 described in [docs/AUTONOMOUS_ARCHITECTURE.md](docs/AUTONOMOUS_ARCHITECTURE.md),
-with operational procedures in [docs/RUNBOOK.md](docs/RUNBOOK.md).
+with operational procedures in [docs/RUNBOOK.md](docs/RUNBOOK.md). For the cloud
+deployment, see:
+- the [plan](docs/ENTERPRISE_PLAN.md);
+- the [decisions](docs/DECISIONS.md);
+- the [threat model](docs/THREAT_MODEL.md);
+- [disaster recovery](docs/DR.md);
+- the [Terraform for each cloud](infra/README.md);
+- [alerts and dashboards](ops/alerts.md).
 
 > The two do **not** share idempotency state. Running both against the same work
 > items can duplicate a comment. See the manual override section of the runbook

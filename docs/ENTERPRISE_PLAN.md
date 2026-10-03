@@ -1,7 +1,8 @@
 # Enterprise plan: from a laptop tool to a client-cloud AI system
 
-Status: in progress. Written 2026-10-02 as a proposal; the table below tracks
-what is built. Each milestone lands as one pull request whose description
+Status: the code for every milestone is built and merged (2026-10-03). What
+is left needs the client's network or the client's decisions (section 8).
+Written 2026-10-02 as a proposal; the table below tracks what is built. Each milestone lands as one pull request whose description
 gives the detail; what changed for operators is in [CHANGELOG.md](../CHANGELOG.md).
 
 | Milestone | State |
@@ -21,7 +22,7 @@ gives the detail; what changed for operators is in [CHANGELOG.md](../CHANGELOG.m
 | M12 images and supply chain (targets, scan, SBOM, signing, Semgrep) | Done |
 | M13 DR, cloud retention, separate worker service, CMEK option | Done |
 | M14 per-cloud IaC (AWS, Azure skeletons), migration step, synthetic check | Done |
-| M15 staged enablement and kill switches (code) | Next |
+| M15 staged enablement, kill switches, shadow report, decisions and threat model | Done |
 | M15 PROD shadow, pilot evidence (M0), CLI decision (D7) | Needs the client network |
 
 ## 1. Where we are
@@ -333,6 +334,12 @@ roughly halves calendar time from Phase 2 on.
 - Retire the CLI (D7), or point it at the shared ledger.
 - **Exit:** 4 weeks in PROD within SLO, zero duplicate or unapproved writes,
   handover to the client's operations team.
+- **Built (M15):**
+  - `ALM_ALLOWED_OPERATIONS` (staged enablement) and `ALM_WRITES_DISABLED_OPERATIONS` (kill switch), enforced in `guarded_write`;
+  - `python -m alm_agents.shadow_report` (planned writes from the previewed cards, with a CSV to compare against the CLI);
+  - [DECISIONS.md](DECISIONS.md), including the CLI retirement path;
+  - [THREAT_MODEL.md](THREAT_MODEL.md).
+- **Needs the client network and the client:** the shadow weeks themselves, the pilot recordings (Phase 0), and closing D2, D6, D7 and D8.
 
 ### Timeline
 
@@ -385,13 +392,20 @@ client decisions (D2, D3) and their network and security reviews, not the code.
 - **Reviews:** monthly access review of the approver and admin groups;
   quarterly DR test; eval suite grows with every incident.
 
-## 8. Immediate next steps (this week)
+## 8. Where things stand (2026-10-03)
 
-1. Send the client the D1-D8 decision list.
-2. Run the TEST pilot from the web console with `--record` (see the README);
-   collect traces and reports.
-3. Start Phase 1 with the parts that do not depend on the cloud choice: the
-   `RunQueue` port, the store-backed run lock and stop flag, and wiring
-   control and tracing into `alm_api`.
-4. Update `docs/AUTONOMOUS_ARCHITECTURE.md`: its "Not done" section is out of
-   date (the tests, eval suite and Postgres IAM auth now exist).
+Built and merged, each with CI green: M1-M15 code (the table at the top).
+What is left needs the client's network, the client's decisions, or both:
+
+1. **The pilot on TEST (Phase 0).** Run 20 or more TEST work items from the web
+   console or `agent_local.py --record`, as dry runs and then with approval.
+   Check the recordings for personal data, then add them to the evals
+   (`tests/fixtures/recorded/`). Note tokens, time and outcomes per work
+   item in [DECISIONS.md](DECISIONS.md).
+2. **Decisions D2, D6, D7, D8** with the client ([DECISIONS.md](DECISIONS.md)), and
+   the data classification sign-off ([THREAT_MODEL.md](THREAT_MODEL.md)).
+3. **The first cloud deploy** to TEST through `deploy.yml`, the first restore
+   drill ([DR.md](DR.md)), and alerts wired to the client's on-call.
+4. **PROD shadow, then staged writes**, as in [DECISIONS.md](DECISIONS.md), D7.
+5. **Before PROD:** the external penetration test, Binary Authorization or an
+   admission policy, and the WAF.
