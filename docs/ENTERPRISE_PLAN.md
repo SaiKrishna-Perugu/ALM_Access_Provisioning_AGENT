@@ -12,7 +12,7 @@ gives the detail; what changed for operators is in [CHANGELOG.md](../CHANGELOG.m
 | M4 stop and traces in the cloud path | Done |
 | M5 cloud-neutral adapters (secrets, DB tokens, models, AD transport) | Done |
 | M6-M8 sign-in, roles, two approvers, service credentials | Next |
-| M9 directory port (Graph + GPT) | Planned |
+| M9 directory port (Graph + GPT) | Done |
 | M10 AI governance, eval gate, cost caps | Planned |
 | M11 OpenTelemetry | Planned |
 | M12-M14 images, supply chain, DR, per-cloud IaC, pipeline | Planned |

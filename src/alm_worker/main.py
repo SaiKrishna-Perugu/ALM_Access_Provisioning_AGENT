@@ -44,7 +44,7 @@ import threading
 import time
 
 from alm_core.config import get_settings
-from alm_core.errors import ConfigError
+from alm_core.errors import ConfigError, OutcomeUnknown
 from alm_core.logging import bind_run, configure, get_logger
 from alm_core.models import AuditEvent, Operation, Outcome, ProvisionResult
 
@@ -157,9 +157,9 @@ class Worker:
             userid=userid, operation=Operation.AD_GROUP_ADD))
         if not proceed:
             log.info("job_already_done", userid=userid, key=key[:12])
-            return previous or ProvisionResult(
-                **base, outcome=Outcome.SKIPPED, replayed=True,
-                message="already completed by an earlier delivery")
+            return (previous.model_copy(update={"replayed": True}) if previous else
+                    ProvisionResult(**base, outcome=Outcome.SKIPPED, replayed=True,
+                                    message="already completed by an earlier delivery"))
 
         try:
             ok, message = self.session.add_member(
@@ -167,6 +167,13 @@ class Worker:
             result = ProvisionResult(**base,
                                      outcome=Outcome.OK if ok else Outcome.FAILED,
                                      message=message)
+        except OutcomeUnknown as err:
+            # GPT may have accepted it. Closed in the ledger, never retried: a
+            # second Modify could add the user twice. A human checks GPT.
+            log.error("gpt_outcome_unknown", userid=userid, error=err.message)
+            result = ProvisionResult(**base, outcome=Outcome.FAILED, message=err.message,
+                                     detail={"outcome_unknown": True})
+            self._restart_browser()
         except Exception as err:  # noqa: BLE001 - one job must not kill the worker
             log.exception("job_crashed", userid=userid)
             result = ProvisionResult(**base, outcome=Outcome.FAILED,

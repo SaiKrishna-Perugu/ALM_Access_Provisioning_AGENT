@@ -261,6 +261,11 @@ def test_a_missing_ca_bundle_is_reported_plainly(env, monkeypatch):
 
 # ------------------------------------------------------------------------- GPT
 
+from alm_worker.gpt import GptSession as _RealGptSession  # noqa: E402
+
+REAL_ADD_MEMBER = _RealGptSession.add_member
+
+
 class FakeGpt:
     instances: list = []
 
@@ -294,6 +299,10 @@ class FakeGpt:
 
     def close(self):
         FakeGpt.closed += 1
+
+    def add_member(self, **kw):
+        # The real flow, over the fake page steps above.
+        return REAL_ADD_MEMBER(self, **kw)
 
 
 def _gpt_ctx(tmp_path):
