@@ -123,6 +123,14 @@ jobs:
         run: pip-audit -r requirements.txt -r requirements-cloud.txt
       - name: Check static security rules
         run: ruff check --select S src
+      - name: Semgrep (SAST)
+        # Python and security-audit rule packs. A finding fails the job; a
+        # false positive is silenced on its line with "nosemgrep: <rule> - why".
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src \
+            semgrep/semgrep:1.179.0@sha256:93963d9295a366f59e4850127b1550400ee7b388f04fe144e4a1f6325d96e01b \
+            semgrep scan --config p/python --config p/security-audit \
+            --metrics=off --error --quiet src
       # Secrets are checked by the `secrets` job below: pre-commit runs
       # detect-secrets-hook, which fails on a new secret. `detect-secrets scan
       # --baseline` does not - it exits 0 and adds the secret to the baseline.

@@ -9,9 +9,12 @@ out/
 chrome-debug/
 edge-debug/
 
-# The CA bundle is copied explicitly via --build-arg, not swept in.
+# Only the CA bundle the build copies (--build-arg CA_BUNDLE, default below)
+# enters the context; any other key or certificate here stays out. A bundle
+# at another path must be un-ignored here too.
 certs/*
 !certs/.gitkeep
+!certs/corporate-ca.pem
 
 # --- local environments -------------------------------------------------------
 .venv/

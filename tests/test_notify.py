@@ -92,3 +92,44 @@ def test_no_channel_means_no_notifier_and_http_links_are_refused(monkeypatch):
     assert notify.make_notifier(settings(notify_channels=""), None) is None
     assert not notify.post_teams("http://teams.example.com/hook", request(),
                                  url="https://x", needed=1)
+
+
+def test_text_a_requester_wrote_cannot_put_markup_on_a_card():
+    """A display name or reason can come from the request; cards render HTML."""
+    from alm_api.chat import build_card
+
+    hostile = ApprovalRequest(
+        run_id="r1", thread_id="wi-1001", environment="TEST<b>",
+        expires_at=utcnow() + timedelta(hours=1), plan_hash="p",
+        items=[ApprovalItem(userid="AB12345", work_item_ids=["1001"], risk=RiskLevel.HIGH,
+                            display_name='<a href="https://evil.example">Approve here</a>',
+                            risk_reasons=["<img src=x onerror=alert(1)>"])])
+    card = json.dumps(build_card(hostile, review_url="https://alm.example.com/?run=wi-1001"))
+    assert "<a href" not in card and "<img" not in card and "TEST<b>" not in card
+    assert "&lt;a href=" in card and "&lt;img" in card
+
+    posted = []
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            return False
+
+    def urlopen(req, timeout=None):
+        posted.append(json.loads(req.data))
+        return Response()
+
+    import alm_api.notify as module
+
+    original = module.urllib.request.urlopen
+    module.urllib.request.urlopen = urlopen
+    try:
+        assert notify.post_teams("https://teams.example.com/hook", hostile,
+                                 url="https://alm.example.com/?run=wi-1001", needed=1)
+    finally:
+        module.urllib.request.urlopen = original
+    assert "TEST<b>" not in posted[0]["text"] and "TEST&lt;b&gt;" in posted[0]["text"]

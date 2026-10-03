@@ -35,6 +35,8 @@ THIRD_PARTY_FLAGS = {
     "--var-file", "--auto-approve", "--backend", "--recursive", "--check",
     "--to-revisions", "--command", "--host", "--port", "--proxy-headers",
     "--no-access-log", "--interval", "--start-period", "--limit", "--freshness",
+    # cosign, verifying an image's signature and SBOM attestation (RUNBOOK 7e).
+    "--certificate-identity", "--certificate-oidc-issuer", "--type",
 }
 
 FLAG_RE = re.compile(r"(?<![\w-])(--[a-z][a-z0-9-]{1,30})")

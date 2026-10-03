@@ -14,6 +14,7 @@ and skipped; the run stays parked and visible in the console regardless.
 """
 from __future__ import annotations
 
+import html
 import json
 import smtplib
 import ssl
@@ -62,7 +63,7 @@ def post_teams(webhook_url: str, request, *, url: str, needed: int,
         "themeColor": "B3261E" if request.environment.upper() == "PROD" else "0B6E69",
         "title": ("ALM provisioning - PRODUCTION approval"
                   if request.environment.upper() == "PROD" else "ALM provisioning - approval"),
-        "text": summary(request, needed).replace("\n", "<br>"),
+        "text": html.escape(summary(request, needed)).replace("\n", "<br>"),
         "potentialAction": [{"@type": "OpenUri", "name": "Review and decide in the console",
                              "targets": [{"os": "default", "uri": url}]}],
     }
@@ -70,7 +71,7 @@ def post_teams(webhook_url: str, request, *, url: str, needed: int,
         webhook_url, data=json.dumps(card).encode(), method="POST",
         headers={"Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(message, timeout=timeout) as response:  # noqa: S310 - https checked above
+        with urllib.request.urlopen(message, timeout=timeout) as response:  # noqa: S310 # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected - https only, checked above
             return 200 <= response.status < 300
     except (urllib.error.URLError, TimeoutError) as err:
         log.warning("teams_failed", error=str(err))

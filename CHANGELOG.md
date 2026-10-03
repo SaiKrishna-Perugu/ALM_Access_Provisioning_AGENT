@@ -7,6 +7,26 @@ The local ledger (`out/local/alm.db`) has a schema version. A newer version of
 the code upgrades an older file automatically the next time it runs; a file
 written by newer code is refused until you update.
 
+## 2026-10-03: enterprise track, part 9 (images and supply chain)
+
+**Do after pulling:** nothing.
+
+- **Three image targets:**
+  - `api`: the API and console, with no browser and no workers;
+  - `worker`: runs, with Chromium for the evidence screenshots;
+  - `all-in-one`: both, the default and what the GCP Terraform deploys today.
+
+  Each runs as a non-root user with a read-only root filesystem (only `/tmp` is writable), has no pip at runtime, and uses a Python base pinned by digest.
+- **Fixed: the image could not be built.** The CA bundle was excluded from the build context, and the step that installs it failed on the link `update-ca-certificates` makes. Every deploy would have failed at the build.
+- **Every pull request builds both images** (`image.yml`). It fails on any fixable HIGH or CRITICAL vulnerability, and proves the API serves read-only and Chromium starts.
+- **Deploys are gated and signed.**
+  - The build stops on the vulnerability scan.
+  - The image gets an SBOM (SPDX), a keyless cosign signature and a signed SBOM attestation.
+  - The deploy job verifies the signature before Terraform runs. Only an image built by this workflow on `main` is deployed.
+- **Semgrep** runs in CI next to ruff's security rules.
+- **Fixed: text from a request could carry markup onto the approval cards.** A display name or risk reason could put a link on the Google Chat or Teams card. Every value is now escaped.
+- **Fixed: the Chat card never showed risk reasons,** and printed raw `<b>` tags in its plain-text label.
+
 ## 2026-10-03: enterprise track, part 8 (observability)
 
 **Do after pulling:** `pip install -r requirements-cloud.txt` (it adds the OpenTelemetry SDK). The database upgrades itself to schema version 4.
