@@ -20,8 +20,9 @@ gives the detail; what changed for operators is in [CHANGELOG.md](../CHANGELOG.m
 | M11 OpenTelemetry, metrics, alerts, append-only audit | Done |
 | M12 images and supply chain (targets, scan, SBOM, signing, Semgrep) | Done |
 | M13 DR, cloud retention, separate worker service, CMEK option | Done |
-| M14 per-cloud IaC (AWS, Azure skeletons), pipeline | Next |
-| M15 PROD shadow and staged enablement | Needs the client network |
+| M14 per-cloud IaC (AWS, Azure skeletons), migration step, synthetic check | Done |
+| M15 staged enablement and kill switches (code) | Next |
+| M15 PROD shadow, pilot evidence (M0), CLI decision (D7) | Needs the client network |
 
 ## 1. Where we are
 
@@ -117,7 +118,7 @@ Principles:
 | User sign-in | OIDC middleware (new) | IAP or OIDC | ALB + Cognito/IdP OIDC | Entra ID (Easy Auth or OIDC) |
 | Network to EWM/JTS | none | Interconnect / HA VPN | Direct Connect / Site-to-Site VPN | ExpressRoute / VPN |
 | Telemetry | OpenTelemetry (new) | Cloud Trace/Monitoring | X-Ray/CloudWatch (ADOT) | Azure Monitor |
-| IaC | Terraform module per cloud | `infra/` (exists) | `infra/aws/` (new) | `infra/azure/` (new) |
+| IaC | Terraform module per cloud | `infra/gcp/` (complete) | `infra/aws/` (skeleton, validated) | `infra/azure/` (skeleton, validated) |
 
 Container images, the OTel exporter and Terraform are the only cloud-specific
 parts. Application code talks to ports.
@@ -310,6 +311,17 @@ roughly halves calendar time from Phase 2 on.
 - Database migrations run as a separate, approved pipeline step (the schema
   version table exists).
 - **Exit:** a full promotion dev → TEST → PROD rehearsed, including rollback.
+- **Built (M14):**
+  - `infra/gcp` complete;
+  - `infra/aws` and `infra/azure` as skeletons, validated on every PR;
+  - the migration step (`ALM_AUTO_MIGRATE`, `python -m alm_core.store.migrate`);
+  - the synthetic dry run on TEST, hourly and after each deploy;
+  - the release and promotion runbook (7g).
+- **Still open:**
+  - a separate dev environment on the sandbox estate; TEST is the first environment today;
+  - canary or blue/green for the API (Cloud Run traffic splitting);
+  - per-operation kill switches (M15);
+  - the rehearsed promotion with a rollback, on the client's projects.
 
 ### Phase 8: Pilot in PROD and convergence (3-4 weeks) - fixes G9
 

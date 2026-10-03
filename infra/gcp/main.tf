@@ -83,7 +83,10 @@ resource "google_project_service" "required" {
     "logging.googleapis.com",
     "monitoring.googleapis.com",
     "certificatemanager.googleapis.com",
-  ], compact([local.gemini_api ? "generativelanguage.googleapis.com" : ""])))
+    ], compact([
+      local.gemini_api ? "generativelanguage.googleapis.com" : "",
+      var.synthetic_work_item != "" ? "cloudscheduler.googleapis.com" : "",
+  ])))
 
   project = var.project_id
   service = each.key

@@ -481,3 +481,51 @@ def test_retention_purges_old_finished_runs_and_keeps_the_ledger_and_audit(make_
     assert kept["new-done"] is not None                      # recent: kept
     assert claim[0] is False and claim[1].outcome == Outcome.OK   # the ledger still replays
     assert len(audit) == 1 and job is not None                # the audit trail is untouched
+
+
+# ---------------------------------------------------------------- migration
+
+def _migration_settings(tmp_path, dsn=""):
+    from alm_core.config import Settings
+
+    settings = Settings(_env_file=None, environment="TEST", orchestration="deterministic",
+                        llm_enabled=False, shadow_mode=True)
+    update = {"auto_migrate": False}
+    update.update({"postgres_dsn": dsn} if dsn else
+                  {"ledger_path": str(tmp_path / "ledger.db")})
+    return settings.model_copy(update=update)
+
+
+@pytest.mark.parametrize("backend", ["sqlite", "postgres"])
+def test_with_auto_migrate_off_a_service_refuses_an_old_schema_until_migrated(
+        backend, tmp_path, monkeypatch, request):
+    pytest.importorskip("langgraph")
+    from alm_core.errors import ConfigError
+    from alm_core.store import get_store, migrate
+
+    dsn = request.getfixturevalue("postgres_dsn") if backend == "postgres" else ""
+    settings = _migration_settings(tmp_path, dsn)
+
+    async def scenario():
+        with pytest.raises(ConfigError, match="alm_core.store.migrate"):
+            await get_store(settings)
+        result = await migrate.migrate(settings)               # the owner's step
+        checked = await migrate.migrate(settings, check_only=True)
+        store = await get_store(settings)                      # now it starts
+        await store.close()
+        return result, checked
+
+    result, checked = run(scenario())
+    assert checked["version"] == checked["expected"] == result["expected"]
+
+
+def test_the_migrate_command_reports_a_current_schema(tmp_path, monkeypatch, capsys):
+    pytest.importorskip("langgraph")
+    from alm_core import config
+    from alm_core.store import migrate
+
+    settings = _migration_settings(tmp_path)
+    monkeypatch.setattr(config, "get_settings", lambda: settings)
+    assert migrate.main([]) == 0          # migrates (ALM_AUTO_MIGRATE has no say here)
+    assert migrate.main(["--check"]) == 0
+    assert "schema version" in capsys.readouterr().out

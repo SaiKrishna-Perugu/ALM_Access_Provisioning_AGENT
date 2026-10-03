@@ -1,7 +1,7 @@
 # Disaster recovery
 
 What can be lost, how fast it comes back, and how to prove it before you need
-it. Written against the GCP Terraform in `infra/`. The same reasoning holds on
+it. Written against the GCP Terraform in `infra/gcp/`. The same reasoning holds on
 AWS (RDS with PITR) and Azure (Flexible Server with PITR), because the design
 keeps all durable state in one Postgres database.
 
@@ -25,7 +25,7 @@ time, and a dead worker's runs are taken over from their checkpoints.
 
 | | Target | Why it holds |
 |---|---|---|
-| **RPO** (data lost) | 5 minutes | Point-in-time recovery, with 7 days of transaction logs (`data.tf`) |
+| **RPO** (data lost) | 5 minutes | Point-in-time recovery, with 7 days of transaction logs (`infra/gcp/data.tf`) |
 | **RTO** (time to working) | 1 hour | Restore a clone, repoint `ALM_POSTGRES_DSN`, redeploy. To be measured in the first drill and corrected here |
 | Zone loss (PROD) | No data loss, failover in about a minute | `availability_type = REGIONAL` |
 | Region loss | RPO is the last backup (daily, 35 kept); RTO is hours | Restore a backup into another region and apply the Terraform there |

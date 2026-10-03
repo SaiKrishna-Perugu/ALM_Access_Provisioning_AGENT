@@ -184,6 +184,16 @@ variable "retention_days" {
   default     = 30
 }
 
+variable "synthetic_work_item" {
+  description = "A closed TEST work item to dry-run every hour, end to end (ops/alerts.md). Empty: no synthetic check. Never set on prod."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.synthetic_work_item == "" || can(regex("^[0-9]+$", var.synthetic_work_item))
+    error_message = "synthetic_work_item is a work item number."
+  }
+}
+
 variable "otel_endpoint" {
   description = "OTLP/HTTP endpoint of an OpenTelemetry collector (a sidecar, or a shared collector on the VPC) that forwards to Cloud Trace and Managed Prometheus, e.g. http://localhost:4318. Empty turns telemetry off."
   type        = string

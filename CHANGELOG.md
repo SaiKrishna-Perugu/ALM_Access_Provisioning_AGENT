@@ -7,6 +7,19 @@ The local ledger (`out/local/alm.db`) has a schema version. A newer version of
 the code upgrades an older file automatically the next time it runs; a file
 written by newer code is refused until you update.
 
+## 2026-10-03: enterprise track, part 11 (every cloud, and the release path)
+
+**Do after pulling:** if you run Terraform by hand, it moved from `infra/` to `infra/gcp/`. The state is unaffected; use `-chdir=infra/gcp`.
+
+- **AWS and Azure configurations** (`infra/aws`, `infra/azure`). These are skeletons that pass `terraform validate`, with the same shape as GCP:
+  - **AWS:** ECS Fargate (API and workers), an internal ALB, RDS with IAM login, Secrets Manager, Bedrock and VPC endpoints.
+  - **Azure:** Container Apps (API and workers), PostgreSQL with Entra ID only, Key Vault, Azure OpenAI and private endpoints.
+
+  Every pull request now validates all three clouds. [infra/README.md](infra/README.md) maps each setting to each cloud.
+- **Migrations as a step of their own.** `python -m alm_core.store.migrate` migrates the schema and `--check` reports it. With `ALM_AUTO_MIGRATE=false`, services only check the schema and refuse to start on an old one, naming the command.
+- **Synthetic check on TEST.** Set `synthetic_work_item` in the tfvars, and a Cloud Run job runs a dry run of that work item hourly (Cloud Scheduler) and after every deploy.
+- **Runbook 7g: releases and promotion.** It covers the gates, the schema, workers during a release, rollback and the synthetic check.
+
 ## 2026-10-03: enterprise track, part 10 (workers, retention, recovery)
 
 **Do after pulling:** nothing. The next deploy from `main` splits the cloud service in two (see below).

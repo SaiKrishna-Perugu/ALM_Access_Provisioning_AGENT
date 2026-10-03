@@ -336,6 +336,11 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------- polls
     reconcile_interval_minutes: int = Field(
         default=15, ge=0, description="Minutes between queue sweeps; 0 turns the sweep off.")
+    auto_migrate: bool = Field(
+        default=True,
+        description=("Migrate the schema when a service starts. false: the services only "
+                     "check it, and a separate step runs python -m alm_core.store.migrate "
+                     "as the schema's owner (see that module)."))
     retention_days: int = Field(
         default=30, ge=0,
         description=("Delete finished runs' data (checkpoints, traces, approval cards, "
@@ -399,7 +404,9 @@ class Settings(BaseSettings):
                 f"ALM_LLM_PROVIDER={self.llm_provider} cannot serve a Gemini model. Set "
                 "ALM_AGENT_MODEL to a model this provider serves (for azure_openai, "
                 "the deployment name).")
-        if self.llm_provider == "azure_openai" and self.llm_enabled and                 self.orchestration in ("agentic", "guided") and not self.azure_openai_endpoint:
+        if (self.llm_provider == "azure_openai" and self.llm_enabled
+                and self.orchestration in ("agentic", "guided")
+                and not self.azure_openai_endpoint):
             raise ValueError("ALM_LLM_PROVIDER=azure_openai needs ALM_AZURE_OPENAI_ENDPOINT.")
         if self.orchestration in ("agentic", "guided") and not self.llm_enabled:
             raise ValueError(
@@ -466,7 +473,8 @@ class Settings(BaseSettings):
 
     @property
     def aws_region_name(self) -> str:
-        return self.aws_region or os.getenv("AWS_REGION", "") or             os.getenv("AWS_DEFAULT_REGION", "")
+        return (self.aws_region or os.getenv("AWS_REGION", "")
+                or os.getenv("AWS_DEFAULT_REGION", ""))
 
     def secret_path(self, secret_id: str) -> str:
         """Full Secret Manager resource name for a secret id."""
@@ -491,7 +499,8 @@ class Settings(BaseSettings):
     @classmethod
     def env_name(cls, field_name: str) -> str:
         """The environment variable a setting is read from (CID, not ALM_SERVICE_ACCOUNT)."""
-        alias = cls.model_fields[field_name].validation_alias if             field_name in cls.model_fields else None
+        alias = (cls.model_fields[field_name].validation_alias
+                 if field_name in cls.model_fields else None)
         return alias if isinstance(alias, str) else f"ALM_{field_name.upper()}"
 
 

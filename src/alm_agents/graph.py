@@ -196,7 +196,8 @@ async def checkpointer_for(settings):
 
         async with AsyncPostgresSaver.from_conn_string(
                 postgres_dsn(settings), serde=checkpoint_serde()) as saver:
-            await saver.setup()
+            if getattr(settings, "auto_migrate", True):
+                await saver.setup()
             yield saver
         return
 
@@ -303,7 +304,8 @@ async def build_services(settings=None, *, notifier=None, skip_ad: bool = False,
                         "account holds roles/aiplatform.user. Or set "
                         "ALM_ORCHESTRATION=deterministic.")
                 services.supervisor_llm = llm_module.get_supervisor_llm(settings)
-                await MemoryStore(store).migrate()
+                if getattr(settings, "auto_migrate", True):
+                    await MemoryStore(store).migrate()
                 log.info("orchestration_selected", mode=settings.orchestration,
                          agents=len(ROSTER), max_hops=settings.max_hops)
             else:

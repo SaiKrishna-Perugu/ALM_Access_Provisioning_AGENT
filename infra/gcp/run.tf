@@ -267,6 +267,85 @@ resource "google_cloud_run_v2_service" "worker" {
   ]
 }
 
+// ------------------------------------------------------- synthetic check
+// Only with var.synthetic_work_item (TEST). Every hour, queue a dry run of one
+// known work item; the workers run it like any other. A dry run writes
+// nothing, so it is safe against the real estate, and it proves sign-in to
+// EWM and JTS, the model and the queue end to end. ops/alerts.md alerts when
+// no run finishes for two hours. The deploy workflow also runs it once.
+resource "google_cloud_run_v2_job" "synthetic" {
+  count    = var.synthetic_work_item != "" ? 1 : 0
+  name     = "${local.prefix}-synthetic"
+  location = var.region
+  labels   = local.labels
+
+  deletion_protection = false
+
+  template {
+    task_count = 1
+    template {
+      service_account = google_service_account.run.email
+      max_retries     = 0
+      timeout         = "120s"
+
+      vpc_access {
+        network_interfaces {
+          network    = google_compute_network.vpc.id
+          subnetwork = google_compute_subnetwork.run.id
+        }
+        egress = "ALL_TRAFFIC"
+      }
+
+      containers {
+        image   = local.split_workers ? var.worker_image : var.container_image
+        command = ["python", "-m", "alm_agents.worker", "synthetic", var.synthetic_work_item]
+
+        dynamic "env" {
+          for_each = local.run_env
+          content {
+            name  = env.key
+            value = env.value
+          }
+        }
+      }
+    }
+  }
+
+  depends_on = [google_project_iam_member.run]
+}
+
+resource "google_service_account" "scheduler" {
+  count        = var.synthetic_work_item != "" ? 1 : 0
+  account_id   = "${local.prefix}-scheduler"
+  display_name = "ALM synthetic check trigger (Cloud Scheduler)"
+}
+
+resource "google_cloud_run_v2_job_iam_member" "scheduler" {
+  count    = var.synthetic_work_item != "" ? 1 : 0
+  name     = google_cloud_run_v2_job.synthetic[0].name
+  location = var.region
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${google_service_account.scheduler[0].email}"
+}
+
+resource "google_cloud_scheduler_job" "synthetic" {
+  count     = var.synthetic_work_item != "" ? 1 : 0
+  name      = "${local.prefix}-synthetic"
+  region    = var.region
+  schedule  = "17 * * * *"
+  time_zone = "Etc/UTC"
+
+  http_target {
+    http_method = "POST"
+    uri         = "https://run.googleapis.com/v2/projects/${var.project_id}/locations/${var.region}/jobs/${google_cloud_run_v2_job.synthetic[0].name}:run"
+    oauth_token {
+      service_account_email = google_service_account.scheduler[0].email
+    }
+  }
+
+  depends_on = [google_project_service.required]
+}
+
 // ------------------------------------------------- internal HTTPS + IAP
 locals {
   api_hostname = "alm-${var.environment}.internal.${var.project_id}.example"
