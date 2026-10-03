@@ -300,6 +300,24 @@ class Worker:
                          "from": list(snapshot.next)})
             await graph.ainvoke(None, config=config)
 
+        # A dry run cannot write, so its card is a preview of what a writing run
+        # would ask: shown in the trace, then the plan carries on. Nobody votes.
+        for _ in range(3):
+            card = await pending_interrupt(graph, thread_id)
+            if card is None or not ctx.shadow:
+                break
+            from alm_core.models import ApprovalDecision
+
+            shown = [str(i.get("userid")) for i in card.get("items", []) if i.get("userid")]
+            trace.write({"service": "approval", "kind": "preview", "users": shown,
+                         "reason": card.get("reason", "")})
+            ctx.run_id = ctx.run_id or snapshot.values.get("run_id", "")
+            ctx.thread_id = thread_id
+            await resume_run(graph, ctx, thread_id=thread_id, decision=ApprovalDecision(
+                thread_id=thread_id, approved=True, approver="dry-run:preview",
+                plan_hash=card.get("plan_hash", ""), approved_userids=shown,
+                comment="dry run: preview of the card a writing run asks for"))
+
         if await pending_interrupt(graph, thread_id) is not None:
             await self.store.upsert_run(thread_id, status="awaiting_approval")
             trace.write({"service": "run", "kind": "parked", "reason": "awaiting approval"})

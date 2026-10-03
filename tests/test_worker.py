@@ -142,9 +142,10 @@ def test_a_dry_run_from_the_queue_writes_nothing(tmp_path):
         return await h.store.get_run("wi-1001"), h.estate
 
     run, estate = run_with(tmp_path, scenario)
-    # A dry run's card is a preview: the worker parks it like any other.
-    assert run["status"] in ("awaiting_approval", "done")
+    # A dry run's card is a preview: nobody votes, the plan carries on to the end.
+    assert run["status"] == "done", run["error"]
     assert estate.ad_requests == [] and estate.comments["1001"] == []
+    assert all(r["outcome"] != "ok" for r in run["report"]["results"])
 
 
 def test_a_redelivered_trigger_does_not_start_a_second_run(tmp_path):

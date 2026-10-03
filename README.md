@@ -449,6 +449,29 @@ One run at a time. The page lists this session's runs. A real run keeps the same
 records as `agent_local.py` (`out/local/`), so the ledger stops either tool from
 repeating the other's writes.
 
+### The console in the cloud
+
+The cloud API serves the same console to signed-in people, on any replica:
+`https://<your API>/`.
+
+- **Sign-in.** The company IdP (`ALM_AUTH_MODE=oidc`) or an identity-aware
+  proxy (`iap`).
+- **Roles** from `ALM_ROLE_MAP`:
+  - viewers follow runs and traces;
+  - operators start and stop runs;
+  - approvers decide cards;
+  - auditors see traces unmasked;
+  - admins can do everything.
+- **Production approvals.** Production cards, and cards with a high-risk user,
+  need two different approvers. The person who started the run can't be one of
+  them.
+- **Announcements.** Approval announcements go to Google Chat, Teams or e-mail.
+  They link here; they can't approve anything.
+
+Runs are driven by workers from a shared queue, so anything shown here (the
+activity, the trace, the card and its votes) comes from the shared database,
+whichever machine did the work.
+
 ### Stopping a run
 
 A stop always lets the current step finish. A write in progress completes and is

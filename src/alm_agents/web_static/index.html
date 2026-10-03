@@ -16,6 +16,7 @@
   <span id="hosts" class="pill" hidden></span>
   <span id="model" class="pill"></span>
   <span id="operator" class="pill"></span>
+  <a id="signout" class="iconbtn" href="/auth/logout" hidden>Sign out</a>
   <button id="theme" class="iconbtn" type="button" aria-label="Switch light or dark theme">Theme</button>
 </header>
 
@@ -28,7 +29,7 @@
 
 <div class="layout">
   <nav class="panel runs" aria-label="Runs">
-    <p class="label">Runs this session</p>
+    <p class="label" id="runs-label">Runs this session</p>
     <ol id="runs"></ol>
     <p id="no-runs" class="empty-runs">No runs yet. Start one with a request.</p>
   </nav>
@@ -36,8 +37,10 @@
   <main class="center">
     <section class="panel composer" aria-labelledby="ask">
       <h1 id="ask">What should the agents do?</h1>
-      <p class="sub">Name the work items by number. The main agent routes the nine specialists;
+      <p class="sub" id="composer-help">Name the work items by number. The main agent routes the nine specialists;
         nothing is written unless you switch to <b>Write</b>, confirm, and approve the card.</p>
+      <p id="composer-note" class="sub" hidden>You can follow every run and its trace here.
+        Starting or stopping a run needs the operator role; deciding a card, the approver role.</p>
       <form id="request">
         <label for="prompt" class="label">Request</label>
         <textarea id="prompt" name="prompt" maxlength="2000"
@@ -47,7 +50,7 @@
         <div class="controls">
           <div class="segmented" role="group" aria-label="Run mode">
             <button type="button" data-mode="dry" aria-pressed="true">Dry run</button>
-            <button type="button" data-mode="commit" aria-pressed="false">Write</button>
+            <button type="button" id="write-mode" data-mode="commit" aria-pressed="false">Write</button>
           </div>
           <div class="scope-preview" aria-live="polite">
             <span class="muted">Scope:</span><span id="scope"></span>
