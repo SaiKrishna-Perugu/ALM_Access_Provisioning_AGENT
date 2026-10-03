@@ -3,6 +3,11 @@ output "api_url" {
   value       = google_cloud_run_v2_service.api.uri
 }
 
+output "worker_service" {
+  description = "The run-worker Cloud Run service, when worker_image is set; empty otherwise."
+  value       = local.split_workers ? google_cloud_run_v2_service.worker[0].name : ""
+}
+
 output "run_service_account" {
   description = "Grant this principal any additional access the toolkit needs."
   value       = google_service_account.run.email

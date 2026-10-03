@@ -78,6 +78,19 @@ jobs:
           print('chromium ok')
           "
 
+      - name: The worker answers its health probe, read-only
+        run: |
+          docker run -d --name worker --read-only --tmpfs /tmp -p 8081:8080 \
+            -e ALM_ORCHESTRATION=deterministic -e ALM_SHADOW_MODE=true \
+            -e ALM_ENVIRONMENT=TEST alm-worker:ci
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8081/healthz; then break; fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:8081/healthz
+
       - name: Logs on failure
         if: failure()
-        run: docker logs api || true
+        run: |
+          docker logs api || true
+          docker logs worker || true

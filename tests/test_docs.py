@@ -37,6 +37,8 @@ THIRD_PARTY_FLAGS = {
     "--no-access-log", "--interval", "--start-period", "--limit", "--freshness",
     # cosign, verifying an image's signature and SBOM attestation (RUNBOOK 7e).
     "--certificate-identity", "--certificate-oidc-issuer", "--type",
+    # gcloud sql, restoring the database (DR.md).
+    "--point-in-time", "--instance", "--restore-instance",
 }
 
 FLAG_RE = re.compile(r"(?<![\w-])(--[a-z][a-z0-9-]{1,30})")

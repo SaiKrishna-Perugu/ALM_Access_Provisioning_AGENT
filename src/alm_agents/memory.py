@@ -103,6 +103,21 @@ class MemoryStore:
                 await cur.execute(SCHEMA_SQL)
         log.info("memory_schema_ready")
 
+    async def purge_before(self, cutoff: datetime) -> int:
+        """Delete memories written before ``cutoff``. Returns how many."""
+        if not self.durable:
+            before = len(self._local)
+            self._local = [m for m in self._local if m.get("created_at", cutoff) >= cutoff]
+            return before - len(self._local)
+        if self._sqlite:
+            async with self.owner._lock:
+                cursor = await self.owner._conn().execute(
+                    "DELETE FROM alm_agent_memory WHERE created_at < ?", (cutoff.isoformat(),))
+                return cursor.rowcount or 0
+        async with self.owner._conn() as conn, conn.cursor() as cur:
+            await cur.execute("DELETE FROM alm_agent_memory WHERE created_at < %s", (cutoff,))
+            return cur.rowcount or 0
+
     # ---------------------------------------------------------------- write
 
     async def remember(self, *, kind: str, content: str, subject: str = "",

@@ -7,6 +7,27 @@ The local ledger (`out/local/alm.db`) has a schema version. A newer version of
 the code upgrades an older file automatically the next time it runs; a file
 written by newer code is refused until you update.
 
+## 2026-10-03: enterprise track, part 10 (workers, retention, recovery)
+
+**Do after pulling:** nothing. The next deploy from `main` splits the cloud service in two (see below).
+
+- **Run workers are a service of their own.**
+  - Deploy builds, scans, signs and verifies two images: `api` and `worker`.
+  - Terraform runs them as two Cloud Run services. The worker service is internal-only, has no invoker, and scales from `worker_min_instances` to `worker_max_instances`.
+  - Without `worker_image`, Terraform keeps the single service with workers inside the API.
+  - The worker answers `GET /healthz` on `ALM_WORKER_HEALTH_PORT` for liveness probes.
+- **Retention in the cloud.** The scheduler queues `retention-<date>` once a day. It deletes finished runs older than `ALM_RETENTION_DAYS` (default 30), with:
+  - their checkpoints, traces, approval cards, votes, stop requests and finished jobs;
+  - old webhook deliveries and agent memory.
+
+  The ledger and the audit trail are kept. The counts show on the run in the console.
+- **[docs/DR.md](docs/DR.md)** covers disaster recovery:
+  - where every piece of state lives;
+  - RPO 5 minutes and RTO 1 hour, to be measured;
+  - the restore procedure and a drill to rehearse it;
+  - why resuming after a restore cannot create a duplicate account.
+- **Optional client-managed key for the database:** `db_kms_key` in Terraform.
+
 ## 2026-10-03: enterprise track, part 9 (images and supply chain)
 
 **Do after pulling:** nothing.

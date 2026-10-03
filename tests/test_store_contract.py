@@ -421,3 +421,63 @@ def test_every_postgres_table_has_a_grant():
                      agent_memory.SCHEMA_SQL])
     tables = set(re.findall(r"CREATE TABLE IF NOT EXISTS (\w+)", sql)) - {"alm_audit"}
     assert tables <= set(admin.APP_TABLES), tables - set(admin.APP_TABLES)
+
+
+# ---------------------------------------------------------------- retention
+
+async def _age_run(store, thread_id: str, by: timedelta) -> None:
+    """Pretend the run last changed ``by`` ago."""
+    old = utcnow() - by
+    if isinstance(store, MemoryStore):
+        store._runs[thread_id]["updated_at"] = old.isoformat()
+        return
+    if type(store).__name__ == "PostgresStore":
+        async with store._conn() as conn:
+            await conn.execute("UPDATE alm_run SET updated_at = %s WHERE thread_id = %s",
+                               (old, thread_id))
+        return
+    from alm_core.store.sqlite import _ts
+
+    await store._conn().execute("UPDATE alm_run SET updated_at = ? WHERE thread_id = ?",
+                                (_ts(old), thread_id))
+
+
+def test_retention_purges_old_finished_runs_and_keeps_the_ledger_and_audit(make_store):
+    async def scenario():
+        store = await make_store()
+        try:
+            for thread, status in (("old-done", "done"), ("old-parked", "awaiting_approval"),
+                                   ("new-done", "done")):
+                await store.upsert_run(thread, status=status, mode="commit")
+                await store.record_trace(thread, [{"seq": 0, "service": "run",
+                                                   "kind": "x"}])
+                await store.request_stop(thread, "ops")
+            await store.save_approval_request(ApprovalRequest(
+                run_id="r1", thread_id="old-done", environment="TEST", plan_hash="p",
+                expires_at=utcnow() + timedelta(hours=1), items=[]))
+            job = await store.enqueue_job("start", "old-done", {})
+            claimed = await store.claim_job("w", 60, kinds=("start",))
+            await store.finish_job(claimed["id"], "w", ok=True)
+            await _claim(store)
+            await store.complete(KEY, _result())
+            await store.record(AuditEvent(run_id="r1", step="a", outcome=Outcome.OK))
+            await _age_run(store, "old-done", timedelta(days=40))
+            await _age_run(store, "old-parked", timedelta(days=40))
+
+            counts = await store.purge_before(utcnow() - timedelta(days=30))
+            kept = {t: await store.get_run(t) for t in ("old-done", "old-parked", "new-done")}
+            approval, _ = await store.get_approval("old-done")
+            return (counts, kept, approval, await store.trace_since("old-done"),
+                    await store.trace_since("old-parked"), await store.stop_request("old-done"),
+                    await _claim(store), await store.run_events("r1"), job)
+        finally:
+            await store.close()
+
+    counts, kept, approval, gone_trace, kept_trace, stop, claim, audit, job = run(scenario())
+    assert counts["threads"] == ["old-done"] and counts["runs"] == 1
+    assert counts["traces"] == 1 and counts["approvals"] == 1 and counts["jobs"] == 1
+    assert kept["old-done"] is None and approval is None and gone_trace == [] and stop is None
+    assert kept["old-parked"] is not None and kept_trace     # not finished: kept
+    assert kept["new-done"] is not None                      # recent: kept
+    assert claim[0] is False and claim[1].outcome == Outcome.OK   # the ledger still replays
+    assert len(audit) == 1 and job is not None                # the audit trail is untouched

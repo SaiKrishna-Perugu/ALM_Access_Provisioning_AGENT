@@ -277,7 +277,9 @@ def test_only_the_lease_holder_schedules_the_sweep(tmp_path):
     runs, depth = run_with(tmp_path, scenario)
     sweeps = [r for r in runs if r["thread_id"].startswith("reconcile-")]
     assert len(sweeps) == 1 and sweeps[0]["requested_by"] == "scheduler"
-    assert depth == {"queued": 1}
+    purges = [r for r in runs if r["thread_id"].startswith("retention-")]
+    assert len(purges) == 1 and purges[0]["trigger"] == "retention"
+    assert depth == {"queued": 2}       # the sweep and today's retention purge, once each
 
 
 def test_concurrent_runs_in_one_worker_keep_separate_traces(tmp_path):
@@ -337,3 +339,65 @@ def test_a_synthetic_check_queues_a_dry_run(tmp_path):
     assert run["mode"] == "dry" and run["scope"] == ["1001"] and run["trigger"] == "synthetic"
     assert [j["thread_id"] for j in jobs] == [thread]
     assert main(["synthetic", "not-a-number"]) == 2
+
+
+def test_the_retention_job_purges_old_runs_and_their_checkpoints(tmp_path):
+    """A finished run older than ALM_RETENTION_DAYS goes, checkpoint included;
+    the ledger, the audit trail and anything recent or unfinished stay."""
+    from datetime import timedelta
+
+    from alm_agents.graph import run_config
+    from alm_core.models import utcnow
+    from alm_core.store.sqlite import _ts
+
+    async def scenario(h):
+        await start(h, "wi-1001", ("1001",), mode="dry")
+        await start(h, "wi-1002", ("1002",), mode="dry")
+        await h.worker("w").drain()
+        await h.store._conn().execute(
+            "UPDATE alm_run SET updated_at = ? WHERE thread_id = 'wi-1001'",
+            (_ts(utcnow() - timedelta(days=45)),))
+        await h.worker("w").schedule()
+        await h.worker("w").drain()
+
+        saver = h.services.checkpointer
+        old = await saver.aget_tuple(run_config("wi-1001"))
+        new = await saver.aget_tuple(run_config("wi-1002"))
+        retention = [r for r in await h.store.list_runs() if r["trigger"] == "retention"]
+        audit = await h.store.recent_runs()
+        return old, new, retention, await h.store.get_run("wi-1001"), audit
+
+    old, new, retention, purged, audit = run_with(tmp_path, scenario)
+    assert purged is None and old is None            # the run and its checkpoint are gone
+    assert new is not None                           # the recent run is untouched
+    assert len(retention) == 1 and retention[0]["status"] == "done", retention
+    counts = retention[0]["report"]["retention"]
+    assert counts["runs"] == 1 and counts["checkpoints"] == 1 and counts["traces"] >= 1
+    assert audit                                     # the audit trail is kept
+
+
+def test_a_worker_answers_its_health_probe(tmp_path):
+    import socket
+
+    from alm_agents.worker import health_server
+
+    async def scenario(h):
+        worker = h.worker("w")
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        async with health_server(worker, port):
+            replies = []
+            for path in ("/healthz", "/other"):
+                reader, writer = await asyncio.open_connection("127.0.0.1", port)
+                writer.write(f"GET {path} HTTP/1.1\r\nHost: x\r\n\r\n".encode())
+                await writer.drain()
+                replies.append((await reader.read()).decode())
+                writer.close()
+        async with health_server(worker, 0) as none:
+            return replies, none
+
+    (ok, missing), none = run_with(tmp_path, scenario)
+    assert ok.startswith("HTTP/1.1 200 OK") and '"worker": "w"' in ok
+    assert missing.startswith("HTTP/1.1 404")
+    assert none is None

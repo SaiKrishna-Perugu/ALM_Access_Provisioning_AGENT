@@ -10,6 +10,10 @@ resource "google_sql_database_instance" "main" {
   // `terraform destroy` typo.
   deletion_protection = var.environment == "prod"
 
+  // The client's own key, where policy requires it (docs/DR.md). Set only at
+  // creation; the Cloud SQL service agent needs encrypt/decrypt on the key.
+  encryption_key_name = var.db_kms_key != "" ? var.db_kms_key : null
+
   settings {
     tier              = var.db_tier
     availability_type = var.environment == "prod" ? "REGIONAL" : "ZONAL"
