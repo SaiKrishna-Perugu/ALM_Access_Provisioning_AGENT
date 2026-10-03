@@ -11,6 +11,10 @@ name: Deploy
 # GitHub environment approval. Turning shadow mode off is not done here at all -
 # it is a deliberate configuration change, made once, with a change record.
 #
+# Pushes deploy only when the repository variable DEPLOY_ENABLED is "true"
+# (Settings > Secrets and variables > Actions > Variables); until then they
+# verify and stop.
+#
 # Each GitHub environment (test, prod) needs these variables (Settings >
 # Environments > Variables). They are the real intranet names, so they are
 # kept out of the repository; Terraform refuses to apply without them:
@@ -117,6 +121,10 @@ jobs:
       - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
         with:
           terraform_version: 1.9.8
+      - name: Is deploying switched on?
+        if: vars.DEPLOY_ENABLED != 'true' && github.event_name != 'workflow_dispatch'
+        run: echo "::notice::DEPLOY_ENABLED is not 'true'; verified only, nothing deployed."
+
       - name: Validate Terraform (GCP, and the AWS and Azure skeletons)
         run: |
           terraform fmt -check -recursive infra
@@ -127,6 +135,11 @@ jobs:
 
   build:
     needs: verify
+    # A push deploys only once the repository variable DEPLOY_ENABLED is
+    # "true" - set it after the cloud project, the secrets and the variables
+    # below exist. Until then a push verifies and stops, rather than failing
+    # at sign-in. A manual run always proceeds (and fails loudly if unset).
+    if: vars.DEPLOY_ENABLED == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     environment: ${{ github.event.inputs.target || 'test' }}
     outputs:
