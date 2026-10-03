@@ -31,7 +31,8 @@ def api(monkeypatch):
     monkeypatch.setattr(main.runtime, "services", SimpleNamespace(store=store))
     monkeypatch.setattr(main.runtime, "settings", SimpleNamespace(
         webhook_secret_name="webhook", approval_signing_secret_name="signing",  # pragma: allowlist secret
-        shadow_mode=False, environment="TEST"))
+        shadow_mode=False, environment="TEST", auth_mode="iap",
+        role_map='{"ops@example.com": "admin", "viewer@example.com": "viewer"}'))
     monkeypatch.setattr(main.runtime, "resolver", SimpleNamespace(get=lambda _n: SECRET))
     # No `with`: the lifespan (services, embedded workers) does not run.
     return TestClient(main.app), store
@@ -75,10 +76,15 @@ def test_a_bad_signature_or_work_item_id_is_refused(api):
     assert client.post("/webhooks/ewm", content=body, headers=headers).status_code == 422
 
 
+VIEWER = {"x-goog-authenticated-user-email": "accounts.google.com:viewer@example.com"}
+
+
 def test_runs_and_queue_come_from_the_store(api):
     import asyncio
 
     client, store = api
+    assert client.get("/runs").status_code == 401          # nobody signed in
+    client.headers.update(USER)
     asyncio.run(store.upsert_run("wi-7", status="running", mode="dry", scope=["7"]))
     asyncio.run(store.record_trace("wi-7", [{"seq": 0, "service": "run", "kind": "started"}]))
     runs = client.get("/runs").json()["runs"]
@@ -110,3 +116,44 @@ def test_a_manual_sweep_needs_a_caller(api):
     assert answer.status_code == 202
     assert store._jobs[0]["thread_id"] == answer.json()["thread_id"]
     assert store._runs[answer.json()["thread_id"]]["requested_by"] == "ops@example.com"
+
+
+def test_roles_decide_who_may_stop_start_and_sweep(api):
+    import asyncio
+
+    client, store = api
+    asyncio.run(store.upsert_run("wi-7", status="running"))
+    assert client.get("/runs", headers=VIEWER).status_code == 200
+    assert client.post("/runs/wi-7/stop", json={}, headers=VIEWER).status_code == 403
+    assert client.post("/admin/reconcile", headers=VIEWER).status_code == 403
+    assert client.post("/runs", json={"prompt": "dry run 1001"},
+                       headers=VIEWER).status_code == 403
+
+
+def test_an_operator_starts_runs_from_plain_words(api):
+    client, store = api
+    started = client.post("/runs", json={"prompt": "Dry run work item 1001"}, headers=USER)
+    assert started.status_code == 201
+    assert started.json() == {"thread_id": "wi-1001", "work_items": ["1001"], "mode": "dry"}
+    assert store._runs["wi-1001"]["requested_by"] == "ops@example.com"
+    again = client.post("/runs", json={"prompt": "1001 once more"}, headers=USER)
+    assert again.status_code == 409
+    unscoped = client.post("/runs", json={"prompt": "write everything", "mode": "commit",
+                                          "confirm": "COMMIT"}, headers=USER)
+    assert unscoped.status_code == 422 and "work items" in unscoped.json()["detail"]
+    two = client.post("/runs", json={"prompt": "provision 1002 and 1003", "mode": "commit",
+                                     "confirm": "COMMIT"}, headers=USER)
+    assert two.status_code == 201 and two.json()["thread_id"].startswith("console-")
+
+
+def test_traces_are_masked_for_everyone_but_auditors(api, monkeypatch):
+    import asyncio
+
+    client, store = api
+    asyncio.run(store.upsert_run("wi-7", status="running"))
+    asyncio.run(store.record_trace("wi-7", [{"seq": 0, "service": "tool",
+                                             "observation": "alice.smith@example.com AB12345"}]))
+    seen = client.get("/runs/wi-7/trace", headers=USER).json()["records"][0]   # admin
+    masked = client.get("/runs/wi-7/trace", headers=VIEWER).json()["records"][0]
+    assert "alice.smith@example.com" in seen["observation"]
+    assert "alice.smith" not in masked["observation"] and "AB12345" in masked["observation"]

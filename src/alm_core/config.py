@@ -244,6 +244,27 @@ class Settings(BaseSettings):
         description="Shared tool-call budget across every agent in a run.")
     agent_temperature: float = Field(default=0.0, ge=0.0, le=2.0)
 
+    # ------------------------------------------------------ sign-in, roles
+    auth_mode: Literal["iap", "oidc"] = Field(
+        default="iap",
+        description=("How people sign in to the API and console. iap: an identity-aware "
+                     "proxy in front (Google IAP) vouches for them. oidc: the service "
+                     "signs them in against the company IdP (Entra ID, Okta, Ping...)."))
+    oidc_issuer: str = Field(default="", description="e.g. https://login.microsoftonline.com/<tenant>/v2.0")
+    oidc_client_id: str = Field(default="")
+    oidc_client_secret_name: str = Field(default="alm-oidc-client-secret")
+    oidc_groups_claim: str = Field(default="groups")
+    oidc_scopes: str = Field(default="openid profile email")
+    session_secret_name: str = Field(
+        default="alm-session-signing-key",
+        description="Secret that signs session cookies; the same on every replica.")
+    session_hours: float = Field(default=10.0, gt=0, le=24)
+    role_map: str = Field(
+        default="{}",
+        description=("JSON: IdP group (id or name) or e-mail address -> role. Roles: "
+                     "viewer, operator, approver, auditor, admin. '*' gives every "
+                     "signed-in person a role."))
+
     # ----------------------------------------------------------- approval
     approval_ttl_minutes: int = Field(default=240, ge=1)
     approval_base_url: str = Field(default="", description="Public URL of the approval API.")

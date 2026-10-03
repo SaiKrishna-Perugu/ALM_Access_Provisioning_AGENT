@@ -11,7 +11,8 @@ gives the detail; what changed for operators is in [CHANGELOG.md](../CHANGELOG.m
 | M3 run workers, queue-based API, scheduler lease | Done |
 | M4 stop and traces in the cloud path | Done |
 | M5 cloud-neutral adapters (secrets, DB tokens, models, AD transport) | Done |
-| M6-M8 sign-in, roles, two approvers, service credentials | Next |
+| M6 sign-in (OIDC or IAP) and roles on the API | Done |
+| M6b hosted console, M7 two approvers, M8 service credentials | Next |
 | M9 directory port (Graph + GPT) | Done |
 | M10 AI governance, eval gate, cost caps | Planned |
 | M11 OpenTelemetry | Planned |
