@@ -7,6 +7,24 @@ The local ledger (`out/local/alm.db`) has a schema version. A newer version of
 the code upgrades an older file automatically the next time it runs; a file
 written by newer code is refused until you update.
 
+## 2026-10-03: enterprise track, part 12 (staged go-live)
+
+**Do after pulling:** nothing. Nothing changes until you set the new settings.
+
+- **Staged enablement.** `ALM_ALLOWED_OPERATIONS` lists the write operations a deployment performs. The rest are planned, shown on the card and skipped with the reason, in dry runs too. The pilot order is in [docs/DECISIONS.md](docs/DECISIONS.md):
+  1. reactivations, comments and evidence;
+  2. then new accounts;
+  3. then AD.
+- **Kill switch per operation.** `ALM_WRITES_DISABLED_OPERATIONS=ad_group_add` (for example) turns one operation off at once. The rest of each run carries on. An unknown operation name is refused at start-up.
+- **Shadow report.** `python -m alm_agents.shadow_report --days 14 --csv shadow.csv` lists:
+  - every write the dry runs would have asked approval for;
+  - every run that halted or failed;
+  - tokens per work item and the versions involved.
+
+  The CSV has two columns to fill in from what the CLI did.
+- **[docs/DECISIONS.md](docs/DECISIONS.md)** sets out D1–D8: what was decided, what is open, and how to retire the CLI safely.
+- **[docs/THREAT_MODEL.md](docs/THREAT_MODEL.md)** gives STRIDE with the controls in the code, and the data classification of everything that leaves the client network.
+
 ## 2026-10-03: enterprise track, part 11 (every cloud, and the release path)
 
 **Do after pulling:** if you run Terraform by hand, it moved from `infra/` to `infra/gcp/`. The state is unaffected; use `-chdir=infra/gcp`.

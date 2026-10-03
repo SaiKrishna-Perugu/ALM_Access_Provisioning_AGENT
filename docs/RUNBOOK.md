@@ -264,6 +264,20 @@ gcloud run services update alm-prod-api --region <region> \
 Use this when agent behaviour is the problem and the provisioning still needs to
 happen. Combine with `ALM_SHADOW_MODE=true` if you are not yet sure which it is.
 
+**One operation off.** When one target is the problem (the directory is
+failing, or comments are going wrong), turn off only that operation:
+
+```bash
+gcloud run services update alm-prod-worker --region <region>     --update-env-vars ALM_WRITES_DISABLED_OPERATIONS=ad_group_add
+```
+
+Runs still plan it and show it on the card. When they reach it, they skip it with the
+reason, and the rest of the run carries on. A skipped write is not recorded
+as done in the ledger, so a later run on that work item can still do it once
+the switch is cleared.
+`ALM_ALLOWED_OPERATIONS` is the same mechanism used the other way round, for
+staged go-live ([DECISIONS.md](DECISIONS.md), D7).
+
 ### Symptoms and causes
 
 | Symptom | Likely cause |

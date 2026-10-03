@@ -82,15 +82,29 @@ async def guarded_write(
     step: str = "",
     variant: str = "",
 ) -> ProvisionResult:
-    """Run one write under shadow mode, approval, idempotency and audit.
+    """Run one write under staged enablement, shadow mode, approval, idempotency
+    and audit.
 
     ``action`` returns ``(ok, message, detail)`` and is only awaited when all
-    four guards pass. It must perform exactly one logical write.
+    five guards pass. It must perform exactly one logical write.
     """
     key = idempotency_key(work_item_id, userid, operation, variant)
     step = step or operation.value
     base = {"userid": userid, "operation": operation, "work_item_id": work_item_id,
             "idempotency_key": key}
+
+    # 0. Staged enablement and kill switches: an operation this deployment
+    # does not perform is planned, shown and skipped - in a dry run too, so the
+    # plan says what a writing run would really do.
+    blocked = ""
+    check = getattr(ctx.settings, "operation_blocked", None)
+    if callable(check):
+        blocked = check(operation.value)
+    if blocked:
+        result = ProvisionResult(**base, outcome=Outcome.SKIPPED, message=blocked)
+        await record(ctx, result, step)
+        trace.emit("ledger", "disabled", **_traced(base), step=step, reason=blocked)
+        return result
 
     # 1. Shadow mode: plan it, never do it.
     if ctx.shadow:
