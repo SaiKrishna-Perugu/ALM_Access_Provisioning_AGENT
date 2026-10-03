@@ -53,3 +53,6 @@ psycopg[binary,pool]==3.3.6
 
 # --- Observability ----------------------------------------------------------
 structlog==25.5.0
+# OpenTelemetry over OTLP/HTTP (ALM_OTEL_ENABLED): any tracing backend, any cloud.
+opentelemetry-sdk==1.45.0
+opentelemetry-exporter-otlp-proto-http==1.45.0

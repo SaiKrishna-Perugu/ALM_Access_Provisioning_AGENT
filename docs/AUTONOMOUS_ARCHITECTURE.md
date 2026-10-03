@@ -543,14 +543,13 @@ Done since this section was first written:
   mints a fresh token per connection).
 - **Scale-out.** Runs are jobs in a Postgres queue, driven by workers; any
   number of API instances and workers can share the work (section 5).
+- **OpenTelemetry.** Each job is a span tree over OTLP (`ALM_OTEL_ENABLED`),
+  with metrics, alert rules (`ops/alerts.md`) and dashboards (`ops/dashboards/`).
+- **The audit trail is append-only** by trigger in both stores, and by
+  permission where the DBA applies `python -m alm_core.store.admin grants`.
 
 Still open:
 
-- **OpenTelemetry export.** Runs write a full trace (JSONL and the store), but
-  no spans are exported to a tracing backend yet.
-- **The audit table's grants** are described but not applied; `alm_audit` is
-  append-only by construction (and by trigger in SQLite), not yet by
-  permission in Postgres.
 - **Directory API for on-premises groups.** Microsoft Graph is available
   (`ALM_AD_DIRECTORY=graph`) for groups mastered in Entra ID. A group synced
   from on-premises AD still needs the GPT web UI and the Windows worker.

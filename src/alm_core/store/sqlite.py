@@ -176,6 +176,9 @@ CREATE TABLE IF NOT EXISTS alm_approval_vote (
     PRIMARY KEY (thread_id, plan_hash, approver)
 );
 """),
+    # Version 4: Postgres gains the append-only audit triggers this file has
+    # had since version 1. Nothing to do here; the number keeps them in step.
+    (4, ""),
 ]
 SCHEMA_VERSION = MIGRATIONS[-1][0]
 

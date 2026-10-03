@@ -134,6 +134,16 @@ resource "google_cloud_run_v2_service" "api" {
         value = var.role_map
       }
       env {
+        // Spans and metrics over OTLP/HTTP, to a collector that forwards them
+        // to Cloud Trace and Managed Prometheus. Off when no endpoint is set.
+        name  = "ALM_OTEL_ENABLED"
+        value = tostring(var.otel_endpoint != "")
+      }
+      env {
+        name  = "OTEL_EXPORTER_OTLP_ENDPOINT"
+        value = var.otel_endpoint
+      }
+      env {
         name  = "ALM_DB_AUTH"
         value = "gcp_iam"
       }

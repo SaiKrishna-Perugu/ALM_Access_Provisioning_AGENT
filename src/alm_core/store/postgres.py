@@ -11,9 +11,11 @@ are distinguishable rather than conflated:
   over. A crash between "claim" and "complete" must not wedge the pipeline
   forever, but nor should two workers race.
 
-The audit table is append-only by construction: there is no UPDATE or DELETE
-statement in this module for ``alm_audit``, and the migration grants the
-application role INSERT and SELECT only.
+The audit table is append-only three ways: there is no UPDATE or DELETE
+statement for ``alm_audit`` in this module; a trigger (schema version 4)
+refuses either; and where migrations run as a separate owner role, the grants
+from ``python -m alm_core.store.admin grants`` give the application role
+INSERT and SELECT only on it.
 
 The database is reached on a private address, and authenticated with the
 cloud's **IAM database authentication** (``ALM_DB_AUTH``: Cloud SQL, RDS or
@@ -31,7 +33,15 @@ from typing import Any
 from ..errors import ConfigError, IdempotencyViolation
 from ..logging import get_logger
 from ..models import ApprovalDecision, ApprovalRequest, AuditEvent, Operation, ProvisionResult
-from .runs import JOB_SELECT, RUN_SELECT, job_row, next_job_status, run_row, run_values
+from .runs import (
+    JOB_SELECT,
+    RUN_SELECT,
+    job_row,
+    log_audit,
+    next_job_status,
+    run_row,
+    run_values,
+)
 
 log = get_logger("alm.store")
 
@@ -170,6 +180,19 @@ CREATE TABLE IF NOT EXISTS alm_approval_vote (
     at           TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (thread_id, plan_hash, approver)
 );
+"""),
+    # Version 4: the audit table refuses UPDATE and DELETE, whoever asks - the
+    # same rule the SQLite ledger has had from version 1.
+    (4, """
+CREATE OR REPLACE FUNCTION alm_audit_append_only() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    RAISE EXCEPTION 'alm_audit is append-only';
+END;
+$$;
+DROP TRIGGER IF EXISTS alm_audit_no_change ON alm_audit;
+CREATE TRIGGER alm_audit_no_change BEFORE UPDATE OR DELETE ON alm_audit
+    FOR EACH ROW EXECUTE FUNCTION alm_audit_append_only();
 """),
 ]
 SCHEMA_VERSION = MIGRATIONS[-1][0]
@@ -380,6 +403,7 @@ class PostgresStore:
                  event.outcome.value, event.idempotency_key, event.approver,
                  event.message, event.error_type, _json(event.detail)),
             )
+        log_audit(log, event)
 
     async def record_many(self, events: list[AuditEvent]) -> None:
         for event in events:

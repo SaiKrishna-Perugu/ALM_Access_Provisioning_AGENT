@@ -187,6 +187,9 @@ async def lifespan(_app: FastAPI):
     settings = get_settings()
     runtime.settings = settings
     runtime.resolver = build_resolver(settings, interactive=False)
+    from alm_core import telemetry
+
+    telemetry.setup(settings, service="alm-api")
 
     stack = contextlib.AsyncExitStack()
     runtime.services = await stack.enter_async_context(
@@ -209,6 +212,7 @@ async def lifespan(_app: FastAPI):
             with contextlib.suppress(asyncio.CancelledError):
                 await runtime.worker_task
         await stack.aclose()
+        telemetry.shutdown()
         log.info("api_stopped")
 
 

@@ -24,6 +24,17 @@ RUN_STATUSES = ("queued", "running", "awaiting_approval", "stopping", "done", "s
                 "failed")
 
 
+def log_audit(log, event) -> None:
+    """One structured log line per audit row, ``audit=true``: what a SIEM
+    subscribes to (a log sink filtered on it), whichever store holds the row."""
+    log.info("audit", audit=True, run_id=event.run_id, step=event.step,
+             userid=event.userid, work_item=event.work_item_id,
+             operation=getattr(event.operation, "value", event.operation) or "",
+             outcome=getattr(event.outcome, "value", event.outcome),
+             approver=event.approver or "", environment=event.environment,
+             message=event.message)
+
+
 def _dumps(value: Any) -> str:
     return json.dumps(value, default=str, ensure_ascii=False)
 

@@ -1,6 +1,7 @@
 """Run workers: pull jobs from the store's queue and drive runs.
 
-    python -m alm_agents.worker        # a worker process (also runs inside the API)
+    python -m alm_agents.worker                  # a worker process (also runs inside the API)
+    python -m alm_agents.worker synthetic 1001   # queue a dry run of 1001: a scheduled check
 
 A job moves one run forward to its next pause or its end:
 
@@ -35,6 +36,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from alm_core import telemetry
 from alm_core.errors import ConfigError
 from alm_core.logging import get_logger, scrub_secrets
 
@@ -130,6 +132,7 @@ class Worker:
         self.backend = backend          # tests and the sandbox inject one
         self.on_event = on_event        # extra progress hook (the web console)
         self._tasks: set[asyncio.Task] = set()
+        self._depth_read = 0.0
 
     # ------------------------------------------------------------ the loop
 
@@ -176,6 +179,7 @@ class Worker:
 
     async def schedule(self) -> None:
         """The scheduler lease holder queues one reconcile sweep per interval."""
+        await self._read_depth()
         if self.reconcile_minutes <= 0:
             return
         if not await self.store.try_lease(SCHEDULER_LEASE, self.worker_id, self.lease):
@@ -192,6 +196,16 @@ class Worker:
                          environment=getattr(settings, "environment", ""))
         log.info("reconcile_scheduled", thread_id=thread_id, worker=self.worker_id)
 
+    async def _read_depth(self) -> None:
+        """Refresh the queue-depth gauge, at most every 15 seconds."""
+        otel = telemetry.get()
+        if otel is None or time.monotonic() - self._depth_read < 15:
+            return
+        self._depth_read = time.monotonic()
+        otel.queue_depth.clear()
+        otel.queue_depth.update(await self.store.queue_depth())
+        otel.busy[self.worker_id] = len(self._tasks)
+
     # -------------------------------------------------------------- one job
 
     async def handle(self, job: dict) -> None:
@@ -205,8 +219,13 @@ class Worker:
         trace.listeners.append(pending.append)
         keeper = asyncio.create_task(self._keep(job, control, pending, thread_id))
         outcome = {"ok": True, "error": ""}
+        otel = telemetry.get()
+        if otel is not None:
+            otel.busy[self.worker_id] = len(self._tasks)
         try:
-            with trace.bound():
+            with trace.bound(), self._span(otel, job) as spans:
+                if spans is not None:
+                    trace.listeners.append(spans.record)
                 trace.write({"service": "run", "kind": f"job_{job['kind']}",
                              "worker": self.worker_id, "job": job["id"],
                              "attempt": job["attempts"]})
@@ -225,9 +244,22 @@ class Worker:
                 await keeper
             await self._flush(thread_id, pending)
             trace.close()
-        await self.store.finish_job(
+        status = await self.store.finish_job(
             job["id"], self.worker_id, ok=outcome["ok"], error=outcome["error"],
             max_attempts=job["attempts"] if outcome.get("permanent") else self.max_attempts)
+        if otel is not None:
+            otel.jobs.add(1, {"kind": job["kind"], "result": str(status or "")})
+            otel.busy[self.worker_id] = max(0, len(self._tasks) - 1)
+
+    @contextlib.contextmanager
+    def _span(self, otel, job: dict):
+        """The job's root span when telemetry is on; nothing otherwise."""
+        if otel is None:
+            yield None
+            return
+        with otel.run_span(job["thread_id"], job_kind=job["kind"],
+                           attempt=job["attempts"], worker=self.worker_id) as spans:
+            yield spans
 
     async def _keep(self, job: dict, control, pending: list, thread_id: str) -> None:
         """While a job runs: renew its lease, watch for a stop, ship its trace."""
@@ -303,6 +335,7 @@ class Worker:
                 raise LookupError(f"no saved run {thread_id} to resume")
             await self.store.upsert_run(thread_id, status="running")
             card = await pending_interrupt(graph, thread_id)
+            await self._note_wait(thread_id, job)
             if card is not None:
                 ctx.run_id = snapshot.values.get("run_id", "")
                 ctx.thread_id = thread_id
@@ -405,6 +438,17 @@ class Worker:
         log.warning("model_down_fallback", thread_id=thread_id, fallback=fallback)
 
 
+    async def _note_wait(self, thread_id: str, job: dict) -> None:
+        """Approval wait time, from the card to the decision now resuming it."""
+        otel = telemetry.get()
+        if otel is None or job["payload"].get("decision") is None:
+            return
+        request, _ = await self.store.get_approval(thread_id)
+        if request is not None:
+            waited = (datetime.now(timezone.utc) - request.created_at).total_seconds()
+            otel.approval_wait.record(max(0.0, waited),
+                                      {"environment": request.environment or ""})
+
     @staticmethod
     def _decision(job: dict, card: dict, control, thread_id: str):
         """The decision a resume job carries - or, for a stop on a parked run,
@@ -434,8 +478,12 @@ async def serve(settings=None, *, stopping: asyncio.Event | None = None) -> None
     resolver = build_resolver(settings, interactive=False)
     preflight(settings, resolver)
     notifier = make_notifier(settings, resolver)
-    async with build_services(settings, notifier=notifier, resolver=resolver) as services:
-        await Worker(services).run_forever(stopping)
+    telemetry.setup(settings, service="alm-worker")
+    try:
+        async with build_services(settings, notifier=notifier, resolver=resolver) as services:
+            await Worker(services).run_forever(stopping)
+    finally:
+        telemetry.shutdown()
 
 
 def preflight(settings, resolver) -> None:
@@ -459,12 +507,43 @@ def preflight(settings, resolver) -> None:
             "file, or EWM_PASSWORD)") from err
 
 
-def main() -> int:
+async def queue_synthetic(work_item_id: str, settings=None) -> str:
+    """Queue a dry run of one work item, for a scheduled end-to-end check.
+
+    A dry run writes nothing, so it is safe against the real estate. It still
+    signs in to EWM and JTS, asks the model and goes through the queue, so a
+    missing ``done`` run in the metrics means something on that path is broken.
+    """
+    from alm_core.config import get_settings
+    from alm_core.store import get_store
+
+    settings = settings or get_settings()
+    stamp = time.strftime("%Y%m%dT%H%M", time.gmtime())
+    thread_id = f"synthetic-{work_item_id}-{stamp}"
+    store = await get_store(settings)
+    try:
+        await submit_run(store, thread_id=thread_id, work_item_ids=[work_item_id],
+                         mode="dry", requested_by="synthetic", trigger="synthetic",
+                         environment=getattr(settings, "environment", ""))
+    finally:
+        await store.close()
+    return thread_id
+
+
+def main(argv: list[str] | None = None) -> int:
     import signal
+    import sys
 
     from alm_core.logging import configure
 
     configure()
+    args = list(sys.argv[1:] if argv is None else argv)
+    if args[:1] == ["synthetic"]:
+        if len(args) != 2 or not args[1].isdigit():
+            print("usage: python -m alm_agents.worker synthetic <work item number>")
+            return 2
+        print(asyncio.run(queue_synthetic(args[1])))
+        return 0
     stopping = asyncio.Event()
 
     async def run() -> None:

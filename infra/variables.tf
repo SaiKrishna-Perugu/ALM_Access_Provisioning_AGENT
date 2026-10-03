@@ -150,6 +150,12 @@ variable "github_repository" {
   default     = ""
 }
 
+variable "otel_endpoint" {
+  description = "OTLP/HTTP endpoint of an OpenTelemetry collector (a sidecar, or a shared collector on the VPC) that forwards to Cloud Trace and Managed Prometheus, e.g. http://localhost:4318. Empty turns telemetry off."
+  type        = string
+  default     = ""
+}
+
 variable "role_map" {
   description = "ALM_ROLE_MAP: JSON of IAP e-mail address (or '*') to role - viewer, operator, approver, auditor, admin."
   type        = string
