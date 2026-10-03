@@ -16,6 +16,7 @@ from collections.abc import Iterator
 from typing import Any
 
 # defusedxml does the parsing; Element is only the stdlib type it returns.
+# nosemgrep: python.lang.security.use-defused-xml.use-defused-xml
 from xml.etree.ElementTree import Element  # noqa: S405 - type only, never parses
 
 import defusedxml.ElementTree as ET

@@ -13,6 +13,7 @@ trustworthy.
 """
 from __future__ import annotations
 
+import html
 import json
 import urllib.error
 import urllib.parse
@@ -28,24 +29,29 @@ log = get_logger("alm.api.chat")
 _RISK_MARK = {RiskLevel.HIGH: "&#9888;", RiskLevel.MEDIUM: "&#9679;", RiskLevel.LOW: "&#9675;"}
 
 
+def _e(value) -> str:
+    """Text for a card's HTML. Names and reasons can come from what a requester
+    typed, and Chat renders the markup an approver sees."""
+    return html.escape(str(value), quote=True)
+
+
 def _user_widget(item) -> dict:
-    lines = [
-        f"<b>{item.action}</b>",
-        f"Work items: {', '.join(item.work_item_ids) or '-'}",
-        f"Registry state: {item.state.value}",
-    ]
-    if item.risk_reasons:
-        lines.append("<br>".join(f"&bull; {r}" for r in item.risk_reasons))
-    top = f"{_RISK_MARK.get(item.risk, '')} <b>{item.userid}</b>"
+    top = f"{_RISK_MARK.get(item.risk, '')} <b>{_e(item.userid)}</b>"
     if item.display_name:
-        top += f" &mdash; {item.display_name}"
+        top += f" &mdash; {_e(item.display_name)}"
     if item.risk == RiskLevel.HIGH:
         top = f"<font color=\"#B3261E\">{top}</font>"
+    # text takes Chat's HTML subset; the labels are plain text.
+    text = [top]
+    if item.action:
+        text.append(_e(item.action))
+    text += [f"&bull; {_e(r)}" for r in item.risk_reasons]
     return {
         "decoratedText": {
             "topLabel": item.risk.value.upper(),
-            "text": top,
-            "bottomLabel": " | ".join(lines[:2]),
+            "text": "<br>".join(text),
+            "bottomLabel": (f"Work items: {', '.join(item.work_item_ids) or '-'} | "
+                            f"Registry state: {item.state.value}"),
             "wrapText": True,
         }
     }
@@ -59,10 +65,10 @@ def build_card(request: ApprovalRequest, *, review_url: str, needed: int = 1) ->
     header_sections: list[dict] = [{
         "widgets": [{
             "textParagraph": {
-                "text": (f"<b>{request.user_count}</b> user(s) across "
-                         f"<b>{request.work_item_count}</b> work item(s) &middot; "
-                         f"environment <b>{request.environment}</b> &middot; "
-                         f"<b>{needed}</b> approver(s) needed<br>"
+                "text": (f"<b>{int(request.user_count)}</b> user(s) across "  # nosemgrep: python.django.security.injection.raw-html-format.raw-html-format - every value escaped or an int
+                         f"<b>{int(request.work_item_count)}</b> work item(s) &middot; "  # nosemgrep: python.django.security.injection.raw-html-format.raw-html-format
+                         f"environment <b>{_e(request.environment)}</b> &middot; "  # nosemgrep: python.django.security.injection.raw-html-format.raw-html-format
+                         f"<b>{int(needed)}</b> approver(s) needed<br>"
                          f"Expires {request.expires_at:%Y-%m-%d %H:%M} UTC")
             }
         }]
@@ -71,8 +77,8 @@ def build_card(request: ApprovalRequest, *, review_url: str, needed: int = 1) ->
     if high:
         header_sections.append({"widgets": [{
             "textParagraph": {
-                "text": (f"<font color=\"#B3261E\"><b>{len(high)} user(s) need a closer "
-                         f"look:</b> {', '.join(i.userid for i in high)}</font>")
+                "text": (f"<font color=\"#B3261E\"><b>{len(high)} user(s) need a closer "  # nosemgrep: python.django.security.injection.raw-html-format.raw-html-format - escaped
+                         f"look:</b> {_e(', '.join(i.userid for i in high))}</font>")
             }
         }]})
 
@@ -123,7 +129,7 @@ def post_card(webhook_url: str, payload: dict, *, timeout: float = 15.0) -> bool
         webhook_url, data=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json; charset=UTF-8"}, method="POST")
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 - URL scheme verified to be https only
+        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected - https only, checked above
             ok = 200 <= response.status < 300
             if not ok:
                 log.warning("chat_card_rejected", status=response.status)

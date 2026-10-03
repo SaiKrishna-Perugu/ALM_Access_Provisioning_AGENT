@@ -18,7 +18,8 @@ gives the detail; what changed for operators is in [CHANGELOG.md](../CHANGELOG.m
 | M9 directory port (Graph + GPT) | Done |
 | M10 AI governance, eval gate, cost caps | Done |
 | M11 OpenTelemetry, metrics, alerts, append-only audit | Done |
-| M12-M14 images, supply chain, DR, per-cloud IaC, pipeline | Next |
+| M12 images and supply chain (targets, scan, SBOM, signing, Semgrep) | Done |
+| M13-M14 DR, retention, worker scaling, per-cloud IaC, pipeline | Next |
 | M15 PROD shadow and staged enablement | Needs the client network |
 
 ## 1. Where we are
@@ -272,6 +273,17 @@ roughly halves calendar time from Phase 2 on.
   controls): access reviews, change records, audit retention, DR tests.
 - **Exit:** clean pen test (or accepted findings), signed images only, security
   sign-off from the client.
+- **Built (M12):**
+  - Dockerfile targets `api` (no browser), `worker` and `all-in-one`. Each is non-root, runs with a read-only root (only /tmp writable) and has no pip, on a base pinned by digest.
+  - The `image.yml` PR workflow builds both targets, gates on a Trivy scan (any fixable HIGH or CRITICAL), and proves the api runs read-only and Chromium starts.
+  - Deploy: scan gate, Syft SBOM, keyless cosign signature and an SBOM attestation. The signature is verified before Terraform runs, and only images built by this workflow on main deploy.
+  - Semgrep in CI.
+  - Fixed two bugs that stopped every image build: the CA bundle was excluded from the build context, and the CA `cp` failed against the link `update-ca-certificates` creates. Requester text on the Chat and Teams cards is escaped.
+- **Still open:**
+  - a distroless base (the healthcheck needs a shell today);
+  - Binary Authorization or an admission policy so the platform itself refuses unsigned images;
+  - DAST and the external pen test;
+  - control mapping for the client's framework.
 
 ### Phase 7: Delivery pipeline and environments (1-2 weeks)
 

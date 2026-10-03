@@ -399,6 +399,36 @@ It only prints SQL. It never connects, and needs no credentials.
 
 ---
 
+## 7e. Images and their security
+
+| Image | Target | Holds |
+|---|---|---|
+| API and console | `api` | No browser; `ALM_WORKER_CONCURRENCY=0` |
+| Run worker | `worker` | Chromium for evidence screenshots |
+| Both (today's Cloud Run service) | `all-in-one` | API, embedded workers, Chromium |
+
+**Is this image the one we built?**
+
+```bash
+cosign verify <image@digest>   --certificate-identity https://github.com/<owner>/<repo>/.github/workflows/deploy.yml@refs/heads/main   --certificate-oidc-issuer https://token.actions.githubusercontent.com
+cosign verify-attestation <image@digest> --type spdxjson ...same flags...   # its SBOM
+```
+
+The SBOM is also attached to each deploy run as the artifact `sbom`.
+
+**A deploy stopped at the scan.** Trivy found a fixable HIGH or CRITICAL
+vulnerability. Read which package it is in the log:
+
+- A Python package: raise its pin in `requirements-cloud.txt`.
+- A Debian package: the build already runs `apt-get upgrade`, so refresh the base image digest in the `Dockerfile`.
+
+**Monthly:**
+- refresh the base image digest (`docker pull python:3.13-slim`, then copy the new digest into the `FROM` line);
+- refresh the scanner pins in `image.yml` and `deploy.yml`;
+- let the PR's image job prove the images still build and pass.
+
+---
+
 ## 8. Connectivity
 
 The failure that looks like everything else.
