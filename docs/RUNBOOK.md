@@ -202,14 +202,21 @@ SELECT thread_id, run_id, expires_at FROM alm_approval
 WHERE decision IS NULL AND expires_at < now();
 ```
 
-An expired approval is not a failure — the run halts and the work item is swept
-again by the next reconciliation. If cards are not arriving, check
-`ALM_CHAT_WEBHOOK_URL` and the `approval_notification_failed` log event; the
-run is still reachable at `/approvals/{thread_id}` regardless, because a card
-that fails to send must not lose the run.
+```sql
+-- Who has voted on a card so far (two are needed in production)
+SELECT approver, approved, userids, at FROM alm_approval_vote
+WHERE thread_id = '<thread-id>' ORDER BY at;
+```
 
-**Do not approve on someone's behalf.** The audit row records the caller's IAP
-identity, and it is the only evidence of who authorised a production change.
+An expired approval is not a failure — the run halts and the work item is swept
+again by the next reconciliation. If announcements are not arriving, check
+`ALM_NOTIFY_CHANNELS`, the channel's URL or SMTP settings, and the
+`approval_announced` log event; the run is listed in the console as awaiting
+approval regardless, because a message that fails to send must not lose the run.
+
+**Do not approve on someone's behalf.** Each vote's audit row records the
+signed-in approver, and it is the only evidence of who authorised a production
+change.
 
 ---
 
@@ -353,7 +360,7 @@ gcloud run jobs execute alm-prod-smoke --region <region> --wait  # "python -m al
 | Duplicate comments appearing | Ledger is not being consulted — check `ALM_POSTGRES_DSN` is set and the app can reach it |
 | Evidence gate firing repeatedly | The browser session is failing to authenticate. **Do not disable the gate** — it is doing its job |
 | Circuit breaker open on EWM/JTS | The upstream is unhealthy. Confirm with the ALM platform team before raising the threshold |
-| Approval card links rejected | The signing key was rotated, or the plan changed after the card was sent. Trigger a fresh run |
+| An approver is refused | `this needs the approver role`: add them to `ALM_ROLE_MAP`. `neither may be the person who started the run`: a second, different approver decides. `already decided`: someone else completed it |
 | LLM producing odd extractions | Set `ALM_LLM_ENABLED=false`. Deterministic parsing continues; unparseable rows go to a human |
 
 Anything involving a production write that should not have happened: capture

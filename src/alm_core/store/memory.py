@@ -36,6 +36,7 @@ class MemoryStore:
         self._seen: dict[str, datetime] = {}
         self._leases: dict[str, tuple[str, datetime]] = {}
         self._traces: list[tuple[str, dict]] = []
+        self._votes: dict[tuple[str, str], list[dict]] = {}
         self._lock = asyncio.Lock()
 
     async def start(self) -> None:
@@ -271,6 +272,21 @@ class MemoryStore:
                if thread == thread_id and cursor > after]
         return out[:limit]
 
+
+    # --------------------------------------------------------------- votes
+
+    async def add_vote(self, thread_id: str, plan_hash: str, approver: str, *,
+                       approved: bool, userids: list[str], comment: str = "") -> bool:
+        votes = self._votes.setdefault((thread_id, plan_hash), [])
+        if any(v["approver"] == approver.lower() for v in votes):
+            return False
+        votes.append({"approver": approver.lower(), "approved": approved,
+                      "userids": list(userids), "comment": comment[:500],
+                      "at": _iso(_now())})
+        return True
+
+    async def votes(self, thread_id: str, plan_hash: str) -> list[dict]:
+        return [dict(v) for v in self._votes.get((thread_id, plan_hash), [])]
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)

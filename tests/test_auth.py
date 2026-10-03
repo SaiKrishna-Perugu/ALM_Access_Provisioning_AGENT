@@ -19,7 +19,7 @@ from alm_core.store.memory import MemoryStore  # noqa: E402
 
 ISSUER = "https://idp.example.com/tenant"
 SECRETS = {"session": "s" * 32, "oidc": "client-secret",  # pragma: allowlist secret
-           "webhook": "w", "signing": "a"}
+           "webhook": "w"}
 
 
 def b64(obj) -> str:
@@ -61,7 +61,7 @@ def oidc_api(monkeypatch):
         oidc_groups_claim="groups", oidc_scopes="openid email", session_hours=8.0,
         role_map='{"alm-operators": "operator", "alm-approvers": "approver"}',
         approval_base_url="https://alm.example.com", environment="TEST", shadow_mode=False,
-        webhook_secret_name="webhook", approval_signing_secret_name="signing"))  # pragma: allowlist secret
+        webhook_secret_name="webhook"))  # pragma: allowlist secret
     monkeypatch.setattr(main.runtime, "resolver",
                         SimpleNamespace(get=lambda name: SECRETS[name]))
     real = auth.Oidc

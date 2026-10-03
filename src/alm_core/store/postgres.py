@@ -158,6 +158,19 @@ CREATE TABLE IF NOT EXISTS alm_trace_event (
 );
 CREATE INDEX IF NOT EXISTS alm_trace_thread ON alm_trace_event (thread_id, id);
 """),
+    # Version 3: one row per approver per plan, for the two-person rule.
+    (3, """
+CREATE TABLE IF NOT EXISTS alm_approval_vote (
+    thread_id    TEXT NOT NULL,
+    plan_hash    TEXT NOT NULL,
+    approver     TEXT NOT NULL,
+    approved     BOOLEAN NOT NULL,
+    userids      JSONB NOT NULL DEFAULT '[]'::jsonb,
+    comment      TEXT NOT NULL DEFAULT '',
+    at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (thread_id, plan_hash, approver)
+);
+"""),
 ]
 SCHEMA_VERSION = MIGRATIONS[-1][0]
 
@@ -641,3 +654,26 @@ class PostgresStore:
                 "ORDER BY id LIMIT %s", (thread_id, after, limit))
             rows = await cur.fetchall()
         return [{**record, "cursor": cursor} for cursor, record in rows]
+
+    # --------------------------------------------------------------- votes
+
+    async def add_vote(self, thread_id: str, plan_hash: str, approver: str, *,
+                       approved: bool, userids: list[str], comment: str = "") -> bool:
+        """Record one approver's vote on one plan. False if they already voted."""
+        async with self._conn() as conn, conn.cursor() as cur:
+            await cur.execute(
+                "INSERT INTO alm_approval_vote (thread_id, plan_hash, approver, approved, "
+                "userids, comment) VALUES (%s, %s, %s, %s, %s::jsonb, %s) "
+                "ON CONFLICT (thread_id, plan_hash, approver) DO NOTHING",
+                (thread_id, plan_hash, approver.lower(), approved, _json(userids),
+                 comment[:500]))
+            return cur.rowcount == 1
+
+    async def votes(self, thread_id: str, plan_hash: str) -> list[dict]:
+        async with self._conn() as conn, conn.cursor() as cur:
+            await cur.execute(
+                "SELECT approver, approved, userids, comment, at FROM alm_approval_vote "
+                "WHERE thread_id = %s AND plan_hash = %s ORDER BY at", (thread_id, plan_hash))
+            rows = await cur.fetchall()
+        return [{"approver": r[0], "approved": r[1], "userids": r[2], "comment": r[3],
+                 "at": r[4].isoformat()} for r in rows]

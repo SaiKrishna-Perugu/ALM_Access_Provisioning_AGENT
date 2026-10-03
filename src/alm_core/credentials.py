@@ -330,7 +330,10 @@ def build_resolver(settings=None, *, prompt: str = "Password", interactive: bool
     providers: list[SecretProvider] = [
         EnvironmentProvider({
             settings.password_secret_name: "EWM_PASSWORD",  # pragma: allowlist secret
-            settings.approval_signing_secret_name: "ALM_APPROVAL_SIGNING_KEY",  # pragma: allowlist secret
+            settings.session_secret_name: "ALM_SESSION_SIGNING_KEY",  # pragma: allowlist secret
+            settings.oidc_client_secret_name: "ALM_OIDC_CLIENT_SECRET",  # pragma: allowlist secret
+            settings.graph_client_secret_name: "ALM_GRAPH_CLIENT_SECRET",  # pragma: allowlist secret
+            settings.smtp_password_secret_name: "ALM_SMTP_PASSWORD",  # pragma: allowlist secret
             settings.webhook_secret_name: "ALM_WEBHOOK_HMAC_KEY",  # pragma: allowlist secret
             settings.gemini_api_key_secret_name: "GEMINI_API_KEY",  # pragma: allowlist secret
             settings.typesafe_api_key_secret_name: "TYPESAFE_API_KEY",  # pragma: allowlist secret

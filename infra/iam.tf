@@ -171,9 +171,10 @@ resource "google_project_iam_member" "deploy" {
 }
 
 // ---------------------------------------------------------------- approvers
-// IAP decides who may open the approval UI. Who may *approve* is then decided
-// per request by a signed token plus the caller's identity, which is what the
-// audit row records.
+// IAP decides who may reach the service at all. What they may do is then
+// decided per request by their role (ALM_ROLE_MAP) - approving needs the
+// approver role, and production needs two approvers - and the audit row
+// records who they were.
 resource "google_iap_web_backend_service_iam_member" "approvers" {
   count = var.approver_group == "" ? 0 : 1
 

@@ -30,7 +30,7 @@ def api(monkeypatch):
     monkeypatch.delenv("ALM_IAP_AUDIENCE", raising=False)
     monkeypatch.setattr(main.runtime, "services", SimpleNamespace(store=store))
     monkeypatch.setattr(main.runtime, "settings", SimpleNamespace(
-        webhook_secret_name="webhook", approval_signing_secret_name="signing",  # pragma: allowlist secret
+        webhook_secret_name="webhook",  # pragma: allowlist secret
         shadow_mode=False, environment="TEST", auth_mode="iap",
         role_map='{"ops@example.com": "admin", "viewer@example.com": "viewer"}'))
     monkeypatch.setattr(main.runtime, "resolver", SimpleNamespace(get=lambda _n: SECRET))

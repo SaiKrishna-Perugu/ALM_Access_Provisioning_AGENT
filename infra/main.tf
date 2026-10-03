@@ -54,7 +54,7 @@ locals {
   // alm_core/config.py - the names are the contract between the two.
   secret_ids = merge({
     password = "alm-service-account-password" # pragma: allowlist secret
-    approval = "alm-approval-signing-key"
+    session  = "alm-session-signing-key"
     webhook  = "alm-webhook-hmac-key"
   }, { for k, v in { gemini = "alm-gemini-api-key" } : k => v if local.gemini_api })
 

@@ -75,7 +75,6 @@ class Settings(BaseSettings):
     # Secret Manager secret ids - the project and version are assembled by
     # secret_path(), so rotating the pinned version is one setting.
     password_secret_name: str = Field(default="alm-service-account-password")
-    approval_signing_secret_name: str = Field(default="alm-approval-signing-key")
     webhook_secret_name: str = Field(default="alm-webhook-hmac-key")
     secret_version: str = Field(
         default="latest",
@@ -267,6 +266,21 @@ class Settings(BaseSettings):
 
     # ----------------------------------------------------------- approval
     approval_ttl_minutes: int = Field(default=240, ge=1)
+    approvers_required: int = Field(default=1, ge=1, le=5)
+    approvers_required_prod: int = Field(
+        default=2, ge=1, le=5, description="Approvers a production card needs.")
+    approvers_required_high_risk: int = Field(
+        default=2, ge=1, le=5, description="Approvers a card with a high-risk user needs.")
+    notify_channels: str = Field(
+        default="chat",
+        description="Where approval cards go: any of chat, teams, email (comma-separated).")
+    teams_webhook_url: str = Field(default="", description="Teams incoming webhook.")
+    smtp_host: str = Field(default="")
+    smtp_port: int = Field(default=587)
+    smtp_from: str = Field(default="")
+    approver_emails: str = Field(default="", description="Comma-separated recipients.")
+    smtp_password_secret_name: str = Field(
+        default="alm-smtp-password", description="Optional; SMTP without auth when unset.")
     approval_base_url: str = Field(default="", description="Public URL of the approval API.")
     chat_webhook_url: str = Field(
         default="",
