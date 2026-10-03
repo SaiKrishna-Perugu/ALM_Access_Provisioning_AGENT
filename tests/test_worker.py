@@ -315,3 +315,25 @@ def test_the_worker_program_starts_its_services_and_stops_cleanly(tmp_path):
 
     asyncio.run(main())
     assert (tmp_path / "local" / "alm.db").exists()   # the store was opened and migrated
+
+
+def test_a_synthetic_check_queues_a_dry_run(tmp_path):
+    from test_local_runner import local_settings
+
+    from alm_agents.worker import main, queue_synthetic
+
+    settings = local_settings(tmp_path)
+
+    async def scenario():
+        thread = await queue_synthetic("1001", settings)
+        store = await get_store(settings)
+        try:
+            return thread, await store.get_run(thread), await store.list_jobs(status="queued")
+        finally:
+            await store.close()
+
+    thread, run, jobs = asyncio.run(scenario())
+    assert thread.startswith("synthetic-1001-")
+    assert run["mode"] == "dry" and run["scope"] == ["1001"] and run["trigger"] == "synthetic"
+    assert [j["thread_id"] for j in jobs] == [thread]
+    assert main(["synthetic", "not-a-number"]) == 2

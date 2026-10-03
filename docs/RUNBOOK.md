@@ -367,6 +367,38 @@ says which is missing. `GET /status` (viewer) shows whether the database, EWM,
 JTS and the model are reachable. A failed Jazz sign-in there is retried only
 after ten minutes, so a wrong password cannot lock the account by probing.
 
+## 7d. Telemetry and the audit trail
+
+**Turning telemetry on.** Set `ALM_OTEL_ENABLED=true` and
+`OTEL_EXPORTER_OTLP_ENDPOINT` to an OpenTelemetry collector (Terraform:
+`otel_endpoint`). The collector forwards to the client's backend, for example
+Cloud Trace with Managed Prometheus, X-Ray with CloudWatch, or Azure Monitor.
+
+- Dashboards are in `ops/dashboards/` and the alert rules in `ops/alerts.md`.
+- A span tree has the shape and the timings, but no content. For the prompts,
+  replies and tool results, open the same run's Trace tab in the console. Its
+  `thread_id` is the root span's `alm.thread_id`.
+- When the collector is unreachable, spans are dropped after the exporter's
+  retries. Runs are not affected.
+
+**The audit trail is append-only.** A trigger refuses UPDATE and DELETE on
+`alm_audit` for every role (`alm_audit is append-only`). If the services
+connect as a role that does not own the tables, apply the grants once as an
+administrator:
+
+```bash
+python -m alm_core.store.admin grants --app-role <the services' database user> > grants.sql
+# review grants.sql, then run it as the owner or an administrator
+```
+
+It only prints SQL. It never connects, and needs no credentials.
+
+**SIEM.** Every audit row is also a log line with `"event": "audit"` and
+`"audit": true`. Route those lines to the SIEM with a log sink filtered on
+`jsonPayload.audit=true` (or the equivalent filter in CloudWatch or Azure Monitor).
+
+---
+
 ## 8. Connectivity
 
 The failure that looks like everything else.

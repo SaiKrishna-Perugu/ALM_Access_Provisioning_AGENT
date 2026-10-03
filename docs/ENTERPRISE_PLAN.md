@@ -17,8 +17,8 @@ gives the detail; what changed for operators is in [CHANGELOG.md](../CHANGELOG.m
 | M8 service credentials, status | Done |
 | M9 directory port (Graph + GPT) | Done |
 | M10 AI governance, eval gate, cost caps | Done |
-| M11 OpenTelemetry | Next |
-| M12-M14 images, supply chain, DR, per-cloud IaC, pipeline | Planned |
+| M11 OpenTelemetry, metrics, alerts, append-only audit | Done |
+| M12-M14 images, supply chain, DR, per-cloud IaC, pipeline | Next |
 | M15 PROD shadow and staged enablement | Needs the client network |
 
 ## 1. Where we are
@@ -237,10 +237,21 @@ roughly halves calendar time from Phase 2 on.
 - Dashboards: operations (queue, runs, errors), AI (tokens, hops, denials,
   eval trend), audit (writes by approver).
 - Audit export to the client SIEM (append-only stream). Make the audit table
-  append-only by permission: INSERT and SELECT grants only (still open).
+  append-only by permission: INSERT and SELECT grants only.
 - Runbook updates (section 7 below); on-call ownership agreed with the client.
 - **Exit:** a synthetic run every 15 minutes in TEST, alerts fire on injected
   faults (EWM down, model 429, worker killed).
+- **Built (M11):**
+  - `alm_core/telemetry.py`: OTLP spans and metrics, with an allowlist of exported attributes;
+  - `ops/alerts.md`: SLOs and burn-rate rules;
+  - `ops/dashboards/`: Grafana and Cloud Monitoring;
+  - the `synthetic` worker command;
+  - audit rows as `audit=true` log lines for the SIEM;
+  - the Postgres append-only trigger and the admin grants.
+- **Still open:**
+  - an audit dashboard by approver (the audit table holds it; it needs the SIEM's own query language);
+  - the injected-fault exercise on TEST;
+  - on-call ownership, agreed with the client.
 
 ### Phase 6: Security hardening and compliance (2 weeks, overlaps 4-5) - fixes G10
 

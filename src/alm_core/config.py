@@ -221,6 +221,12 @@ class Settings(BaseSettings):
         default=400_000, ge=0, description="Model tokens one run may spend; 0 = no cap.")
     max_tokens_per_day: int = Field(
         default=0, ge=0, description="Model tokens all runs may spend per UTC day; 0 = no cap.")
+    otel_enabled: bool = Field(
+        default=False,
+        description=("Export each run as OpenTelemetry spans, and the service's metrics, "
+                     "over OTLP/HTTP to OTEL_EXPORTER_OTLP_ENDPOINT."))
+    otel_metric_interval_seconds: int = Field(
+        default=60, ge=5, description="How often metrics are exported.")
     degrade_on_model_failure: bool = Field(
         default=False,
         description=("When the model is unavailable, re-run the same work items in the "

@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from ..errors import IdempotencyViolation
 from ..logging import get_logger
 from ..models import ApprovalDecision, ApprovalRequest, AuditEvent, Operation, ProvisionResult
-from .runs import next_job_status, run_values
+from .runs import log_audit, next_job_status, run_values
 
 log = get_logger("alm.store.memory")
 
@@ -92,9 +92,7 @@ class MemoryStore:
 
     async def record(self, event: AuditEvent) -> None:
         self._audit.append(event)
-        log.info("audit", step=event.step, userid=event.userid,
-                 outcome=event.outcome.value, work_item=event.work_item_id,
-                 message=event.message)
+        log_audit(log, event)
 
     async def record_many(self, events: list[AuditEvent]) -> None:
         for event in events:

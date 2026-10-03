@@ -73,7 +73,7 @@ def scripted_recovery(monkeypatch):
 
 PG_TABLES = ("alm_idempotency", "alm_audit", "alm_approval", "alm_schema_version",
              "alm_run", "alm_run_job", "alm_run_control", "alm_webhook_seen", "alm_lease",
-             "alm_trace_event", "alm_agent_memory")
+             "alm_trace_event", "alm_agent_memory", "alm_approval_vote")
 
 
 def run_async(coro):

@@ -365,3 +365,59 @@ def test_postgres_migrates_once_and_refuses_a_newer_schema(postgres_dsn):
 
     version, count = run_async(scenario())
     assert version == postgres.SCHEMA_VERSION and count == len(postgres.MIGRATIONS)
+
+
+def test_postgres_audit_trail_is_append_only(postgres_dsn):
+    """Schema version 4: whoever asks, an audit row cannot be changed or removed."""
+    pytest.importorskip("psycopg_pool")
+    import psycopg
+
+    from alm_core.store import postgres
+
+    async def scenario():
+        store = postgres.PostgresStore(postgres_dsn, pool_min=1, pool_max=2)
+        await store.start()
+        try:
+            await store.migrate()
+            await store.record(AuditEvent(run_id="r1", step="a", outcome=Outcome.OK))
+            refused = []
+            for statement in ("UPDATE alm_audit SET message = 'edited'",
+                              "DELETE FROM alm_audit"):
+                try:
+                    async with store._conn() as conn:
+                        await conn.execute(statement)
+                except psycopg.errors.RaiseException as err:
+                    refused.append("append-only" in str(err))
+            return refused, len(await store.run_events("r1"))
+        finally:
+            await store.close()
+
+    refused, kept = run_async(scenario())
+    assert refused == [True, True] and kept == 1
+
+
+def test_the_admin_grants_keep_the_audit_trail_insert_only():
+    from alm_core.store import admin
+
+    sql = admin.grants_sql("alm_app")
+    assert 'REVOKE ALL ON public.alm_audit FROM "alm_app";' in sql
+    assert 'GRANT SELECT, INSERT ON public.alm_audit TO "alm_app";' in sql
+    assert "UPDATE" not in "\n".join(line for line in sql.splitlines() if "alm_audit" in line)
+    # Every table the services use is granted; a new table that is not is a bug.
+    for table in admin.APP_TABLES:
+        assert f"public.{table} TO" in sql
+    with pytest.raises(ValueError, match="role"):
+        admin.grants_sql('alm"; DROP TABLE alm_audit; --')
+
+
+def test_every_postgres_table_has_a_grant():
+    """A table added to the schema without a grant would be unusable by the app role."""
+    import re
+
+    from alm_agents import memory as agent_memory
+    from alm_core.store import admin, postgres
+
+    sql = "\n".join([postgres.SCHEMA_SQL, *(s for _v, s in postgres.MIGRATIONS),
+                     agent_memory.SCHEMA_SQL])
+    tables = set(re.findall(r"CREATE TABLE IF NOT EXISTS (\w+)", sql)) - {"alm_audit"}
+    assert tables <= set(admin.APP_TABLES), tables - set(admin.APP_TABLES)

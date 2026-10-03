@@ -31,6 +31,11 @@ cloud = [
     "psycopg[binary,pool]>=3.2",
     "structlog>=24.4",
 ]
+# OpenTelemetry export (ALM_OTEL_ENABLED). Without it telemetry is a no-op.
+otel = [
+    "opentelemetry-sdk>=1.45",
+    "opentelemetry-exporter-otlp-proto-http>=1.45",
+]
 # One per cloud: only the adapters that cloud uses (secrets, database tokens,
 # models, AD job transport). The core imports none of them.
 gcp = [

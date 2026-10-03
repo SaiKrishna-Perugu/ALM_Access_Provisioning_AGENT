@@ -7,6 +7,26 @@ The local ledger (`out/local/alm.db`) has a schema version. A newer version of
 the code upgrades an older file automatically the next time it runs; a file
 written by newer code is refused until you update.
 
+## 2026-10-03: enterprise track, part 8 (observability)
+
+**Do after pulling:** `pip install -r requirements-cloud.txt` (it adds the OpenTelemetry SDK). The database upgrades itself to schema version 4.
+
+- **OpenTelemetry.** With `ALM_OTEL_ENABLED=true`, each job on a run is exported over OTLP/HTTP as a span tree:
+  - `run <job>` at the root;
+  - `agent <name>` for each hop;
+  - under each agent, `chat <model>` spans (GenAI attributes: model and tokens), `tool` spans, backend spans and `http` spans;
+  - ledger events.
+
+  The endpoint is the standard `OTEL_EXPORTER_OTLP_ENDPOINT`, so any backend works. Only names, counts, outcomes and timings are exported: no prompts, replies, user IDs, URL paths or error messages.
+- **Metrics:** runs, jobs, writes, replays, policy denials, model tokens and latency, approval wait, queue depth and busy workers.
+- **[ops/alerts.md](ops/alerts.md)** sets out the service levels and the alert rules: burn rate on dead jobs, failing writes, a stuck queue, a slow model, a denial spike, 80% of the daily token budget, and slow approvals.
+- **[ops/dashboards/](ops/dashboards/)** has the dashboard for Grafana and for Google Cloud Monitoring.
+- **Synthetic check:** `python -m alm_agents.worker synthetic <work item>` queues a dry run. Schedule it on TEST, and alert when no run finishes.
+- **The audit trail is append-only in Postgres too** (schema version 4): a trigger refuses UPDATE and DELETE on `alm_audit`, as SQLite always has.
+  - `python -m alm_core.store.admin grants --app-role <role>` prints the grants a DBA applies, so that the application role can only insert and read audit rows.
+- **Audit rows are also log lines** with `audit=true`, for a SIEM to subscribe to.
+- **Terraform:** `otel_endpoint` turns telemetry on for Cloud Run.
+
 ## 2026-10-03: enterprise track, part 7 (AI governance)
 
 **Do after pulling:** nothing. The defaults cap one run at 400,000 model tokens and set no daily cap.
