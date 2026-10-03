@@ -503,7 +503,7 @@ Two combinations are rejected at startup rather than at first write:
 | 1 — Tool layer and contracts | `alm_core/models.py`, `alm_core/tools/*`, idempotency ledger |
 | 2 — LangGraph orchestration | `alm_agents/agentic.py` (supervisor loop) and `alm_agents/graph.py` (deterministic fallback), Postgres checkpointer, `interrupt()` |
 | 3 — Approval surface | `alm_api`: webhook, approval endpoints, Chat card, HTML fallback |
-| 4 — Containerisation and IaC | `Dockerfile`, `infra/*.terraform`, `.github/workflows/deploy.yml` |
+| 4 — Containerisation and IaC | `Dockerfile`, `infra/gcp/*.tf` (with `infra/aws/` and `infra/azure/` skeletons), `.github/workflows/deploy.yml` |
 | 5 — Google Cloud networking | Terraform: Direct VPC egress, Private Service Connect and Private Google Access, DNS zones, Interconnect attachment. **The circuit itself is the network team's** |
 | 6 — Windows Kerberos worker | `alm_worker`: Pub/Sub consumer, gMSA, dead-lettering, heartbeat |
 | 7 — Triggers | Webhook with HMAC + replay protection; 15-minute reconciliation |

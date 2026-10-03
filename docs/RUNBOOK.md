@@ -438,6 +438,22 @@ back on.
 
 ---
 
+## 7g. Releases and promotion
+
+| Step | What happens | Gate |
+|---|---|---|
+| Pull request | Tests (with Postgres), lint, security (ruff `S`, Semgrep, pip-audit), secrets, image build, scan and read-only checks, Terraform validation on all three clouds | Every check green; a review |
+| Merge to `main` | Deploy to **TEST**: build `api` and `worker`, scan, SBOM, sign, verify the signatures, `terraform apply` (`infra/gcp`), connectivity smoke, synthetic dry run | Automatic |
+| Promote to **PROD** | Actions → Deploy → Run workflow → `prod`, from `main` | The `prod` environment's required reviewers |
+
+- **Schema.** By default each service migrates on start. Migrations only add, so the old revision keeps working while the new one starts. Where the services must not change the schema (`ALM_AUTO_MIGRATE=false`), run `python -m alm_core.store.migrate` as the owner before the new revision takes traffic. `--check` reports whether the schema is current.
+- **Workers during a release.** A worker that gets SIGTERM stops claiming jobs and gives the running one up to a quarter of the lease to finish. Anything still running is taken over from its checkpoint by a new worker. The ledger turns a completed write into a replay.
+- **Rollback.** Re-run Deploy on the previous good commit (section 3). The schema stays: an older revision runs on a newer schema version only if no migration was added in between. Otherwise it refuses to start, and the fix is to roll forward.
+- **Synthetic check.** With `synthetic_work_item` set in the environment's tfvars (TEST only), the deploy and an hourly schedule queue a dry run of that work item ([ops/alerts.md](../ops/alerts.md)).
+- **Other clouds.** `infra/aws` and `infra/azure` are validated skeletons ([infra/README.md](../infra/README.md)). Deploying to one means adding its apply job next to the GCP one; build, scan, SBOM and signing stay as they are.
+
+---
+
 ## 8. Connectivity
 
 The failure that looks like everything else.

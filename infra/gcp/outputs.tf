@@ -8,6 +8,11 @@ output "worker_service" {
   value       = local.split_workers ? google_cloud_run_v2_service.worker[0].name : ""
 }
 
+output "synthetic_job" {
+  description = "The hourly synthetic dry run (a Cloud Run job), when synthetic_work_item is set; empty otherwise."
+  value       = var.synthetic_work_item != "" ? google_cloud_run_v2_job.synthetic[0].name : ""
+}
+
 output "run_service_account" {
   description = "Grant this principal any additional access the toolkit needs."
   value       = google_service_account.run.email

@@ -88,6 +88,29 @@ class Store(Protocol):
                           limit: int = 1000) -> list[dict]: ...
 
 
+async def _ready(store, settings) -> None:
+    """Migrate the schema, or - with ALM_AUTO_MIGRATE=false - insist it is current."""
+    import sys
+
+    if getattr(settings, "auto_migrate", True):
+        await store.migrate()
+        return
+    expected = int(sys.modules[type(store).__module__].SCHEMA_VERSION)
+    try:
+        current = await store.schema_version()
+    except Exception as err:  # noqa: BLE001 - no schema table: never migrated
+        await store.close()
+        raise ConfigError("the database has no schema yet and ALM_AUTO_MIGRATE=false: run "
+                          "python -m alm_core.store.migrate as the schema owner") from err
+    if current != expected:
+        await store.close()
+        raise ConfigError(
+            f"the database schema is version {current} and this code needs {expected}. "
+            + ("Run python -m alm_core.store.migrate as the schema owner "
+               "(ALM_AUTO_MIGRATE=false)." if current < expected else
+               "It was written by newer code: deploy that version, or restore a backup."))
+
+
 async def get_store(settings=None) -> Store:
     """Return a started store appropriate to the configuration.
 
@@ -106,7 +129,7 @@ async def get_store(settings=None) -> Store:
                                      pool_max=settings.postgres_pool_max,
                                      settings=settings)
         await store.start()
-        await store.migrate()
+        await _ready(store, settings)
         return store
 
     if getattr(settings, "ledger_path", ""):
@@ -114,7 +137,7 @@ async def get_store(settings=None) -> Store:
 
         store = SqliteStore(settings.ledger_path)
         await store.start()
-        await store.migrate()
+        await _ready(store, settings)
         return store
 
     if not settings.shadow_mode:

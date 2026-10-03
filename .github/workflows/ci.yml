@@ -105,6 +105,27 @@ jobs:
         # covers Windows-only paths CI does not run. Raise it as tests land.
         run: pytest -q --cov=src --cov-report=term --cov-fail-under=50
 
+  terraform:
+    # Every cloud's configuration must stay valid, including the ones not yet
+    # deployed: a skeleton that rots is worse than none.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: 1.9.8
+      - name: Format and validate infra/gcp, infra/aws, infra/azure
+        run: |
+          terraform fmt -check -recursive infra
+          for cloud in gcp aws azure; do
+            terraform -chdir=infra/$cloud init -backend=false -input=false
+            terraform -chdir=infra/$cloud validate
+          done
+          if grep -rnE '^\s*(resource|data)\s+"(google_service_account_key|aws_iam_access_key|azurerm_storage_account_sas)"' infra/ ; then
+            echo "::error::use workload identity, not a downloaded key"
+            exit 1
+          fi
+
   security:
     runs-on: ubuntu-latest
     steps:

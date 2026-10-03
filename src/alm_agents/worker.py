@@ -409,7 +409,8 @@ class Worker:
         # from its last checkpoint: this is how a dead worker's run is taken
         # over. The ledger turns any write that already happened into a replay.
         snapshot = await graph.aget_state(config)
-        if snapshot.values and snapshot.next and                 await pending_interrupt(graph, thread_id) is None:
+        if (snapshot.values and snapshot.next
+                and await pending_interrupt(graph, thread_id) is None):
             ctx.run_id = snapshot.values.get("run_id", "") or ctx.run_id
             ctx.thread_id = thread_id
             trace.write({"service": "run", "kind": "continued",

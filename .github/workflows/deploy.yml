@@ -117,11 +117,13 @@ jobs:
       - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
         with:
           terraform_version: 1.9.8
-      - name: Validate Terraform
+      - name: Validate Terraform (GCP, and the AWS and Azure skeletons)
         run: |
-          terraform -chdir=infra init -backend=false
-          terraform -chdir=infra fmt -check -recursive
-          terraform -chdir=infra validate
+          terraform fmt -check -recursive infra
+          for cloud in gcp aws azure; do
+            terraform -chdir=infra/$cloud init -backend=false -input=false
+            terraform -chdir=infra/$cloud validate
+          done
 
   build:
     needs: verify
@@ -257,12 +259,12 @@ jobs:
       - name: Terraform apply
         run: |
           TARGET="${{ github.event.inputs.target || 'test' }}"
-          terraform -chdir=infra init \
+          terraform -chdir=infra/gcp init \
             -backend-config="bucket=${{ secrets.GCP_TF_STATE_BUCKET }}" \
             -backend-config="prefix=alm/$TARGET"
           # Intranet host names are GitHub environment variables, not committed:
           # the variables' validation fails the apply if one is missing.
-          terraform -chdir=infra apply -auto-approve -input=false \
+          terraform -chdir=infra/gcp apply -auto-approve -input=false \
             -var-file="envs/$TARGET.tfvars" \
             -var="project_id=${{ secrets.GCP_PROJECT_ID }}" \
             -var="container_image=${{ needs.build.outputs.api_image }}" \
@@ -277,7 +279,7 @@ jobs:
         # which is the thing most likely to be wrong after an infra change.
         run: |
           TARGET="${{ github.event.inputs.target || 'test' }}"
-          RUN_SA=$(terraform -chdir=infra output -raw run_service_account)
+          RUN_SA=$(terraform -chdir=infra/gcp output -raw run_service_account)
           gcloud run jobs deploy "alm-$TARGET-smoke" \
             --region "${{ secrets.GCP_REGION }}" \
             --image "${{ needs.build.outputs.worker_image }}" \
@@ -294,3 +296,15 @@ jobs:
               echo "::error::connectivity smoke test failed - check Cloud DNS forwarding and the interconnect"
               exit 1
             }
+
+      - name: Synthetic dry run, end to end
+        # Only where the environment sets synthetic_work_item (TEST). Queues a
+        # dry run of that work item; the workers sign in, ask the model and
+        # plan it. Writes nothing. The run shows in the console as synthetic-*.
+        run: |
+          JOB=$(terraform -chdir=infra/gcp output -raw synthetic_job)
+          if [ -z "$JOB" ]; then
+            echo "no synthetic_work_item for this environment; skipped"
+            exit 0
+          fi
+          gcloud run jobs execute "$JOB" --region "${{ secrets.GCP_REGION }}" --wait
