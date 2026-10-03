@@ -8,42 +8,42 @@
 -r requirements.txt
 
 # --- Orchestration ---------------------------------------------------------
-langgraph==1.2.11
+langgraph==1.2.12
 langgraph-checkpoint-postgres==3.1.2
 # Local runs: the checkpointer and ledger in one SQLite file (ALM_LEDGER_PATH).
 langgraph-checkpoint-sqlite==3.1.1
 aiosqlite==0.22.1
-langchain-core==1.6.0
+langchain-core==1.6.6
 
 # --- Models: Gemini, two ways in (see src/alm_agents/llm.py) ----------------
 # Gemini Developer API - authenticates with an API key from Google AI Studio.
 # The default provider (ALM_LLM_PROVIDER=gemini_api).
-langchain-google-genai==4.3.5
+langchain-google-genai==4.4.0
 # Vertex AI - authenticates with a service account, no key. Also serves Claude
 # through Model Garden. Selected with ALM_LLM_PROVIDER=vertex.
 langchain-google-vertexai==3.2.4
-google-cloud-aiplatform==1.165.1
+google-cloud-aiplatform==2.2.0
 
 # --- User-ID recovery: TypeSafe (optional; see recover_userids in llm.py) ----
 # Judges which user-ID-shaped tokens in a malformed row are people being
 # requested. Used only when TYPESAFE_API_KEY resolves; Gemini otherwise.
-typesafe-sdk==0.7.1
+typesafe-sdk==0.7.2
 
 # --- Contracts and configuration -------------------------------------------
 # [email] brings email-validator, which pydantic's EmailStr needs at import time.
-pydantic[email]==2.13.4
+pydantic[email]==2.13.5
 pydantic-settings==2.15.0
 
 # --- API / approval surface -------------------------------------------------
-fastapi==0.141.1
-uvicorn[standard]==0.52.4
+fastapi==0.142.1
+uvicorn[standard]==0.54.0
 python-multipart==0.0.32
 
 # --- Google Cloud -----------------------------------------------------------
-google-auth==2.57.0
-google-cloud-secret-manager==2.21.1
-google-cloud-pubsub==2.27.1
-google-cloud-logging==3.11.3
+google-auth==2.59.0
+google-cloud-secret-manager==2.30.0
+google-cloud-pubsub==2.41.0
+google-cloud-logging==3.16.3
 
 # --- Persistence ------------------------------------------------------------
 # Cloud SQL is reached on its private IP with an IAM access token as the
@@ -52,7 +52,7 @@ google-cloud-logging==3.11.3
 psycopg[binary,pool]==3.3.6
 
 # --- Observability ----------------------------------------------------------
-structlog==25.5.0
+structlog==26.1.0
 # OpenTelemetry over OTLP/HTTP (ALM_OTEL_ENABLED): any tracing backend, any cloud.
 opentelemetry-sdk==1.45.0
 opentelemetry-exporter-otlp-proto-http==1.45.0
