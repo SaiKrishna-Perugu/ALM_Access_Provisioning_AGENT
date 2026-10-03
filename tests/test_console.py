@@ -151,3 +151,15 @@ def test_stopping_from_the_page_reaches_a_parked_run(tmp_path, monkeypatch):
     assert stopped["status"] == "stopping"
     assert run["status"] == "stopped" and run["stopped_by"] == "ops@example.com"
     assert run["report"]["results"] == []
+
+
+def test_the_page_says_which_writes_are_held_back(tmp_path, monkeypatch):
+    async def scenario(h):
+        async with hosted(h, monkeypatch, allowed_operations="jts_unarchive,ad_group_add",
+                          writes_disabled_operations="ad_group_add") as client:
+            return (await client.get("/api/session", headers=VIEW)).json()
+
+    held = {h["operation"]: h["reason"] for h in run_with(tmp_path, scenario)["held"]}
+    assert "ALM_WRITES_DISABLED_OPERATIONS" in held.pop("ad_group_add")
+    assert set(held) == {"jts_create", "workitem_comment", "workitem_attach"}
+    assert all("ALM_ALLOWED_OPERATIONS" in reason for reason in held.values())

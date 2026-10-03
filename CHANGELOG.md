@@ -15,6 +15,7 @@ written by newer code is refused until you update.
   1. reactivations, comments and evidence;
   2. then new accounts;
   3. then AD.
+- **The console says which writes are held back.** A banner names each operation that is not enabled yet or is switched off, in the cloud console and on the laptop.
 - **Kill switch per operation.** `ALM_WRITES_DISABLED_OPERATIONS=ad_group_add` (for example) turns one operation off at once. The rest of each run carries on. An unknown operation name is refused at start-up.
 - **Shadow report.** `python -m alm_agents.shadow_report --days 14 --csv shadow.csv` lists:
   - every write the dry runs would have asked approval for;

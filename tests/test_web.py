@@ -366,3 +366,14 @@ def test_the_trace_tab_serves_the_runs_calls_and_the_file(tmp_path):
     lines = [json.loads(line) for line in download.text.splitlines() if line.strip()]
     assert len(lines) == len(everything["records"])
     assert client.get("/api/runs/nope/trace").status_code == 404
+
+
+def test_the_laptop_page_says_which_writes_are_held_back():
+    manager = make_manager()
+    plain = manager.settings_for
+    manager.settings_for = lambda mode: plain(mode).model_copy(
+        update={"writes_disabled_operations": "ad_group_add"})
+    client = make_client(manager)
+    signed_in(client)
+    held = client.get("/api/session").json()["held"]
+    assert [h["operation"] for h in held] == ["ad_group_add"]

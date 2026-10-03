@@ -492,6 +492,13 @@ class Settings(BaseSettings):
                     "(ALM_ALLOWED_OPERATIONS)")
         return ""
 
+    def held_operations(self) -> list[dict]:
+        """Every write operation this deployment does not perform now, and why."""
+        from .models import Operation
+
+        return [{"operation": op.value, "reason": reason} for op in Operation
+                if (reason := self.operation_blocked(op.value))]
+
     @property
     def secret_store(self) -> str:
         """The cloud secret store in use: gcp, aws, azure or none."""

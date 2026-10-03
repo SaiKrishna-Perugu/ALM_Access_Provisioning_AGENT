@@ -553,10 +553,15 @@ Still open:
 - **Directory API for on-premises groups.** Microsoft Graph is available
   (`ALM_AD_DIRECTORY=graph`) for groups mastered in Entra ID. A group synced
   from on-premises AD still needs the GPT web UI and the Windows worker.
-- **AWS and Azure infrastructure.** The code runs on either - secrets (Secrets
+- **AWS and Azure deployments.** The code runs on either: secrets (Secrets
   Manager, Key Vault), database tokens (RDS IAM, Entra ID), models (Bedrock,
   Azure OpenAI) and the AD job queue (the shared Postgres store) all have
-  adapters - but only the GCP Terraform exists.
+  adapters. `infra/aws` and `infra/azure` are validated skeletons, but only
+  `infra/gcp` is complete and wired into the deploy workflow
+  ([infra/README.md](../infra/README.md)).
+- **Everything that needs the client.** The TEST pilot, the open decisions,
+  the first deploy and restore drill, the PROD shadow and the penetration test
+  ([ENTERPRISE_PLAN.md](ENTERPRISE_PLAN.md), section 8).
 
 ---
 

@@ -9,6 +9,14 @@ assessment and remediation roadmap. This document describes the solution; that o
 current production readiness. **Read section 8 of this document before demonstrating to a
 stakeholder who may ask "can we run this unattended?"**
 
+**Scope:** this overview describes the command-line pipeline (`src/*.py`) as of its
+remediation on 2026-09-06. Several things have been built on top of it since:
+- the multi-agent system: [AUTONOMOUS_ARCHITECTURE.md](AUTONOMOUS_ARCHITECTURE.md);
+- its web console and cloud deployment: [ENTERPRISE_PLAN.md](ENTERPRISE_PLAN.md);
+- its operations: [RUNBOOK.md](RUNBOOK.md).
+
+Those documents describe the system as it is now.
+
 ---
 
 ## 1. Executive summary
@@ -548,7 +556,7 @@ item-by-item mapping. In summary:
 | P0-2 | Writes were not idempotent | Comments carry a content-derived marker and attachments match on filename; a re-run skips what it already wrote |
 | P0-3 | The guard hook covered one of five write entry points | It covers all six, and CI fails if a new one is added without it |
 | P0-4 | Evidence artifacts were not checked for distinctness | The attach step refuses a batch in which two users share an artifact |
-| P0-5 | There were no automated tests and no CI | 126 offline tests plus lint on every push |
+| P0-5 | There were no automated tests and no CI | An offline test suite (126 tests then; it has grown with the agents) plus lint on every push |
 | P0-6 | A dry run did not faithfully preview the commit | The commit executes the fingerprinted plan or aborts |
 
 Work-item comments now state what happened to each user — added, reactivated, or already

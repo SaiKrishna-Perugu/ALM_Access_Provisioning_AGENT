@@ -132,6 +132,7 @@ async def session(request: Request):
             "model": getattr(settings, "agent_model", ""),
             "orchestration": getattr(settings, "orchestration", ""),
             "max_commit_work_items": 5,
+            "held": settings.held_operations() if hasattr(settings, "held_operations") else [],
             "confirm_word": "PROD" if settings.environment == "PROD" else "COMMIT"}
 
 
