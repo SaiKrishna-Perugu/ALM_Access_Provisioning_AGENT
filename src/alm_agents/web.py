@@ -508,7 +508,11 @@ def create_app(manager: RunManager, *, port: int, access_token: str, environment
     async def session(request: Request):
         if (denied := require(request)) is not None:
             return denied
-        return {"csrf": session_of(request)[1], "environment": environment,
+        try:
+            held = manager.settings_for("dry").held_operations()
+        except Exception:  # noqa: BLE001 - a settings problem shows when a run starts
+            held = []
+        return {"csrf": session_of(request)[1], "environment": environment, "held": held,
                 "sandbox": manager.sandbox, "model": model, "orchestration": orchestration,
                 "operator": manager.operator, "max_commit_work_items": MAX_COMMIT_WORK_ITEMS,
                 "confirm_word": "PROD" if environment == "PROD" else "COMMIT",

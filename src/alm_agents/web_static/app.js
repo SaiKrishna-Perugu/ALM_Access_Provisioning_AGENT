@@ -669,6 +669,21 @@ async function boot() {
   env.classList.add(!live ? "env-sandbox" : s.environment === "PROD" ? "env-prod" : "env-live");
   $("env-text").textContent = live ? `live · ${s.environment}` : "simulated data";
   $("source-banner").hidden = live;
+  // Staged enablement and kill switches: say plainly which writes will not happen.
+  const held = s.held || [];
+  if (held.length) {
+    const banner = $("held-banner");
+    banner.append(el("b", null, "Some writes are held back. "),
+      document.createTextNode("Runs plan these and show them on the card, then skip them: "));
+    held.forEach((h, i) => {
+      if (i) banner.append(document.createTextNode("; "));
+      const name = el("code", null, h.operation);
+      name.title = h.reason;
+      banner.append(name, document.createTextNode(
+        h.reason.includes("ALM_WRITES_DISABLED_OPERATIONS") ? " (switched off)" : " (not enabled yet)"));
+    });
+    banner.hidden = false;
+  }
   if (live && (s.ewm_host || s.jts_host)) {
     $("hosts").hidden = false;
     $("hosts").textContent = [s.ewm_host, s.jts_host].filter(Boolean).join(" · ");
