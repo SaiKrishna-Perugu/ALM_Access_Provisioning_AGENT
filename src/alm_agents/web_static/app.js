@@ -14,7 +14,7 @@ const SERVICES = ["run", "supervisor", "model", "agent", "tool", "ewm", "jts", "
 
 const state = {
   session: null, mode: "dry", current: null, source: null, visits: {}, view: "activity",
-  status: "", trace: { records: [], next: -1, filter: "all", timer: null, run: null },
+  status: "", run: null, trace: { records: [], next: -1, filter: "all", timer: null, run: null },
 };
 const $ = (id) => document.getElementById(id);
 
@@ -198,17 +198,23 @@ async function selectRun(id) {
   state.current = id;
   resetRunView();
   const run = await api(`/api/runs/${encodeURIComponent(id)}`);
+  if (state.current !== id) return;
   renderFacts(run);
+  if (run.preview_card) renderApproval(run.preview_card, true);
   document.querySelectorAll("#runs button").forEach((b) => b.removeAttribute("aria-current"));
   refreshRuns();
   if (state.view === "trace") loadTrace();
   const source = new EventSource(`/api/runs/${encodeURIComponent(id)}/events`);
   state.source = source;
-  source.onmessage = (message) => handle(JSON.parse(message.data));
+  source.onmessage = (message) => {
+    if (state.current === id) handle(JSON.parse(message.data));
+  };
   source.addEventListener("end", async () => {
     source.close();
     const done = await api(`/api/runs/${encodeURIComponent(id)}`);
+    if (state.current !== id) return;
     renderFacts(done);
+    if (done.preview_card) renderApproval(done.preview_card, true);
     renderOutcome(done);
     refreshRuns();
     if (state.view === "trace") loadTrace();
@@ -537,7 +543,10 @@ function renderApproval(card, preview) {
     list.append(row);
   });
   box.append(list);
-  if (preview) return;
+  if (preview) {
+    renderCommitPlan(box, state.run);
+    return;
+  }
   if (card.needed) {
     // The cloud console: the two-person rule, and who has voted.
     const votes = card.votes || [];
@@ -576,8 +585,97 @@ function renderApproval(card, preview) {
   box.append(actions);
 }
 
+function canCommitPlan(run) {
+  return run && run.mode === "dry" && !state.session.hosted &&
+    can("operator") && (run.commit_work_items || []).length > 0;
+}
+
+function renderCommitPlan(box, run) {
+  if (!canCommitPlan(run)) return;
+  const ids = run.commit_work_items;
+  const limit = state.session.max_commit_work_items || 5;
+  const word = state.session.confirm_word;
+  const section = el("section", "commit-plan");
+  section.append(el("h3", null, "Commit this plan"), el("p", "reason",
+    "Start a writing run for these work items. It reads their current state and pauses for your approval of the user card."));
+  const open = el("button", "approve", "Commit this plan");
+  open.id = "commit-plan-open";
+  open.type = "button";
+  open.disabled = !["done", "stopped"].includes(run.status);
+  open.setAttribute("aria-expanded", "false");
+  if (open.disabled) section.append(el("p", "muted", "Available when this dry run ends."));
+  const form = el("form", "commit-confirm");
+  form.hidden = true;
+  const group = el("fieldset", "commit-items");
+  group.append(el("legend", null, `Select up to ${limit} work items`));
+  ids.forEach((id) => {
+    const label = el("label");
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.value = id;
+    input.checked = ids.length <= limit;
+    label.append(input, document.createTextNode(`Work item ${id}`));
+    group.append(label);
+  });
+  const label = el("label", "commit-word", `Type ${word} to confirm write execution`);
+  const confirm = document.createElement("input");
+  confirm.type = "text";
+  confirm.autocomplete = "off";
+  confirm.required = true;
+  confirm.maxLength = 20;
+  label.append(confirm);
+  const error = el("p", "form-error");
+  error.setAttribute("role", "alert");
+  error.hidden = true;
+  const actions = el("div", "decide");
+  const send = el("button", "approve", "Confirm and Run Writes");
+  send.type = "submit";
+  const cancel = el("button", "reject", "Cancel");
+  cancel.type = "button";
+  cancel.addEventListener("click", () => {
+    form.hidden = true;
+    confirm.value = "";
+    error.hidden = true;
+    open.setAttribute("aria-expanded", "false");
+    open.focus();
+  });
+  open.addEventListener("click", () => {
+    form.hidden = false;
+    open.setAttribute("aria-expanded", "true");
+    confirm.focus();
+  });
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    error.hidden = true;
+    const chosen = [...group.querySelectorAll("input:checked")].map((i) => i.value);
+    if (!chosen.length || chosen.length > limit || confirm.value.trim() !== word) {
+      error.textContent = `Select 1-${limit} work items and type ${word}.`;
+      error.hidden = false;
+      return;
+    }
+    send.disabled = cancel.disabled = open.disabled = true;
+    try {
+      const next = await api(`/api/runs/${encodeURIComponent(run.id)}/commit`, {
+        method: "POST", body: { confirm: confirm.value, work_items: chosen },
+      });
+      confirm.value = "";
+      await refreshRuns();
+      await selectRun(next.id);
+    } catch (err) {
+      error.textContent = err.message;
+      error.hidden = false;
+      send.disabled = cancel.disabled = open.disabled = false;
+    }
+  });
+  actions.append(send, cancel);
+  form.append(group, label, error, actions);
+  section.append(open, form);
+  box.append(section);
+}
+
 // ---------------------------------------------------------- facts, outcome
 function renderFacts(run) {
+  state.run = run;
   const facts = $("facts");
   facts.replaceChildren();
   const rows = [
@@ -653,6 +751,21 @@ function renderOutcome(run) {
       metrics.append(cell);
     });
   box.append(metrics);
+  if (canCommitPlan(run) && ["done", "stopped"].includes(run.status)) {
+    if (!run.preview_card) {
+      // Older/partial runs can retain result scope without an approval preview.
+      renderCommitPlan(box, run);
+    } else {
+      const commit = el("button", "commit-shortcut", "Commit this dry run");
+      commit.type = "button";
+      commit.addEventListener("click", () => {
+        setView("activity");
+        const target = $("commit-plan-open");
+        if (target) { target.scrollIntoView({ block: "center" }); target.click(); }
+      });
+      box.append(commit);
+    }
+  }
   if (report.version) {
     box.append(el("p", "muted version", `Prompts and models: ${report.version}`));
   }

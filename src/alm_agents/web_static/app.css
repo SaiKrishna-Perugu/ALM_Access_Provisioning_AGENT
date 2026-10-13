@@ -429,6 +429,21 @@ details.obs pre {
 .trace-list .svc-auth, .trace-list .svc-browser { color: var(--ok); }
 .trace-list .svc-log, .trace-list .svc-run { color: var(--ink-3); }
 .banner.stop { background: var(--write-soft); color: var(--write); }
+.commit-plan { border-top: 1px solid var(--rule); margin-top: 16px; padding-top: 16px; }
+.commit-plan button, .commit-shortcut {
+  border: 1px solid var(--write); background: var(--write-soft); color: var(--write);
+  border-radius: 8px; padding: 8px 12px; cursor: pointer; font-weight: 650;
+}
+.commit-plan button:disabled { opacity: 0.5; cursor: not-allowed; }
+.commit-confirm { margin-top: 12px; }
+.commit-items { border: 1px solid var(--rule); border-radius: 8px; margin: 0 0 12px; }
+.commit-items label { display: flex; gap: 8px; align-items: center; margin: 8px 0; }
+.commit-word { display: grid; gap: 6px; font-size: 13px; }
+.commit-word input {
+  width: 100%; box-sizing: border-box; padding: 8px; border: 1px solid var(--rule-strong);
+  border-radius: 6px; background: var(--surface); color: var(--ink);
+}
+.commit-shortcut { margin-top: 12px; }
 @media (max-width: 760px) {
   .trace-list summary { grid-template-columns: 50px 70px minmax(0, 1fr); }
   .trace-list .ms { display: none; }

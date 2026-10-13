@@ -84,12 +84,20 @@ def env_mismatch() -> str | None:
     ewm, jts = os.getenv("EWM_SERVER", ""), os.getenv("JTS_SERVER", "")
     if not ewm or not jts:
         return None
-    ewm_test = "tst" in ewm.lower()
-    jts_test = "tst" in jts.lower()
+    ewm_test = "tst" in ewm.lower() or "test" in ewm.lower()
+    jts_test = "tst" in jts.lower() or "test" in jts.lower()
     if ewm_test != jts_test:
         return (f"EWM_SERVER is {'TEST' if ewm_test else 'PROD'} but JTS_SERVER is "
                 f"{'TEST' if jts_test else 'PROD'}")
     return None
+
+
+def normalize_server_url(url: str, is_ewm: bool = False) -> str:
+    """Strip trailing slash and strip /web suffix from EWM context root."""
+    cleaned = url.strip().rstrip("/")
+    if is_ewm and cleaned.endswith("/web"):
+        cleaned = cleaned[:-4].rstrip("/")
+    return cleaned
 
 
 def tls_verify():

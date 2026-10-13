@@ -144,17 +144,26 @@ def _fetch_one(ctx: ToolContext, work_item_id: str) -> WorkItem | None:
     rows = collect_results(
         session, f"{server}/oslc/contexts/{uuid}/workitems",
         {"oslc.properties": OSLC_PROPERTIES,
-         # Only ALM Access Requests: an id for another kind of work item
-         # (a defect, a task) must not be treated as an access request.
-         "oslc.where": f'dcterms:identifier={work_item_id} and rtc_cm:type="{TYPE_ID}"'},
+         # Jazz rejects the compound identifier/type query on some estates.
+         # Check the returned type below instead of weakening the type guard.
+         "oslc.where": f"dcterms:identifier={work_item_id}"},
         timeout=ctx.settings.timeout, verify=ctx.settings.verify, limit=1)
     if not rows:
         return None
     row = rows[0]
+    item_type = row.get("dcterms:type") or row.get("rtc_cm:type") or ""
+    item_type = resource_uri(item_type) if isinstance(item_type, dict) else str(item_type)
+    if item_type.rstrip("/").rsplit("/", 1)[-1].rsplit("#", 1)[-1] != TYPE_ID:
+        log.warning("work_item_type_mismatch", work_item=work_item_id, type=item_type)
+        return None
     users, _rejected = users_from_workitem(row, work_item_id)
     return WorkItem(work_item_id=work_item_id,
                     summary=(row.get("dcterms:title") or "").strip(),
                     state=tail(resource_uri(row.get("rtc_cm:state")), "."),
+                    access_type=tail(resource_uri(row.get(F_ACCESS_TYPE)), "."),
+                    domain=tail(resource_uri(row.get(F_DOMAIN)), "."),
+                    work_areas=tail(resource_uri(row.get(F_WORKAREAS)), "."),
+                    justification=strip_html(row.get(F_JUSTIFICATION) or ""),
                     new_users_raw=(row.get(F_NEW_USERS)
                                    or row.get(F_NEW_USERS_LEGACY) or "").strip(),
                     users=users)

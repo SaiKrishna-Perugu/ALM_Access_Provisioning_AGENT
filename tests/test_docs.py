@@ -39,6 +39,8 @@ THIRD_PARTY_FLAGS = {
     "--certificate-identity", "--certificate-oidc-issuer", "--type",
     # gcloud sql, restoring the database (DR.md).
     "--point-in-time", "--instance", "--restore-instance",
+    # pytest options used in test command documentation.
+    "--cov", "--cov-report", "--junitxml",
 }
 
 FLAG_RE = re.compile(r"(?<![\w-])(--[a-z][a-z0-9-]{1,30})")

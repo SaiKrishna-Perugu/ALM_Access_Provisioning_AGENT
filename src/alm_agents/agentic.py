@@ -41,7 +41,7 @@ from .nodes.auditor import summarise
 from .policy import PolicyEngine
 from .roster import ROSTER
 from .state import PipelineState, halt
-from .supervisor import MAX_HOPS, decide, guided_next, honour_handoff
+from .supervisor import MAX_HOPS, decide, guided_next, honour_handoff, routing_scope
 from .toolkit import Backend, Blackboard, build_registry, context_for
 
 log = get_logger("alm.agentic")
@@ -244,6 +244,7 @@ def make_agent_node(runtime: AgenticRuntime):
             "stopped": result.stopped_because,
             "handoff_to": result.handoff_to,
             "tools": summarise_calls(result.calls)[:1200],
+            "routing_scope": routing_scope(runtime.snapshot(state), name),
         }
 
         await runtime.ctx.store.record(AuditEvent(

@@ -1303,7 +1303,10 @@ def test_a_refused_agent_is_not_counted_as_done():
             break
         history.append({"agent": decision.next_agent, "stopped": "finish", "denials": 0})
     assert "closer" in names and names[-1] == "DONE"
+    # Exhausting a turn now advances instead of asking the model to retry it.
     assert guided_next([{"agent": "validator", "stopped": "iteration limit"}],
+                       snapshot, shadow=False).next_agent == "triage"
+    assert guided_next([{"agent": "validator", "stopped": "model error"}],
                        snapshot, shadow=False) is None
 
 

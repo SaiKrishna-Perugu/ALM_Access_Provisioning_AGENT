@@ -435,9 +435,9 @@ It prints a one-time link (and opens it). What keeps it safe:
   other Host header.
 - **The link is the key.** It signs the browser in with an HttpOnly,
   SameSite=Strict cookie. A restart makes a new link.
-- **Your words can't widen a run.** Work items are the numbers in your request.
-  Writing needs the **Write** switch and 1–5 named work items, and you must type
-  `COMMIT` (`PROD` on production).
+- **Your words can't widen a run.** Work items are the numbers in your request
+  or the items selected from a dry-run preview. Writing needs 1–5 work items
+  and a typed `COMMIT` (`PROD` on production).
 - **You pick who is written.** A writing run pauses at the card. Only the users
   you tick are written; everyone left unticked is declined. High-risk users
   start unticked.
@@ -448,6 +448,13 @@ It prints a one-time link (and opens it). What keeps it safe:
 One run at a time. The page lists this session's runs. A real run keeps the same
 records as `agent_local.py` (`out/local/`), so the ledger stops either tool from
 repeating the other's writes.
+
+After a dry run ends, **Commit this plan** starts a writing run for the work items
+on its retained preview card. Select up to five items (larger plans must be split)
+and type `COMMIT`, or `PROD` on production. This also works after a queue-wide
+dry run without copying IDs into the prompt. The new run reads current state and
+pauses for approval of its user card before writing; the preview is not write
+approval. This action is available in the local web console, including sandbox.
 
 ### The console in the cloud
 

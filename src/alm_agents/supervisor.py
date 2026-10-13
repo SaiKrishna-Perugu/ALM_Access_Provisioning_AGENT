@@ -92,10 +92,35 @@ def _history_digest(history: list[dict], limit: int = 8) -> str:
     return "\n".join(lines)
 
 
-# How an agent's turn ended when it did its job: it declared itself done, or
-# named who should continue. Anything else - a timeout, the iteration limit, a
-# model error, an answer without a tool call - is an exception.
+# Clean stops declare completion or handoff. Iteration exhaustion is handled
+# separately: keep partial work and prevent retries until new work is available.
 _CLEAN_STOPS = {"finish", "handoff"}
+
+
+def routing_scope(snapshot: dict, agent: str) -> dict:
+    """Inputs whose addition can justify another turn after exhausting a budget."""
+    scope = {"work_items": sorted(snapshot.get("work_items") or []),
+             "users": sorted(snapshot.get("users") or [])}
+    if agent not in ("triage", "extractor"):
+        scope["approved"] = ["approved"] if snapshot.get("approved") else []
+    if agent in ("evidence_officer", "closer"):
+        scope["verified"] = sorted(snapshot.get("verified") or [])
+    return scope
+
+
+def exhausted_agents(history: list[dict], snapshot: dict) -> set[str]:
+    """Budget exhaustion is not permission to repeat the same work indefinitely."""
+    latest = {e.get("agent"): e for e in history}
+    exhausted = set()
+    for name, entry in latest.items():
+        if entry.get("stopped") != "iteration limit":
+            continue
+        previous = entry.get("routing_scope")
+        current = routing_scope(snapshot, name)
+        if previous is None or not any(
+                set(values) - set(previous.get(key, [])) for key, values in current.items()):
+            exhausted.add(name)
+    return exhausted
 
 
 def guided_next(history: list[dict], board_snapshot: dict, *,
@@ -103,16 +128,17 @@ def guided_next(history: list[dict], board_snapshot: dict, *,
     """The next step in the fixed order, or None when judgement is needed.
 
     Guided orchestration: the routine path costs no model call. The supervisor
-    model is consulted only when the last agent did not finish cleanly, or was
+    model is consulted when the last agent failed (other than budget exhaustion), or was
     refused by the policy engine for a reason other than dry-run mode - the
     situations where the fixed order cannot know what to do.
     """
     turns = [e for e in history if e.get("agent") != "approval"]
     if turns:
         last = turns[-1]
-        if last.get("stopped") not in _CLEAN_STOPS:
+        if last.get("stopped") not in _CLEAN_STOPS | {"iteration limit"}:
             return None
-        if last.get("denials") and not shadow:
+        if (last.get("denials") and not shadow
+                and last.get("stopped") != "iteration limit"):
             return None
 
     # An agent counts as done only if its latest turn ended cleanly. One that
@@ -120,6 +146,7 @@ def guided_next(history: list[dict], board_snapshot: dict, *,
     latest = {e.get("agent"): e for e in turns}
     done = {name for name, e in latest.items()
             if e.get("stopped") in _CLEAN_STOPS and (shadow or not e.get("denials"))}
+    done |= exhausted_agents(history, board_snapshot)
     for name in NOMINAL_SEQUENCE:
         if name in done:
             continue
@@ -203,6 +230,9 @@ Who acts next?"""
         return Decision("DONE", "", str(payload.get("why", "")))
     if chosen not in ROSTER:
         log.warning("supervisor_chose_unknown_agent", chosen=chosen)
+        return fallback
+    if chosen in exhausted_agents(history, board_snapshot):
+        log.warning("supervisor_repeated_exhausted_agent", chosen=chosen)
         return fallback
 
     task = str(payload.get("task", "")).strip()

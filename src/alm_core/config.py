@@ -377,7 +377,15 @@ class Settings(BaseSettings):
     trace_enabled: bool = Field(default=True, description="Export spans to Cloud Trace.")
     log_level: str = Field(default="INFO")
 
-    @field_validator("ewm_server", "jts_server", "approval_base_url", mode="after")
+    @field_validator("ewm_server", mode="after")
+    @classmethod
+    def _normalize_ewm_server(cls, value: str) -> str:
+        clean = value.rstrip("/")
+        if clean.endswith("/web"):
+            clean = clean[:-4].rstrip("/")
+        return clean
+
+    @field_validator("jts_server", "approval_base_url", mode="after")
     @classmethod
     def _strip_trailing_slash(cls, value: str) -> str:
         return value.rstrip("/")

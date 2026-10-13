@@ -194,8 +194,119 @@ def test_a_dry_run_previews_the_card_and_writes_nothing():
     kinds = [e["kind"] for e in events]
     assert kinds[0] == "run_started" and kinds[-1] == "run_finished"
     assert "approval_preview" in kinds and "approval_required" not in kinds
+    assert run["preview_card"]["items"] and run["pending"] is None
+    assert run["commit_work_items"] == ["1001", "1002"]
     assert run["report"]["results"] == [] or all(
         r["outcome"] != "ok" for r in run["report"]["results"])
+
+
+def test_queue_dry_run_can_launch_a_scoped_write_but_still_requires_user_approval():
+    manager = make_manager()
+    client = make_client(manager)
+    csrf = signed_in(client)
+    started = post(client, "/api/runs", csrf, {"prompt": "process the active queue"})
+    dry = wait_for(client, started.json()["id"], {"done", "failed"})
+    assert dry["status"] == "done" and dry["work_items"] == []
+    response = post(client, f"/api/runs/{dry['id']}/commit", csrf, {"confirm": "COMMIT"})
+    assert response.status_code == 201, response.text
+    new_id = response.json()["id"]
+    assert new_id != dry["id"]
+    assert response.json()["mode"] == "commit"
+    assert response.json()["work_items"] == dry["commit_work_items"]
+    writing = wait_for(client, new_id, {"awaiting_approval", "done", "failed"})
+    assert writing["status"] == "awaiting_approval"
+    assert writing["pending"]["items"]
+    assert writing["report"] is None
+    assert post(client, f"/api/runs/{new_id}/decision", csrf,
+                {"approved": True, "userids": ["AB12345"]}).status_code == 200
+    finished = wait_for(client, new_id, {"done", "failed"})
+    assert finished["status"] == "done"
+    written = {r["userid"] for r in finished["report"]["results"] if r["outcome"] == "ok"}
+    assert written == {"AB12345"}
+
+
+def prepared_plan(environment="TEST", count=2):
+    manager = make_manager(environment)
+    run = web.WebRun(id="preview", thread_id="web-12345678", prompt="read the queue",
+                     mode="dry", work_items=[], sandbox=True, status="done",
+                     preview_card={"items": [{"userid": "AB12345", "work_item_ids":
+                                              [str(1001 + i) for i in range(count)]}]})
+    manager.runs[run.id] = run
+    client = make_client(manager, environment)
+    return manager, run, client, signed_in(client)
+
+
+@pytest.mark.parametrize("word", ["", "yes", "commit", "PROD"])
+def test_commit_preview_requires_exact_confirmation(word):
+    manager, run, client, csrf = prepared_plan()
+    response = post(client, f"/api/runs/{run.id}/commit", csrf, {"confirm": word})
+    assert response.status_code == 422 and "Type COMMIT" in response.json()["error"]
+    assert len(manager.runs) == 1
+
+
+def test_commit_preview_requires_prod_confirmation():
+    manager, run, client, csrf = prepared_plan("PROD")
+    path = f"/api/runs/{run.id}/commit"
+    assert post(client, path, csrf, {"confirm": "COMMIT"}).status_code == 422
+    response = post(client, path, csrf, {"confirm": "PROD", "work_items": ["1001"]})
+    assert response.status_code == 201
+    new_id = response.json()["id"]
+    wait_for(client, new_id, {"awaiting_approval"})
+    post(client, f"/api/runs/{new_id}/decision", csrf, {"approved": False})
+    wait_for(client, new_id, {"done", "failed"})
+
+
+def test_large_preview_requires_subset_and_cannot_widen_scope():
+    manager, run, client, csrf = prepared_plan(count=6)
+    path = f"/api/runs/{run.id}/commit"
+    response = post(client, path, csrf, {"confirm": "COMMIT"})
+    assert response.status_code == 422 and "at most 5" in response.json()["error"]
+    assert post(client, path, csrf, {"confirm": "COMMIT", "work_items": ["9999"]}).status_code == 422
+    assert post(client, path, csrf, {"confirm": "COMMIT", "work_items":
+                                    [str(i) for i in range(1001, 1007)]}).status_code == 422
+    response = post(client, path, csrf, {"confirm": "COMMIT", "work_items": ["1001"]})
+    assert response.status_code == 201
+    assert response.json()["work_items"] == ["1001"]  # no digits from the source thread
+    new_id = response.json()["id"]
+    wait_for(client, new_id, {"awaiting_approval"})
+    post(client, f"/api/runs/{new_id}/decision", csrf, {"approved": False})
+    wait_for(client, new_id, {"done", "failed"})
+
+
+@pytest.mark.parametrize(("mode", "status"), [("dry", "running"), ("dry", "failed"),
+                                              ("commit", "done")])
+def test_only_ended_dry_runs_can_be_committed(mode, status):
+    manager, run, client, csrf = prepared_plan()
+    run.mode, run.status = mode, status
+    assert post(client, f"/api/runs/{run.id}/commit", csrf,
+                {"confirm": "COMMIT"}).status_code == 422
+    assert len(manager.runs) == 1
+
+
+def test_commit_preview_rejects_empty_or_missing_runs_and_preserves_origin_csrf_guards():
+    manager, run, client, csrf = prepared_plan(count=0)
+    path = f"/api/runs/{run.id}/commit"
+    body = {"confirm": "COMMIT"}
+    assert post(client, path, csrf, body).status_code == 422
+    assert post(client, "/api/runs/missing/commit", csrf, body).status_code == 404
+    assert client.post(path, json=body).status_code == 403
+    assert client.post(path, json=body, headers={"Origin": ORIGIN}).status_code == 403
+    assert client.post(path, json=body, headers={"Origin": "http://evil.example",
+                                                "X-CSRF-Token": csrf}).status_code == 403
+    unsigned = make_client(manager)
+    assert post(unsigned, path, csrf, body).status_code == 401
+
+
+def test_stopped_preview_can_use_results_when_no_card_was_saved(monkeypatch):
+    manager, run, _client, _csrf = prepared_plan(count=0)
+    run.status, run.preview_card = "stopped", None
+    run.report = {"results": [{"work_item_id": "1001"}, {"work_item_id": "1001"},
+                              {"work_item_id": ""}]}
+    calls = []
+    monkeypatch.setattr(manager, "start", lambda **kw: calls.append(kw) or run)
+    manager.commit(run.id, "COMMIT", [])
+    assert calls == [{"prompt": "Commit dry-run plan for work items 1001",
+                      "mode": "commit", "confirm": "COMMIT"}]
 
 
 def test_a_writing_run_waits_for_the_browser_and_writes_only_chosen_users():

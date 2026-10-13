@@ -175,6 +175,11 @@ class Blackboard:
         """A compact view for an agent's opening context."""
         return json.dumps({
             "work_items": sorted(self.work_items),
+            "extraction": {wid: {
+                "parsed_users": [u.userid for u in item.users],
+                "rejected_rows": len(parse_new_users(item.new_users_raw)[1]),
+                "new_users_field_present": bool(item.new_users_raw.strip()),
+            } for wid, item in sorted(self.work_items.items())},
             "users": {u: (self.statuses[u].state.value if u in self.statuses
                           else "not validated") for u in sorted(self.users)},
             "verified": sorted(self.verified),
@@ -354,6 +359,7 @@ def build_registry(ctx: ToolContext, board: Blackboard, memory: MemoryStore,
     # not been touched since. Several agents classify the same user; only a
     # write or a changed permission can make that answer stale.
     fresh: set[str] = set()
+    recovered: dict[tuple[str, str, str], llm.Recovery] = {}
 
     # ------------------------------------------------------------ read tools
 
@@ -378,6 +384,7 @@ def build_registry(ctx: ToolContext, board: Blackboard, memory: MemoryStore,
         return json.dumps([{
             "work_item_id": i.work_item_id, "summary": i.summary, "state": i.state,
             "parsed_users": [u.userid for u in i.users],
+            "rejected_rows": len(parse_new_users(i.new_users_raw)[1]),
             "new_users_field_present": bool(i.new_users_raw),
         } for i in items], indent=2)
 
@@ -396,6 +403,7 @@ def build_registry(ctx: ToolContext, board: Blackboard, memory: MemoryStore,
             "state": item.state, "justification": item.justification[:500],
             "new_users_raw": item.new_users_raw[:1000],
             "parsed_users": [u.userid for u in item.users],
+            "rejected_rows": len(parse_new_users(item.new_users_raw)[1]),
         }, indent=2)
 
     async def parse_new_users_field(work_item_id: str = "", text: str = "") -> str:
@@ -423,6 +431,9 @@ def build_registry(ctx: ToolContext, board: Blackboard, memory: MemoryStore,
         if item is None:
             return f"ERROR: work item {work_item_id} is not in this run. Fetch it first."
         _records, rejected = parse_new_users(item.new_users_raw)
+        if item.users and not rejected:
+            return (f"work item {work_item_id} already has {len(item.users)} parsed "
+                    "user(s); recovery not needed")
         text = "; ".join(rejected)
         where = "rejected New Users rows"
         if not item.new_users_raw.strip():
@@ -430,8 +441,13 @@ def build_registry(ctx: ToolContext, board: Blackboard, memory: MemoryStore,
         if not text.strip():
             return f"nothing to recover: {work_item_id} has no rejected rows"
 
-        recovery = await asyncio.to_thread(llm.recover_userids, ctx.settings, text,
-                                           work_item_id, item.summary)
+        key = (work_item_id, text, item.summary)
+        recovery = recovered.get(key)
+        if recovery is None:
+            recovery = await asyncio.to_thread(llm.recover_userids, ctx.settings, text,
+                                               work_item_id, item.summary)
+            if not recovery.error and recovery.method != "none":
+                recovered[key] = recovery
         source = SourceWorkItem(work_item_id=work_item_id, summary=item.summary)
         parsed = {u.userid for u in item.users}
         added = []

@@ -119,6 +119,7 @@ class WebRun:
     status: str = "starting"
     events: list[dict] = field(default_factory=list)
     pending: dict | None = None
+    preview_card: dict | None = None
     report: dict | None = None
     error: str = ""
     decisions: queue.Queue = field(default_factory=queue.Queue)
@@ -136,9 +137,20 @@ class WebRun:
         return {"id": self.id, "thread_id": self.thread_id, "prompt": self.prompt,
                 "mode": self.mode, "work_items": self.work_items, "sandbox": self.sandbox,
                 "status": self.status, "created": self.created, "error": self.error,
-                "pending": self.pending, "report": _report_view(self.report),
+                "pending": self.pending, "preview_card": self.preview_card,
+                "commit_work_items": self.commit_work_items(),
+                "report": _report_view(self.report),
                 "stopped_by": getattr(self.control, "by", "") or "",
                 "trace": str(getattr(self.trace, "path", "") or "")}
+
+    def commit_work_items(self) -> list[str]:
+        """Only scope recorded in the dry-run preview (or its result records)."""
+        ids = [str(wid) for item in (self.preview_card or {}).get("items", [])
+               for wid in item.get("work_item_ids", [])]
+        if not ids:
+            ids = [str(row.get("work_item_id", ""))
+                   for row in (self.report or {}).get("results", [])]
+        return sorted({wid for wid in ids if re.fullmatch(r"[0-9]{4,10}", wid)})
 
 
 def _clip(value, limit: int = 1500):
@@ -283,6 +295,26 @@ class RunManager:
             raise RequestRefused("Select at least one user to approve, or reject the batch.")
         run.decisions.put((approved, chosen))
 
+    def commit(self, run_id: str, confirm: str, work_items: list[str]) -> WebRun:
+        run = self.runs.get(run_id)
+        if run is None:
+            raise KeyError(run_id)
+        if run.mode != "dry" or run.status not in ("done", "stopped"):
+            raise RequestRefused("Only an ended dry run can start a writing run.")
+        planned = run.commit_work_items()
+        chosen = list(dict.fromkeys(work_items or planned))
+        if not chosen:
+            raise RequestRefused("This dry run has no planned work items to commit.")
+        if set(chosen) - set(planned):
+            raise RequestRefused("Choose only work items recorded in this dry run's plan.")
+        if len(chosen) > MAX_COMMIT_WORK_ITEMS:
+            raise RequestRefused(f"Select at most {MAX_COMMIT_WORK_ITEMS} work items "
+                                 "from this plan. Split larger plans into batches.")
+        # Keep the source thread out of the parsed prompt: digits in an opaque
+        # run identifier must never accidentally widen the writing scope.
+        return self.start(prompt=f"Commit dry-run plan for work items {', '.join(chosen)}",
+                          mode="commit", confirm=confirm)
+
     # ------------------------------------------------------------ the thread
 
     def _decider(self, run: WebRun, settings):
@@ -294,6 +326,7 @@ class RunManager:
             if settings.shadow_mode:
                 # A dry run cannot write: the card is a preview of what a writing
                 # run will ask, and the plan carries on.
+                run.preview_card = card
                 run.emit("approval_preview", card)
                 return ApprovalDecision(
                     thread_id=payload.get("thread_id", ""), approved=True,
@@ -450,6 +483,10 @@ def create_app(manager: RunManager, *, port: int, access_token: str, environment
         approved: bool
         userids: list[str] = Field(default_factory=list, max_length=200)
 
+    class CommitBody(BaseModel):
+        confirm: str = Field(default="", max_length=20)
+        work_items: list[str] = Field(default_factory=list, max_length=MAX_COMMIT_WORK_ITEMS)
+
     def refuse(status: int, message: str) -> JSONResponse:
         return JSONResponse({"error": message}, status_code=status)
 
@@ -559,6 +596,18 @@ def create_app(manager: RunManager, *, port: int, access_token: str, environment
         except RequestRefused as err:
             return refuse(409, str(err))
         return {"ok": True}
+
+    @app.post("/api/runs/{run_id}/commit")
+    async def commit_run(request: Request, run_id: str, body: CommitBody):
+        if (denied := require(request, write=True)) is not None:
+            return denied
+        try:
+            run = manager.commit(run_id, body.confirm, body.work_items)
+        except KeyError:
+            return refuse(404, "no such run")
+        except RequestRefused as err:
+            return refuse(422, str(err))
+        return JSONResponse(run.summary(), status_code=201)
 
     @app.post("/api/runs/{run_id}/stop")
     async def stop_run(request: Request, run_id: str):

@@ -72,8 +72,14 @@ The New Users field should read LASTNAME,FIRSTNAME,email,USERID; repeated. Often
 it does not - somebody pasted from a mail, or used the Justification field, or
 separated entries with newlines.
 
-Always call parse_new_users_field first. It is exact, and whatever it parses is
-correct. Only reason about the rows it rejected.
+Check the extraction summary in your opening context first. If parsed_users
+contains users and rejected_rows is zero, that item is already parsed: do not
+fetch it again, parse it again, or call recover_user_ids. Only address items
+with rejected rows or no parsed users. Call finish or handoff as soon as those
+items are addressed; if every item is already parsed, hand off immediately.
+
+For an item that still needs extraction, call parse_new_users_field first. It
+is exact, and whatever it parses is correct. Only reason about rejected rows.
 
 For rejected rows, call recover_user_ids. It lists every token in the text that
 could be a user ID and judges which of them are people being requested, with a
