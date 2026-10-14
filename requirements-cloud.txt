@@ -22,7 +22,8 @@ langchain-google-genai==4.4.0
 # Vertex AI - authenticates with a service account, no key. Also serves Claude
 # through Model Garden. Selected with ALM_LLM_PROVIDER=vertex.
 langchain-google-vertexai==3.2.4
-google-cloud-aiplatform==2.4.0
+# Keep 1.x until the Vertex adapter supports 2.x (3.2.4 requires <2.0.0).
+google-cloud-aiplatform==1.165.1
 
 # --- User-ID recovery: TypeSafe (optional; see recover_userids in llm.py) ----
 # Judges which user-ID-shaped tokens in a malformed row are people being
