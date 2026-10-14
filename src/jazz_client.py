@@ -155,3 +155,84 @@ def post_with_retry(session: requests.Session, url: str, *, attempts: int = 3,
                 break
             time.sleep(backoff * attempt)
     raise last  # type: ignore[misc]
+
+
+AUTH_HEADER_KEY = "X-com-ibm-team-repository-web-auth-msg"
+AUTH_REQUIRED_VAL = "authrequired"
+
+
+def is_auth_expired(response: requests.Response) -> bool:
+    """True when IBM Jazz rejected the session or presented a form-auth challenge."""
+    if response.status_code in (401, 403):
+        return True
+    auth_msg = response.headers.get(AUTH_HEADER_KEY, "").lower()
+    if auth_msg == AUTH_REQUIRED_VAL:
+        return True
+    content_type = response.headers.get("Content-Type", "").lower()
+    return bool("text/html" in content_type and "j_security_check" in response.text[:4096])
+
+
+class HardenedJazzClient:
+    """Self-contained Jazz client with auto-reauthentication and ETag concurrency retries."""
+
+    def __init__(self, base_url: str, username: str, password: str, verify_ssl: bool | str | None = None):
+        self.base_url = base_url.rstrip("/")
+        self.username = username
+        self.password = password
+        self.session = requests.Session()
+        self.session.verify = alm_config.tls_verify() if verify_ssl is None else verify_ssl
+        self._mount_retries()
+
+    def _mount_retries(self) -> None:
+        adapter = HTTPAdapter(max_retries=_retry(3, frozenset(["GET", "HEAD", "OPTIONS"])),
+                              pool_connections=10, pool_maxsize=20)
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
+
+    def authenticate(self) -> None:
+        """Executes standard Jazz form-based authentication."""
+        ok = form_login(self.session, self.base_url, self.username, self.password,
+                        lambda _s: True)
+        if not ok:
+            raise PermissionError("JTS/EWM authentication failed: Invalid credentials or rejected login.")
+
+    def request(self, method: str, url: str, **kwargs) -> requests.Response:
+        """Executes an OSLC HTTP request with automatic session re-authentication."""
+        kwargs.setdefault("timeout", DEFAULT_TIMEOUT)
+        response = self.session.request(method, url, **kwargs)
+        if is_auth_expired(response):
+            self.authenticate()
+            response = self.session.request(method, url, **kwargs)
+        response.raise_for_status()
+        return response
+
+    def update_oslc_resource_with_etag(
+        self,
+        resource_url: str,
+        mutate_fn,
+        accept: str = "application/rdf+xml",
+        content_type: str = "application/rdf+xml",
+        max_conflict_retries: int = 3,
+    ) -> requests.Response:
+        """Fetches resource + ETag, applies mutate_fn(content, etag), and PUTs with If-Match."""
+        for attempt in range(1, max_conflict_retries + 1):
+            get_resp = self.request("GET", resource_url, headers={"Accept": accept, "OSLC-Core-Version": "2.0"})
+            etag = get_resp.headers.get("ETag")
+            if not etag:
+                raise RuntimeError(f"Missing ETag header from OSLC resource: {resource_url}")
+
+            updated_body = mutate_fn(get_resp.content, etag)
+            put_headers = {
+                "If-Match": etag,
+                "Content-Type": content_type,
+                "Accept": accept,
+                "OSLC-Core-Version": "2.0",
+            }
+            try:
+                return self.request("PUT", resource_url, data=updated_body, headers=put_headers)
+            except requests.HTTPError as exc:
+                if exc.response is not None and exc.response.status_code == 412 and attempt < max_conflict_retries:
+                    time.sleep(0.5 * attempt)
+                    continue
+                raise
+        return get_resp

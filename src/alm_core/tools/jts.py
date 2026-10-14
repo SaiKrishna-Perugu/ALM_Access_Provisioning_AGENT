@@ -212,32 +212,38 @@ def _create_contributor(ctx: ToolContext, info: dict) -> tuple[bool, str, dict]:
 
 def _unarchive(ctx: ToolContext, userid: str) -> tuple[bool, str, dict]:
     server = _server(ctx)
-    etag, rdf, archived = _contributor_rdf(ctx, userid)
-    if rdf is None:
-        raise NotFoundError(f"contributor RDF unreadable for {userid}")
-    if archived is None:
-        return False, "contributor has no jfs:archived property; refusing to guess", {}
-    if not archived:
-        return True, "already active", {}
+    max_retries = 3
+    for attempt in range(1, max_retries + 1):
+        etag, rdf, archived = _contributor_rdf(ctx, userid)
+        if rdf is None:
+            raise NotFoundError(f"contributor RDF unreadable for {userid}")
+        if archived is None:
+            return False, "contributor has no jfs:archived property; refusing to guess", {}
+        if not archived:
+            return True, "already active", {}
 
-    new_rdf = _ARCHIVED_RE.sub(lambda m: m.group(1) + "false" + m.group(3), rdf, count=1)
-    headers = {"Content-Type": RDF, "Accept": RDF, "X-Requested-With": "XMLHttpRequest"}
-    if etag:
-        # JFS 7.0.2 SR1 wants the concurrency token in a header named ETag and
-        # rejects the standard If-Match with CRJZS5488E. Send both.
-        headers["ETag"] = etag
-        headers["If-Match"] = etag
-    response = ctx.client.request("PUT", f"{server}/users/{userid}", server=server,
-                                  kind="jts", data=new_rdf.encode("utf-8"),
-                                  headers=headers)
-    if response.status_code not in (200, 204):
-        return False, f"unarchive PUT returned HTTP {response.status_code}", \
-            {"body": response.text[:300]}
+        new_rdf = _ARCHIVED_RE.sub(lambda m: m.group(1) + "false" + m.group(3), rdf, count=1)
+        headers = {"Content-Type": RDF, "Accept": RDF, "X-Requested-With": "XMLHttpRequest"}
+        if etag:
+            # JFS 7.0.2 SR1 wants the concurrency token in a header named ETag and
+            # rejects the standard If-Match with CRJZS5488E. Send both.
+            headers["ETag"] = etag
+            headers["If-Match"] = etag
+        response = ctx.client.request("PUT", f"{server}/users/{userid}", server=server,
+                                      kind="jts", data=new_rdf.encode("utf-8"),
+                                      headers=headers)
+        if response.status_code == 412 and attempt < max_retries:
+            log.warning("unarchive_etag_conflict_retrying", userid=userid,
+                        attempt=attempt, max_retries=max_retries)
+            continue
+        if response.status_code not in (200, 204):
+            return False, f"unarchive PUT returned HTTP {response.status_code}", \
+                {"body": response.text[:300]}
 
-    _etag, _rdf, now_archived = _contributor_rdf(ctx, userid)
-    if now_archived is not False:
-        return False, f"PUT succeeded but the re-read still shows archived={now_archived}", {}
-    return True, "reactivated and confirmed active", {}
+        _etag, _rdf, now_archived = _contributor_rdf(ctx, userid)
+        if now_archived is not False:
+            return False, f"PUT succeeded but the re-read still shows archived={now_archived}", {}
+        return True, "reactivated and confirmed active", {}
 
 
 async def provision_user(ctx: ToolContext, user: RequestedUser,

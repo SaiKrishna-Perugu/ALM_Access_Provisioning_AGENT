@@ -127,9 +127,22 @@ def iter_pages(session, url: str, params: dict, *, timeout, verify,
                                params=params if page == 1 else None,
                                timeout=timeout, verify=verify)
         if response.status_code != 200:
+            if response.status_code in (401, 403):
+                raise AuthorizationError(
+                    f"OSLC query failed: HTTP {response.status_code} (authentication required)",
+                    context={"url": next_url, "body": response.text[:300]})
             raise DataError(
                 f"OSLC query failed: HTTP {response.status_code}",
                 context={"url": next_url, "body": response.text[:300]})
+        if response.headers.get("X-com-ibm-team-repository-web-auth-msg", "").lower() == "authrequired":
+            raise AuthorizationError(
+                "OSLC query answered with authrequired challenge - session is expired",
+                context={"url": next_url})
+        content_type = response.headers.get("Content-Type", "").lower()
+        if "text/html" in content_type and ("j_security_check" in response.text[:4096] or response.text.lstrip()[:64].lower().startswith("<!doctype html")):
+            raise AuthorizationError(
+                "server returned the Jazz web UI, not OSLC JSON - session is not authorised for API access",
+                context={"url": next_url})
         try:
             data = response.json()
         except ValueError as err:

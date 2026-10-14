@@ -212,11 +212,26 @@ def jts_session_is_live(server: str, timeout):
     return check
 
 
+AUTH_HEADER_KEY = "X-com-ibm-team-repository-web-auth-msg"
+AUTH_REQUIRED_VAL = "authrequired"
+
+
+def is_auth_expired(response: requests.Response) -> bool:
+    """True when IBM Jazz rejected the session or presented a form-auth challenge."""
+    if response.status_code in (401, 403):
+        return True
+    auth_msg = response.headers.get(AUTH_HEADER_KEY, "").lower()
+    if auth_msg == AUTH_REQUIRED_VAL:
+        return True
+    content_type = response.headers.get("Content-Type", "").lower()
+    return bool("text/html" in content_type and "j_security_check" in response.text[:4096])
+
+
 class JazzClient:
     """An authenticated session per server, created on demand and reused.
 
-    Re-authenticates once on a 401/403 before giving up, because a Jazz session
-    cookie expires long before a long-running provisioning batch finishes.
+    Re-authenticates once on a 401/403 or authrequired challenge before giving up,
+    because a Jazz session cookie expires long before a long-running batch finishes.
     """
 
     def __init__(self, settings, resolver):
@@ -273,7 +288,7 @@ class JazzClient:
             raise TransportError(f"{method} {url} failed: {err}",
                                  context={"server": server}) from err
 
-        if response.status_code in (401, 403):
+        if is_auth_expired(response):
             log.info("session_expired_reauthenticating", server=server)
             session = self.session(server, kind=kind, refresh=True)
             try:
@@ -282,6 +297,11 @@ class JazzClient:
                 breaker.record_failure()
                 raise TransportError(f"{method} {url} failed after re-auth: {err}",
                                      context={"server": server}) from err
+            if is_auth_expired(response):
+                breaker.record_failure()
+                raise AuthenticationError(
+                    f"{method} {url} failed: unauthenticated after re-auth",
+                    context={"server": server})
 
         if response.status_code >= 500:
             breaker.record_failure()
@@ -289,6 +309,49 @@ class JazzClient:
                               context={"server": server, "body": response.text[:300]})
 
         breaker.record_success()
+        return response
+
+    def update_oslc_resource_with_etag(
+        self,
+        server: str,
+        kind: str,
+        resource_url: str,
+        mutate_fn,
+        accept: str = "application/rdf+xml",
+        content_type: str = "application/rdf+xml",
+        max_conflict_retries: int = 3,
+        **kwargs,
+    ) -> requests.Response:
+        """Fetch resource + ETag, mutate, and PUT with If-Match; retries on HTTP 412."""
+        for attempt in range(1, max_conflict_retries + 1):
+            get_headers = {"Accept": accept, "OSLC-Core-Version": "2.0"}
+            if "headers" in kwargs:
+                get_headers.update(kwargs["headers"])
+            get_resp = self.request("GET", resource_url, server=server, kind=kind,
+                                    headers=get_headers)
+            etag = get_resp.headers.get("ETag")
+            if not etag:
+                raise RuntimeError(f"Missing ETag header from OSLC resource: {resource_url}")
+
+            updated_body = mutate_fn(get_resp.content, etag)
+            put_headers = {
+                "If-Match": etag,
+                "Content-Type": content_type,
+                "Accept": accept,
+                "OSLC-Core-Version": "2.0",
+            }
+            if "headers" in kwargs:
+                put_headers.update(kwargs["headers"])
+            put_kwargs = {k: v for k, v in kwargs.items() if k != "headers"}
+            put_kwargs["headers"] = put_headers
+            put_kwargs["data"] = updated_body
+            response = self.request("PUT", resource_url, server=server, kind=kind, **put_kwargs)
+            if response.status_code == 412 and attempt < max_conflict_retries:
+                log.warning("etag_412_conflict_retrying", resource=resource_url,
+                            attempt=attempt, max_retries=max_conflict_retries)
+                time.sleep(0.5 * attempt)
+                continue
+            return response
         return response
 
     def close(self) -> None:

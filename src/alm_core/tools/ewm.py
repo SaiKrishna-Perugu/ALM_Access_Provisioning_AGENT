@@ -347,21 +347,28 @@ def _upload_and_link(ctx: ToolContext, work_item_id: str, path: str,
 
     work_item_url = f"{server}/oslc/workitems/{work_item_id}"
     headers = {"Content-Type": "application/json", **OSLC_HEADERS_JSON, **_csrf(ctx)}
-    current = ctx.client.request("GET", work_item_url, server=server, kind="ewm",
-                                 params={"oslc.properties": ATTACH_PROP}, headers=headers)
-    if current.status_code != 200:
-        return False, f"work item read failed: HTTP {current.status_code}", {}
-    links = current.json().get(ATTACH_PROP, [])
-    links = links if isinstance(links, list) else [links]
-    links.append({"rdf:resource": attachment_url})
+    max_retries = 3
+    for attempt in range(1, max_retries + 1):
+        current = ctx.client.request("GET", work_item_url, server=server, kind="ewm",
+                                     params={"oslc.properties": ATTACH_PROP}, headers=headers)
+        if current.status_code != 200:
+            return False, f"work item read failed: HTTP {current.status_code}", {}
+        links = current.json().get(ATTACH_PROP, [])
+        links = links if isinstance(links, list) else [links]
+        if not any(link.get("rdf:resource") == attachment_url for link in links if isinstance(link, dict)):
+            links.append({"rdf:resource": attachment_url})
 
-    linked = ctx.client.request(
-        "PUT", f"{work_item_url}?oslc.properties={ATTACH_PROP}", server=server, kind="ewm",
-        data=json.dumps({ATTACH_PROP: links}),
-        headers={**headers, "If-Match": current.headers.get("ETag", "*")})
-    if linked.status_code in (200, 204):
-        return True, f"attached {filename}", {"attachment_url": attachment_url}
-    return False, f"link failed: HTTP {linked.status_code}", {"body": linked.text[:200]}
+        linked = ctx.client.request(
+            "PUT", f"{work_item_url}?oslc.properties={ATTACH_PROP}", server=server, kind="ewm",
+            data=json.dumps({ATTACH_PROP: links}),
+            headers={**headers, "If-Match": current.headers.get("ETag", "*")})
+        if linked.status_code in (200, 204):
+            return True, f"attached {filename}", {"attachment_url": attachment_url}
+        if linked.status_code == 412 and attempt < max_retries:
+            log.warning("attachment_link_etag_conflict", work_item=work_item_id,
+                        attempt=attempt, max_retries=max_retries)
+            continue
+        return False, f"link failed: HTTP {linked.status_code}", {"body": linked.text[:200]}
 
 
 async def attach_evidence(ctx: ToolContext, *, work_item_id: str, userid: str,
