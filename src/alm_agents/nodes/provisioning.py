@@ -17,10 +17,19 @@ from alm_core.models import AuditEvent, Outcome, UserState
 from alm_core.tools import gpt_queue, jts
 from alm_core.tools.base import ToolContext, gather_per_user
 from alm_core.tools.jts import check_role
+from idempotency import execute_idempotent_step, make_step_key
 
 from ..state import PipelineState
 
 log = get_logger("alm.agents.provisioning")
+
+__all__ = [
+    "execute_idempotent_step",
+    "make_ad_node",
+    "make_jts_node",
+    "make_step_key",
+    "make_verification_node",
+]
 
 
 def _approved_users(state: PipelineState):

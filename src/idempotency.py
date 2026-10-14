@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Callable
+from typing import Any
 
 import alm_config
 
@@ -106,3 +108,38 @@ def already_attached(userid: str, existing_titles) -> bool:
     """True when this user's evidence file is already on the work item."""
     wanted = attachment_name(userid).lower()
     return any((title or "").strip().lower() == wanted for title in existing_titles or [])
+
+
+def make_step_key(workitem_id: int | str, user_id: str, step_name: str) -> str:
+    """A deterministic sha256 step idempotency key."""
+    raw = f"{workitem_id}:{user_id.lower()}:{step_name}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def execute_idempotent_step(
+    store,
+    workitem_id: int | str,
+    user_id: str,
+    step_name: str,
+    action_fn: Callable[[], dict[str, Any]],
+) -> dict[str, Any]:
+    """Checks if a provisioning sub-step already succeeded for this (workitem_id, user_id).
+
+    If yes, returns cached result without calling JTS/EWM again.
+    """
+    step_key = make_step_key(workitem_id, user_id, step_name)
+    existing = store.get_idempotency_record(step_key) if hasattr(store, "get_idempotency_record") else None
+    if existing and existing.get("status") in ("COMPLETED", "completed"):
+        return {"skipped": True, "cached_result": existing.get("result")}
+
+    result = action_fn()
+    if hasattr(store, "save_idempotency_record"):
+        store.save_idempotency_record(
+            step_key=step_key,
+            workitem_id=workitem_id,
+            user_id=user_id,
+            step_name=step_name,
+            status="COMPLETED",
+            result=result,
+        )
+    return result
