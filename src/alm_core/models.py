@@ -12,6 +12,7 @@ during the migration.
 from __future__ import annotations
 
 import hashlib
+import re
 from datetime import datetime, timezone
 from enum import Enum
 
@@ -135,6 +136,52 @@ class WorkItem(Strict):
     created: datetime | None = None
     modified: datetime | None = None
     users: list[RequestedUser] = Field(default_factory=list)
+
+
+class JTSLicenseTier(str, Enum):
+    EWM_DEVELOPER = "com.ibm.team.rtc.developer"
+    EWM_CONTRIBUTOR = "com.ibm.team.rtc.contributor"
+    EWM_STAKEHOLDER = "com.ibm.team.rtc.stakeholder"
+    DOORS_NEXT_ANALYST = "com.ibm.rdm.analyst"
+    ETM_QUALITY_PROFESSIONAL = "com.ibm.rqm.tester"
+
+
+class RepositoryPermission(str, Enum):
+    JAZZ_USERS = "JazzUsers"
+    JAZZ_PROJECT_ADMINS = "JazzProjectAdmins"
+    JAZZ_GUESTS = "JazzGuests"
+    # Explicitly exclude JazzAdmins from automated provisioning!
+
+
+USER_ID_REGEX = re.compile(r"^[a-zA-Z0-9._-]{3,64}$")
+
+
+class ExtractedAccessRequest(Strict):
+    workitem_id: int = Field(..., gt=0)
+    user_id: str = Field(..., description="Corporate NTID or UID without spaces")
+    email: EmailStr
+    full_name: str = Field(..., min_length=2, max_length=120)
+    project_area: str = Field(..., min_length=2, max_length=120)
+    requested_roles: list[str] = Field(..., min_length=1)
+    license_tier: JTSLicenseTier = Field(default=JTSLicenseTier.EWM_CONTRIBUTOR)
+    repo_permission: RepositoryPermission = Field(default=RepositoryPermission.JAZZ_USERS)
+    extraction_confidence: float = Field(..., ge=0.0, le=1.0)
+
+    @field_validator("user_id")
+    @classmethod
+    def validate_clean_user_id(cls, v: str) -> str:
+        cleaned = v.strip()
+        if not USER_ID_REGEX.match(cleaned):
+            raise ValueError(f"Invalid User ID format: '{cleaned}'. Must match {USER_ID_REGEX.pattern}")
+        return cleaned
+
+    @field_validator("full_name", "project_area")
+    @classmethod
+    def prevent_xml_or_script_injection(cls, v: str) -> str:
+        cleaned = v.strip()
+        if any(char in cleaned for char in ("<", ">", "&", ";", "$", "`")):
+            raise ValueError("Forbidden control or markup characters detected in field.")
+        return cleaned
 
 
 # -------------------------------------------------------------------- statuses

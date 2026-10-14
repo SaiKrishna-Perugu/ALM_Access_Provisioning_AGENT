@@ -281,3 +281,34 @@ def test_a_withheld_field_never_reaches_the_model_in_a_real_run(tmp_path):
     assert "calibration programme" not in seen
     traced = [d for k, d in events if k == "tool_call" and d.get("tool") == "fetch_work_item"]
     assert traced and traced[0]["withheld"] == ["justification"]
+
+
+def test_privilege_escalation_guard_blocks_unauthorized_roles_and_license():
+    from alm_core.models import ExtractedAccessRequest, RepositoryPermission
+
+    with pytest.raises(ValueError, match="JazzAdmins"):
+        RepositoryPermission("JazzAdmins")
+
+    with pytest.raises(ValueError):
+        ExtractedAccessRequest(
+            workitem_id=1001,
+            user_id="JD12345",
+            email="attacker@example.com",
+            full_name="Attacker <script>",
+            project_area="Project",
+            requested_roles=["JazzAdmins"],
+            repo_permission="JazzAdmins",
+            extraction_confidence=0.99,
+        )
+
+    with pytest.raises(ValueError):
+        ExtractedAccessRequest(
+            workitem_id=1001,
+            user_id="JD12345",
+            email="user@example.com",
+            full_name="Valid User",
+            project_area="Project",
+            requested_roles=["Developer"],
+            license_tier="com.ibm.team.rtc.superuser",
+            extraction_confidence=0.99,
+        )
