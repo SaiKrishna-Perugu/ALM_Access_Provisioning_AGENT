@@ -66,7 +66,7 @@ def scripted_recovery(monkeypatch):
     def judge(_settings, raw_field, _work_item_id, _summary="", **_kw):
         candidates = llm.userid_candidates(raw_field or "")
         return llm.Recovery(method="scripted", candidates=candidates,
-                            accepted={c: 0.9 for c in candidates})
+                            accepted=dict.fromkeys(candidates, 0.9))
 
     monkeypatch.setattr(llm, "recover_userids", judge)
 
