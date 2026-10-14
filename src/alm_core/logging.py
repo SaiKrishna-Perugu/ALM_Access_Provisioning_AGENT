@@ -48,6 +48,34 @@ _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 _USERID_RE = re.compile(r"\b[A-Z]{1,2}[0-9][0-9A-Z]{4,6}\b")
 REDACTED = "[redacted]"
 
+EMAIL_PATTERN = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b")
+SECRET_KV_PATTERN = re.compile(
+    r"(?i)(j_password|password|secret|token|authorization|ltpatoken2|jsessionid)\s*[:=]\s*(?:bearer\s+)?([^\s,;\"'&]+)"
+)
+
+
+def scrub_pii_and_secrets(text: str) -> str:
+    """Scrub passwords, secrets, session tokens and emails from text."""
+    if not isinstance(text, str):
+        return text
+    text = SECRET_KV_PATTERN.sub(r"\1=[REDACTED_SECRET]", text)
+    text = EMAIL_PATTERN.sub("[REDACTED_EMAIL]", text)
+    return text
+
+
+class PIIRedactingFilter(logging.Filter):
+    """Logging filter that redacts secrets and PII from record msg and args."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, str):
+            record.msg = scrub_pii_and_secrets(record.msg)
+        if record.args:
+            record.args = tuple(
+                scrub_pii_and_secrets(arg) if isinstance(arg, str) else arg
+                for arg in record.args
+            )
+        return True
+
 
 def new_run_id() -> str:
     return uuid.uuid4().hex[:16]
@@ -153,7 +181,10 @@ def _std_processors():
         return event_dict
 
     def redact(_logger, _name, event_dict):
-        return redact_mapping(event_dict)
+        event_dict = redact_mapping(event_dict)
+        if "event" in event_dict and isinstance(event_dict["event"], str):
+            event_dict["event"] = scrub_pii_and_secrets(event_dict["event"])
+        return event_dict
 
     return [
         structlog.contextvars.merge_contextvars,
@@ -174,7 +205,7 @@ class _JsonFormatter(logging.Formatter):
         payload = {
             "timestamp": self.formatTime(record),
             "level": record.levelname.lower(),
-            "event": record.getMessage(),
+            "event": scrub_pii_and_secrets(record.getMessage()),
             "logger": record.name,
         }
         if _run_id.get():
@@ -185,7 +216,7 @@ class _JsonFormatter(logging.Formatter):
         if isinstance(extra, dict):
             payload.update(redact_mapping(extra))
         if record.exc_info:
-            payload["exception"] = self.formatException(record.exc_info)
+            payload["exception"] = scrub_pii_and_secrets(self.formatException(record.exc_info))
         return json.dumps(payload, ensure_ascii=False, default=str)
 
 
@@ -229,6 +260,7 @@ def configure(level: str = "") -> None:
     level_name = (level or os.getenv("ALM_LOG_LEVEL", "INFO")).upper()
 
     handler = logging.StreamHandler(sys.stdout)
+    handler.addFilter(PIIRedactingFilter())
     root = logging.getLogger()
     root.handlers[:] = [handler]
     root.setLevel(level_name)
