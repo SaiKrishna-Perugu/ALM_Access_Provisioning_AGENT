@@ -532,7 +532,7 @@ def _oidc() -> auth.Oidc:
 @app.get("/auth/login")
 async def login(request: Request) -> RedirectResponse:
     oidc = _oidc()
-    url, pending = oidc.start(f"{_base_url(request)}/auth/callback")
+    url, pending = await asyncio.to_thread(oidc.start, f"{_base_url(request)}/auth/callback")
     response = RedirectResponse(url, status_code=303)
     response.set_cookie(auth.LOGIN_COOKIE,
                         auth.sign(runtime.secret(runtime.settings.session_secret_name),
@@ -550,8 +550,9 @@ async def callback(request: Request, code: str = "", state: str = "") -> Redirec
     if pending is None or not state or not secrets_equal(state, pending.get("state", "")):
         raise HTTPException(status_code=400, detail="sign-in expired or was not started here")
     try:
-        claims = oidc.finish(code=code, redirect_uri=f"{_base_url(request)}/auth/callback",
-                             login=pending)
+        claims = await asyncio.to_thread(
+            oidc.finish, code=code, redirect_uri=f"{_base_url(request)}/auth/callback",
+            login=pending)
     except PermissionError as err:
         log.warning("sign_in_refused", reason=str(err))
         raise HTTPException(status_code=401, detail=str(err)) from None

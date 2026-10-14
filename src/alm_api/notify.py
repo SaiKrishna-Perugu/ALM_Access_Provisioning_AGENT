@@ -14,6 +14,7 @@ and skipped; the run stays parked and visible in the console regardless.
 """
 from __future__ import annotations
 
+import asyncio
 import html
 import json
 import smtplib
@@ -122,14 +123,17 @@ def make_notifier(settings, resolver):
         url = console_url(settings, request.thread_id)
         sent = {}
         if "chat" in channels and settings.chat_webhook_url:
-            sent["chat"] = post_card(settings.chat_webhook_url,
-                                     build_card(request, review_url=url, needed=needed))
+            sent["chat"] = await asyncio.to_thread(
+                post_card, settings.chat_webhook_url,
+                build_card(request, review_url=url, needed=needed))
         if "teams" in channels and settings.teams_webhook_url:
-            sent["teams"] = post_teams(settings.teams_webhook_url, request, url=url,
-                                       needed=needed)
+            sent["teams"] = await asyncio.to_thread(
+                post_teams, settings.teams_webhook_url, request, url=url,
+                needed=needed)
         if "email" in channels:
-            sent["email"] = send_email(settings, request, url=url, needed=needed,
-                                       password=secret(settings.smtp_password_secret_name))
+            sent["email"] = await asyncio.to_thread(
+                send_email, settings, request, url=url, needed=needed,
+                password=secret(settings.smtp_password_secret_name))
         log.info("approval_announced", thread_id=request.thread_id, sent=sent)
 
     return notify
