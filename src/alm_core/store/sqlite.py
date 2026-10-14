@@ -352,6 +352,38 @@ class SqliteStore:
                 "UPDATE alm_idempotency SET status = 'failed', completed_at = ? "
                 "WHERE key = ? AND status = 'in_flight'", (_ts(_now()), key))
 
+    async def get_idempotency_record(self, key: str) -> dict | None:
+        row = await self._fetchone(
+            "SELECT key, status, result, work_item_id, userid, operation "
+            "FROM alm_idempotency WHERE key = ?", (key,))
+        if not row:
+            return None
+        return {
+            "key": row[0],
+            "status": row[1].upper() if row[1] else "",
+            "result": json.loads(row[2]) if row[2] else None,
+            "work_item_id": row[3],
+            "user_id": row[4],
+            "step_name": row[5],
+        }
+
+    async def save_idempotency_record(self, *, step_key: str, workitem_id: int | str,
+                                      user_id: str, step_name: str, status: str = "COMPLETED",
+                                      result: dict | None = None) -> None:
+        now = _now()
+        async with self._lock:
+            await self._conn().execute(
+                """
+                INSERT INTO alm_idempotency
+                       (key, run_id, work_item_id, userid, operation, status, result, claimed_at, completed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (key) DO UPDATE
+                SET status = excluded.status, result = excluded.result, completed_at = excluded.completed_at
+                """,
+                (step_key, "step", str(workitem_id), user_id, step_name, status.lower(),
+                 _json(result or {}), _ts(now), _ts(now)),
+            )
+
     # --------------------------------------------------------------- audit
 
     async def record(self, event: AuditEvent) -> None:
@@ -663,6 +695,11 @@ class SqliteStore:
                 (name, holder, _ts(now + timedelta(seconds=seconds)), _ts(now)))
             row = await self._fetchone("SELECT holder FROM alm_lease WHERE name = ?", (name,))
             return bool(row and row[0] == holder)
+
+    async def acquire_distributed_lock(self, lock_key: str, owner_id: str,
+                                       ttl_seconds: int = 300) -> bool:
+        """Acquires an atomic, TTL-bound distributed lock in SQLite."""
+        return await self.try_lease(lock_key, owner_id, float(ttl_seconds))
 
     # --------------------------------------------------------------- trace
 

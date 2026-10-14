@@ -125,3 +125,45 @@ def test_each_session_gets_its_own_context_and_board_but_shares_the_connections(
     assert ctx_a.client is ctx_b.client is services.client
     # The write bound is the process's: EWM and JTS see every run's writes.
     assert ctx_a.limiter() is ctx_b.limiter() is limit
+
+
+def test_five_concurrent_workers_process_twenty_queued_items_exactly_once(tmp_path):
+    from alm_core.store.sqlite import SqliteStore
+
+    async def scenario():
+        store = SqliteStore(str(tmp_path / "queue_concurrency.db"))
+        await store.start()
+        await store.migrate()
+
+        for i in range(20):
+            wid = f"wi-{1000 + i}"
+            await store.enqueue_job(kind="run", thread_id=wid, payload={"work_item_id": wid})
+
+        processed = []
+        lock = asyncio.Lock()
+
+        async def worker_loop(worker_name: str):
+            while True:
+                job = await store.claim_job(worker_name, lease_seconds=30)
+                if not job:
+                    break
+                wid = job["payload"]["work_item_id"]
+                async with lock:
+                    processed.append(wid)
+                await asyncio.sleep(0.001)
+                await store.finish_job(job["id"], worker_name, ok=True)
+
+        workers = [worker_loop(f"worker-{w}") for w in range(5)]
+        await asyncio.gather(*workers)
+
+        assert len(processed) == 20
+        assert len(set(processed)) == 20
+        assert sorted(processed) == sorted(f"wi-{1000 + i}" for i in range(20))
+
+        depth = await store.queue_depth()
+        assert depth.get("queued", 0) == 0
+        assert depth.get("done", 0) == 20
+
+        await store.close()
+
+    asyncio.run(scenario())

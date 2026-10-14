@@ -227,7 +227,19 @@ def _iam_pool_class(settings):
     return IamAsyncConnectionPool
 
 
-class PostgresStore:
+class PostgresLockAndQueueMixin:
+    """Distributed concurrency and locking mixin for PostgreSQL."""
+
+    async def acquire_distributed_lock(self, lock_key: str, owner_id: str,
+                                       ttl_seconds: int = 300) -> bool:
+        """Acquires an atomic, TTL-bound distributed lock in PostgreSQL.
+
+        Safe across multiple Cloud Run / Kubernetes pods.
+        """
+        return await self.try_lease(lock_key, owner_id, float(ttl_seconds))
+
+
+class PostgresStore(PostgresLockAndQueueMixin):
     """Async access to the ledger, audit table and approval records."""
 
     def __init__(self, dsn: str, *, pool_min: int = 1, pool_max: int = 10,
@@ -387,6 +399,40 @@ class PostgresStore:
             await cur.execute(
                 "UPDATE alm_idempotency SET status = 'failed', completed_at = now() "
                 "WHERE key = %s AND status = 'in_flight'", (key,))
+
+    async def get_idempotency_record(self, key: str) -> dict | None:
+        async with self._conn() as conn, conn.cursor() as cur:
+            await cur.execute(
+                "SELECT key, status, result, work_item_id, userid, operation "
+                "FROM alm_idempotency WHERE key = %s", (key,))
+            row = await cur.fetchone()
+        if not row:
+            return None
+        return {
+            "key": row[0],
+            "status": row[1].upper() if row[1] else "",
+            "result": row[2],
+            "work_item_id": row[3],
+            "user_id": row[4],
+            "step_name": row[5],
+        }
+
+    async def save_idempotency_record(self, *, step_key: str, workitem_id: int | str,
+                                      user_id: str, step_name: str, status: str = "COMPLETED",
+                                      result: dict | None = None) -> None:
+        now = datetime.now(timezone.utc)
+        async with self._conn() as conn, conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO alm_idempotency
+                       (key, run_id, work_item_id, userid, operation, status, result, claimed_at, completed_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s)
+                ON CONFLICT (key) DO UPDATE
+                SET status = EXCLUDED.status, result = EXCLUDED.result, completed_at = EXCLUDED.completed_at
+                """,
+                (step_key, "step", str(workitem_id), user_id, step_name, status.lower(),
+                 _json(result or {}), now, now),
+            )
 
     # --------------------------------------------------------------- audit
 
